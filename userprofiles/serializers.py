@@ -40,3 +40,28 @@ class UserSerializer(serializers.ModelSerializer):
         user.is_active = False
         user.save()
         return user
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """
+    Serializer for requesting a password reset email.
+    """
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        try:
+            User.objects.get(email=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User with this email does not exist.")
+        return value
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """
+    Serializer for confirming a password reset.
+    """
+    password = serializers.CharField(write_only=True, required=True, validators=[django_validate_password])
+    confirm_password = serializers.CharField(write_only=True, required=True)
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({"password": "Passwords do not match."})
+        return attrs
