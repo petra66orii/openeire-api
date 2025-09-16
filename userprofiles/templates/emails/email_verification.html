@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Verify Your Email</title>
+  </head>
+  <body
+    style="
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f4f4f4;
+    "
+  >
+    <table
+      align="center"
+      border="0"
+      cellpadding="0"
+      cellspacing="0"
+      width="600"
+      style="background-color: #ffffff; border-collapse: collapse"
+    >
+      <tr>
+        <td
+          align="center"
+          style="
+            padding: 40px 0 30px 0;
+            background-color: #000000;
+            color: #ffffff;
+          "
+        >
+          <h1 style="margin: 0">OpenEire Studios</h1>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 40px 30px 40px 30px">
+          <h2 style="color: #333333">Welcome, {{ username }}!</h2>
+          <p style="color: #555555; font-size: 16px; line-height: 1.5">
+            Thank you for registering with OpenEire Studios. Please click the
+            button below to verify your email address and activate your account.
+          </p>
+          <table border="0" cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+              <td align="center" style="padding: 20px 0 30px 0">
+                <a
+                  href="{{ verification_link }}"
+                  target="_blank"
+                  style="
+                    background-color: #16a34a;
+                    color: #ffffff;
+                    padding: 15px 25px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-weight: bold;
+                    display: inline-block;
+                  "
+                  >Activate Account</a
+                >
+              </td>
+            </tr>
+          </table>
+          <p style="color: #555555; font-size: 14px">
+            If the button above doesn't work, copy and paste the following link
+            into your browser:
+          </p>
+          <p style="color: #16a34a; font-size: 12px; word-break: break-all">
+            {{ verification_link }}
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td
+          align="center"
+          style="
+            padding: 20px;
+            background-color: #eeeeee;
+            color: #888888;
+            font-size: 12px;
+          "
+        >
+          &copy; 2025 OpenEire Studios. All rights reserved.
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
