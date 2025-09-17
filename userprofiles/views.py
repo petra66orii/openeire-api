@@ -7,6 +7,9 @@ from django.contrib.auth.models import User
 from .serializers import UserSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from .models import UserProfile
+from .serializers import UserProfileSerializer
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -105,3 +108,16 @@ class PasswordResetConfirmView(generics.GenericAPIView):
             return Response({"message": "Password reset successful."}, status=status.HTTP_200_OK)
         except (jwt.ExpiredSignatureError, jwt.exceptions.DecodeError, User.DoesNotExist):
             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+        
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    """
+    API endpoint for viewing and editing the user's profile.
+    """
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        """
+        This view should return an object for the currently authenticated user.
+        """
+        return self.request.user.userprofile
