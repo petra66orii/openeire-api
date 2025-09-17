@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password as django_validate_password
+from .models import UserProfile
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for the User model, handles registration."""
@@ -65,3 +66,26 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if attrs['password'] != attrs['confirm_password']:
             raise serializers.ValidationError({"password": "Passwords do not match."})
         return attrs
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the UserProfile model.
+    """
+    # We want to include the user's email and username
+    email = serializers.EmailField(source='user.email')
+    username = serializers.CharField(source='user.username')
+
+    class Meta:
+        model = UserProfile
+        fields = (
+            'username',
+            'email',
+            'default_phone_number',
+            'default_street_address1',
+            'default_street_address2',
+            'default_town',
+            'default_county',
+            'default_postcode',
+            'default_country',
+        )
