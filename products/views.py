@@ -15,6 +15,7 @@ class GalleryListView(generics.ListAPIView):
     API endpoint to list all photos, videos, and physical products.
     Supports filtering by 'type' (digital, physical) and pagination.
     """
+    permission_classes = [AllowAny]
     pagination_class = CustomPagination
 
     def get_queryset(self):
