@@ -72,7 +72,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
     """
     Serializer for the UserProfile model.
     """
-    # We want to include the user's email and username
     email = serializers.EmailField(source='user.email')
     username = serializers.CharField(source='user.username')
 
@@ -89,3 +88,21 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'default_postcode',
             'default_country',
         )
+
+    def update(self, instance, validated_data):
+        """
+        Custom update method to handle the nested User object.
+        """
+        # The 'user' data comes nested because of the 'source' argument.
+        # We pop it from the validated_data and handle it separately.
+        user_data = validated_data.pop('user', {})
+        user = instance.user
+
+        # Update the User model fields
+        user.email = user_data.get('email', user.email)
+        user.username = user_data.get('username', user.username)
+        user.save()
+
+        # Let the default update method handle the UserProfile fields
+        # This will update fields like default_phone_number, etc.
+        return super().update(instance, validated_data)
