@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
 from .models import Photo, Video, Product
-from .serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
+from .serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer, PhotoDetailSerializer, VideoDetailSerializer, ProductDetailSerializer
 
 class CustomPagination(PageNumberPagination):
     page_size = 10 # Number of items per page
@@ -65,3 +65,19 @@ class GalleryListView(generics.ListAPIView):
             return self.get_paginated_response(page)
 
         return Response(data)
+    
+
+class PhotoDetailView(generics.RetrieveAPIView):
+    queryset = Photo.objects.all()
+    serializer_class = PhotoDetailSerializer
+    permission_classes = [AllowAny]
+
+class VideoDetailView(generics.RetrieveAPIView):
+    queryset = Video.objects.all()
+    serializer_class = VideoDetailSerializer
+    permission_classes = [AllowAny]
+
+class ProductDetailView(generics.RetrieveAPIView):
+    queryset = Product.objects.all()
+    serializer_class = ProductDetailSerializer
+    permission_classes = [AllowAny]
