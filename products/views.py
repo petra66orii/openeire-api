@@ -20,27 +20,31 @@ class GalleryListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = []
-        product_type = self.request.query_params.get('type') # 'digital' or 'physical'
+        product_type = self.request.query_params.get('type')
+        collection = self.request.query_params.get('collection') # <-- Get the collection filter
 
+        # Start with the base querysets
+        photos = Photo.objects.all()
+        videos = Video.objects.all()
+        products = Product.objects.all()
+
+        # Apply collection filter if it exists
+        if collection and collection != 'all':
+            photos = photos.filter(collection=collection)
+            videos = videos.filter(collection=collection)
+            # Physical products are linked to photos, so we filter the photos
+            products = products.filter(photo__collection=collection)
+
+        # The rest of the logic remains the same
         if product_type == 'digital':
-            photos = Photo.objects.all()
-            videos = Video.objects.all()
-            # For digital, we combine photos and videos
             for photo in photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
             for video in videos:
                 queryset.append({'item': video, 'serializer': VideoListSerializer(video)})
         elif product_type == 'physical':
-            # For physical, we list all 'Product' instances (prints)
-            products = Product.objects.all()
             for product in products:
                 queryset.append({'item': product, 'serializer': ProductListSerializer(product)})
-        else:
-            # If no type or 'all' is requested, list everything (for a general gallery)
-            photos = Photo.objects.all()
-            videos = Video.objects.all()
-            products = Product.objects.all()
-            
+        else: # All products
             for photo in photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
             for video in videos:
@@ -48,9 +52,8 @@ class GalleryListView(generics.ListAPIView):
             for product in products:
                 queryset.append({'item': product, 'serializer': ProductListSerializer(product)})
         
-        # We'll need to sort this combined list if we want a consistent order
-        # For now, it will be the order in which they were appended.
         return queryset
+
 
     def list(self, request, *args, **kwargs):
         # get_queryset returns a list of dictionaries, each containing an item and its serializer
