@@ -2,8 +2,18 @@ from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
-from .models import Photo, Video, Product
-from .serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer, PhotoDetailSerializer, VideoDetailSerializer, ProductDetailSerializer, ProductReviewSerializer
+from .models import Photo, Video, Product, ProductReview
+from django.http import Http404
+from django.contrib.contenttypes.models import ContentType
+from .serializers import (
+    PhotoListSerializer,
+    VideoListSerializer,
+    ProductListSerializer,
+    PhotoDetailSerializer,
+    VideoDetailSerializer,
+    ProductDetailSerializer,
+    ProductReviewSerializer
+)
 from rest_framework.permissions import IsAuthenticated
 
 class CustomPagination(PageNumberPagination):
@@ -86,40 +96,60 @@ class ProductDetailView(generics.RetrieveAPIView):
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
 
-class ProductReviewCreateView(generics.CreateAPIView):
+class ProductReviewListCreateView(generics.ListCreateAPIView): # <-- Changed to ListCreateAPIView
     """
-    API endpoint to allow a user to create a review for a product.
+    API endpoint to list all APPROVED reviews for a specific product (GET)
+    and allow an authenticated user to create a review (POST).
     """
     serializer_class = ProductReviewSerializer
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        """
+        Set permissions based on the request method.
+        GET requests (list reviews) are public (AllowAny).
+        POST requests (create review) require authentication (IsAuthenticated).
+        """
+        if self.request.method == 'POST':
+            permission_classes = [IsAuthenticated]
+        else:
+            permission_classes = [AllowAny]
+        return [permission() for permission in permission_classes]
+
+    def get_queryset(self):
+        """
+        Returns only APPROVED reviews for the specified product.
+        """
+        product = self.get_product_from_kwargs() # Re-use logic for getting product
+        
+        content_type = ContentType.objects.get_for_model(product)
+        return ProductReview.objects.filter(
+            content_type=content_type,
+            object_id=product.pk,
+            approved=True
+        ).order_by('-created_at')
 
     def get_serializer_context(self):
         """
-        Pass the product object to the serializer.
+        Pass the product object to the serializer for validation and creation.
         """
-        # Get product_type and pk from the URL
-        product_type_str = self.kwargs.get('product_type')
-        product_pk = self.kwargs.get('pk')
-        
-        # Determine the model class based on the product_type string
-        if product_type_str == 'photo':
-            model_class = Photo
-        elif product_type_str == 'video':
-            model_class = Video
-        elif product_type_str == 'product':
-            model_class = Product
-        else:
-            # Handle invalid type if necessary
-            return None 
-        
-        # Get the product instance
-        product = generics.get_object_or_404(model_class.objects.all(), pk=product_pk)
-        
-        return {'request': self.request, 'product': product}
+        return {'request': self.request, 'product': self.get_product_from_kwargs()}
 
     def perform_create(self, serializer):
         """
-        Associate the review with the product and the authenticated user.
+        Associate the review with the product from the URL and the authenticated user.
         """
-        product = self.get_serializer_context()['product']
+        product = self.get_product_from_kwargs()
         serializer.save(user=self.request.user, product=product)
+
+    def get_product_from_kwargs(self):
+        """Helper method to get the product instance from URL kwargs."""
+        product_type_str = self.kwargs.get('product_type')
+        product_pk = self.kwargs.get('pk')
+        
+        model_map = {'photo': Photo, 'video': Video, 'product': Product}
+        model_class = model_map.get(product_type_str)
+        
+        if not model_class:
+            raise Http404("Invalid product type.")
+        
+        return generics.get_object_or_404(model_class.objects.all(), pk=product_pk)
