@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Photo, Video, Product
+from .models import Photo, Video, Product, ProductReview
+from django.contrib.contenttypes.models import ContentType
 
 class PhotoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
@@ -59,3 +60,29 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'photo', 'material', 'size', 'price', 'sku', 'product_type'
         )
+
+class ProductReviewSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating a product review.
+    """
+    user = serializers.ReadOnlyField(source='user.username')
+
+    class Meta:
+        model = ProductReview
+        fields = ['id', 'user', 'rating', 'comment', 'created_at']
+        read_only_fields = ['user', 'created_at']
+
+    def validate(self, data):
+        """
+        Check that the user has not already reviewed this product.
+        """
+        # The product object is passed in the context from the view
+        product = self.context['product']
+        user = self.context['request'].user
+        
+        content_type = ContentType.objects.get_for_model(product)
+
+        if ProductReview.objects.filter(content_type=content_type, object_id=product.pk, user=user).exists():
+            raise serializers.ValidationError("You have already reviewed this product.")
+        
+        return data
