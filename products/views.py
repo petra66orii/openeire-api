@@ -3,7 +3,8 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
 from .models import Photo, Video, Product
-from .serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer, PhotoDetailSerializer, VideoDetailSerializer, ProductDetailSerializer
+from .serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer, PhotoDetailSerializer, VideoDetailSerializer, ProductDetailSerializer, ProductReviewSerializer
+from rest_framework.permissions import IsAuthenticated
 
 class CustomPagination(PageNumberPagination):
     page_size = 10 # Number of items per page
@@ -84,3 +85,41 @@ class ProductDetailView(generics.RetrieveAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
+
+class ProductReviewCreateView(generics.CreateAPIView):
+    """
+    API endpoint to allow a user to create a review for a product.
+    """
+    serializer_class = ProductReviewSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_context(self):
+        """
+        Pass the product object to the serializer.
+        """
+        # Get product_type and pk from the URL
+        product_type_str = self.kwargs.get('product_type')
+        product_pk = self.kwargs.get('pk')
+        
+        # Determine the model class based on the product_type string
+        if product_type_str == 'photo':
+            model_class = Photo
+        elif product_type_str == 'video':
+            model_class = Video
+        elif product_type_str == 'product':
+            model_class = Product
+        else:
+            # Handle invalid type if necessary
+            return None 
+        
+        # Get the product instance
+        product = generics.get_object_or_404(model_class.objects.all(), pk=product_pk)
+        
+        return {'request': self.request, 'product': product}
+
+    def perform_create(self, serializer):
+        """
+        Associate the review with the product and the authenticated user.
+        """
+        product = self.get_serializer_context()['product']
+        serializer.save(user=self.request.user, product=product)
