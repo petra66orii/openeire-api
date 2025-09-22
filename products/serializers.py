@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Photo, Video, Product, ProductReview
 from django.contrib.contenttypes.models import ContentType
+from django.db.models import Avg, Count
 
 class PhotoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
@@ -30,36 +31,91 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 class PhotoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
+    average_rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Photo
         fields = (
             'id', 'title', 'description', 'collection', 'preview_image', 
             'high_res_file', 'price_hd', 'price_4k', 'tags', 'created_at',
-            'product_type'
+            'product_type', 'average_rating', 'review_count'
         )
+
+    def get_average_rating(self, obj):
+        reviews = ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        )
+        # Use the correct key 'rating__avg' and handle None if no reviews exist
+        avg = reviews.aggregate(Avg('rating'))['rating__avg']
+        return round(avg, 2) if avg is not None else 0
+    
+    def get_review_count(self, obj):
+        return ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        ).count()
 
 class VideoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
+    average_rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
         fields = (
             'id', 'title', 'description', 'collection', 'thumbnail_image', 
             'video_file', 'price_hd', 'price_4k', 'tags', 'created_at',
-            'product_type'
+            'product_type', 'average_rating', 'review_count'
         )
+    
+    def get_average_rating(self, obj):
+        reviews = ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        )
+        avg = reviews.aggregate(Avg('rating'))['rating__avg']
+        return round(avg, 2) if avg is not None else 0
+    
+    def get_review_count(self, obj):
+        return ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        ).count()
 
 class ProductDetailSerializer(serializers.ModelSerializer):
-    # We want to display full photo details within the physical product
     photo = PhotoDetailSerializer(read_only=True) 
     product_type = serializers.CharField(default='physical', read_only=True)
+    average_rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = (
-            'id', 'photo', 'material', 'size', 'price', 'sku', 'product_type'
+            'id', 'photo', 'material', 'size', 'price', 'sku', 'product_type',
+            'average_rating', 'review_count'
         )
+
+    def get_average_rating(self, obj):
+        reviews = ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        )
+        avg = reviews.aggregate(Avg('rating'))['rating__avg']
+        return round(avg, 2) if avg is not None else 0
+    
+    def get_review_count(self, obj):
+        return ProductReview.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.pk,
+            approved=True
+        ).count()
 
 class ProductReviewSerializer(serializers.ModelSerializer):
     """
