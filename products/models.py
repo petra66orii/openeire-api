@@ -1,4 +1,7 @@
 from django.db import models
+from django.contrib.auth.models import User
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 
 # Create your models here.
 class Photo(models.Model):
@@ -46,3 +49,29 @@ class Product(models.Model):
 
     def __str__(self):
         return f'{self.get_material_display()} of "{self.photo.title}" ({self.size})'
+    
+
+class ProductReview(models.Model):
+    """
+    Model for a single product review. Can be linked to a Photo, Video, or Product.
+    """
+    RATING_CHOICES = [(i, str(i)) for i in range(1, 6)]
+
+    # Generic ForeignKey to link to any product type
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    product = GenericForeignKey('content_type', 'object_id')
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    rating = models.IntegerField(choices=RATING_CHOICES, null=False, blank=False)
+    comment = models.TextField(blank=True, null=True)
+    approved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class Meta:
+    # Prevent a user from reviewing the same product more than once
+    unique_together = ('content_type', 'object_id', 'user')
+    ordering = ['-created_at']
+
+def __str__(self):
+    return f'Review by {self.user.username} for {self.product.title}'
