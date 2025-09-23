@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'userprofiles',
     'products',
+    'checkout',
 ]
 
 # Simple JWT Configuration
