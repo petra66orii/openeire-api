@@ -11,15 +11,17 @@ from django_countries.fields import CountryField
 class Order(models.Model):
     order_number = models.CharField(max_length=32, null=False, editable=False)
     user_profile = models.ForeignKey(UserProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
-    first_name = models.CharField(max_length=150, null=False, blank=False)
-    email = models.EmailField(max_length=254, null=False, blank=False)
-    phone_number = models.CharField(max_length=20, null=False, blank=False)
-    street_address1 = models.CharField(max_length=255, null=False, blank=False)
+    
+    # --- Make these fields optional ---
+    first_name = models.CharField(max_length=150, null=True, blank=True)
+    email = models.EmailField(max_length=254, null=False, blank=False) # Keep email required
+    phone_number = models.CharField(max_length=20, null=True, blank=True)
+    street_address1 = models.CharField(max_length=255, null=True, blank=True)
     street_address2 = models.CharField(max_length=255, null=True, blank=True)
-    town = models.CharField(max_length=100, null=False, blank=False)
+    town = models.CharField(max_length=100, null=True, blank=True)
     county = models.CharField(max_length=100, null=True, blank=True)
     postcode = models.CharField(max_length=20, null=True, blank=True)
-    country = CountryField(null=False, blank=False)
+    country = CountryField(null=True, blank=True)    
     date = models.DateTimeField(auto_now_add=True)
     delivery_cost = models.DecimalField(max_digits=6, decimal_places=2, null=False, default=0)
     order_total = models.DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
