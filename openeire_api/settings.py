@@ -1,4 +1,5 @@
 import os
+import env
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -175,3 +176,8 @@ CORS_ALLOWED_ORIGINS = [
 # Media files (user-uploaded content)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Stripe Configuration
+STRIPE_PUBLIC_KEY = env.STRIPE_PUBLIC_KEY
+STRIPE_SECRET_KEY = env.STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET = env.STRIPE_WEBHOOK_SECRET
