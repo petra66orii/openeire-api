@@ -22,7 +22,6 @@ class CreatePaymentIntentView(APIView):
         if not cart:
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # --- Start of updated logic ---
         total = 0
         model_map = {'photo': Photo, 'video': Video, 'physical': Product}
 
@@ -39,15 +38,15 @@ class CreatePaymentIntentView(APIView):
                 price_str = getattr(product_instance, 'price', getattr(product_instance, 'price_hd', '0'))
                 price = float(price_str)
                 total += price * quantity
+
         except (KeyError, model_class.DoesNotExist) as e:
-            return Response({"error": "Invalid cart data provided."}, status=status.HTTP_400_BAD_REQUEST)
-        # --- End of updated logic ---
+            return Response({"error": f"Invalid cart data provided: {e}"}, status=status.HTTP_400_BAD_REQUEST)
         
         amount_in_cents = int(total * 100)
 
         try:
             metadata = {
-                'cart': json.dumps(cart), # Now this cart is the simplified version
+                'cart': json.dumps(cart), # The cart is already the simplified version
                 'username': request.user.username if request.user.is_authenticated else 'Guest'
             }
 
@@ -79,6 +78,7 @@ class StripeWebhookView(APIView):
 
         if event['type'] == 'payment_intent.succeeded':
             payment_intent = event['data']['object']
+            metadata = payment_intent.get('metadata', {})
             
             metadata = payment_intent.get('metadata', {})
             cart_items_str = metadata.get('cart', '[]')
@@ -86,19 +86,39 @@ class StripeWebhookView(APIView):
             shipping_details = payment_intent.get('shipping') or {}
             address_details = shipping_details.get('address') or {}
 
-            # --- Start of updated email extraction logic ---
             # Try to get email from payment_intent.receipt_email, then metadata, then provide a placeholder
             order_email = payment_intent.receipt_email # This might be None for test cards
             if not order_email or not '@' in order_email: # Basic check for validity
                 order_email = metadata.get('username') # If logged in
                 if not order_email or not '@' in order_email:
                     order_email = "guest@example.com" # Fallback for guest or invalid test data
-            # --- End of updated email extraction logic ---
+
+            username = metadata.get('username')
+            save_info = metadata.get('save_info') == 'true'
+
+            if username and username != 'Guest':
+                try:
+                    profile = UserProfile.objects.get(user__username=username)
+                    order_data['user_profile'] = profile.id
+                    
+                    # If user checked "Save Info", update their profile
+                    if save_info:
+                        profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
+                        profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
+                        profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
+                        profile.default_town = address_details.get('city', profile.default_town)
+                        profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
+                        profile.default_county = address_details.get('state', profile.default_county)
+                        profile.default_country = address_details.get('country', profile.default_country)
+                        profile.save()
+
+                except UserProfile.DoesNotExist:
+                    pass
 
             order_data = {
                 'stripe_pid': payment_intent.id,
                 'first_name': shipping_details.get('name', ''),
-                'email': order_email, # Use our robustly determined email
+                'email': order_email,
                 'phone_number': shipping_details.get('phone', ''),
                 'country': address_details.get('country', ''),
                 'town': address_details.get('city', ''),
