@@ -1,5 +1,3 @@
-# userprofiles/serializers.py
-
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -13,13 +11,15 @@ class UserSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'password') # Removed country, corrected sources
+        fields = ('id', 'username', 'first_name', 'last_name', 'email', 'password')
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
         user = User(
             email=validated_data['email'],
-            username=validated_data['username']
+            username=validated_data['username'],
+            first_name=validated_data['first_name'],
+            last_name=validated_data['last_name']
         )
         user.set_password(validated_data['password'])
         user.is_active = False
@@ -32,6 +32,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
     """
     # Get username and email from the related User object
     username = serializers.CharField(source='user.username')
+    first_name = serializers.CharField(source='user.first_name')
+    last_name = serializers.CharField(source='user.last_name')
     email = serializers.EmailField(source='user.email')
     
     # Use the special serializer field for the country
@@ -41,6 +43,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = (
             'username',
+            'first_name',
+            'last_name',
             'email',
             'default_phone_number',
             'default_street_address1',
@@ -57,6 +61,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if user_data:
             user = instance.user
             user.username = user_data.get('username', user.username)
+            user.first_name = user_data.get('first_name', user.first_name)
+            user.last_name = user_data.get('last_name', user.last_name)
             user.email = user_data.get('email', user.email)
             user.save()
 
