@@ -1,0 +1,45 @@
+{% extends "admin/index.html" %} {% load static %} {% block content %}
+<style>
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: #fff;
+    padding: 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-left: 5px solid #16a34a; /* Green accent */
+  }
+  .stat-card h3 {
+    font-size: 1rem;
+    color: #666;
+    margin: 0 0 0.5rem 0;
+  }
+  .stat-card p {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #333;
+    margin: 0;
+  }
+</style>
+
+<h2>Store Analytics</h2>
+<div class="dashboard-grid">
+  <div class="stat-card">
+    <h3>Total Revenue</h3>
+    <p>€{{ total_revenue|floatformat:2|default:"0.00" }}</p>
+  </div>
+  <div class="stat-card">
+    <h3>Total Orders</h3>
+    <p>{{ total_orders|default:"0" }}</p>
+  </div>
+  <div class="stat-card">
+    <h3>Average Order Value</h3>
+    <p>€{{ average_order_value|floatformat:2|default:"0.00" }}</p>
+  </div>
+</div>
+
+{{ block.super }} {% endblock %}
