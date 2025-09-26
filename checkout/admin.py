@@ -1,5 +1,6 @@
 from django.contrib import admin
 from .models import Order, OrderItem
+from openeire_api.admin import custom_admin_site
 
 class OrderItemInline(admin.TabularInline):
     """
@@ -11,7 +12,7 @@ class OrderItemInline(admin.TabularInline):
     can_delete = False
     extra = 0 # Don't show extra empty forms
 
-@admin.register(Order)
+#@admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     """
     Admin configuration for the Order model.
@@ -29,3 +30,5 @@ class OrderAdmin(admin.ModelAdmin):
     list_filter = ('date',)
     search_fields = ('order_number', 'email', 'first_name')
     ordering = ('-date',)
+
+custom_admin_site.register(Order, OrderAdmin)
