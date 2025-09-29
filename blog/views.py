@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.permissions import AllowAny
 from .models import BlogPost
 from .serializers import BlogPostListSerializer, BlogPostDetailSerializer
+from products.views import CustomPagination
 
 class BlogPostListView(generics.ListAPIView):
     """
@@ -10,7 +11,7 @@ class BlogPostListView(generics.ListAPIView):
     queryset = BlogPost.objects.filter(status=1).order_by('-created_at')
     serializer_class = BlogPostListSerializer
     permission_classes = [AllowAny]
-
+    pagination_class = CustomPagination
 
 class BlogPostDetailView(generics.RetrieveAPIView):
     """
