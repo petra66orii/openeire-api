@@ -9,6 +9,7 @@ urlpatterns = [
     path('summernote/', include('django_summernote.urls')),
     path('api/auth/', include('userprofiles.urls')),
     path('api/', include('products.urls')),
+    path('api/blog/', include('blog.urls')),
     path('api/checkout/', include('checkout.urls')),
 ]
 
