@@ -6,6 +6,7 @@ from .admin import custom_admin_site
 
 urlpatterns = [
     path('admin/', custom_admin_site.urls),
+    path('summernote/', include('django_summernote.urls')),
     path('api/auth/', include('userprofiles.urls')),
     path('api/', include('products.urls')),
     path('api/checkout/', include('checkout.urls')),
