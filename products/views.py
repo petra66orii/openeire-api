@@ -1,5 +1,6 @@
 from rest_framework import generics
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
@@ -35,6 +36,25 @@ class GalleryListView(generics.ListAPIView):
         product_type = self.request.query_params.get('type')
         collection = self.request.query_params.get('collection')
         search_term = self.request.query_params.get('search')
+        sort_key = self.request.query_params.get('sort')
+
+        photos = Photo.objects.annotate(display_price=Coalesce('price_hd', 0))
+        videos = Video.objects.annotate(display_price=Coalesce('price_hd', 0))
+        products = Product.objects.annotate(display_price=Coalesce('price', 0))
+
+        if sort_key == 'price_asc':
+            photos = photos.order_by('display_price')
+            videos = videos.order_by('display_price')
+            products = products.order_by('display_price')
+        elif sort_key == 'price_desc':
+            photos = photos.order_by('-display_price')
+            videos = videos.order_by('-display_price')
+            products = products.order_by('-display_price')
+        elif sort_key == 'date_desc':
+            photos = photos.order_by('-created_at')
+            videos = videos.order_by('-created_at')
+            # Physical products don't have created_at, sort by related photo's date
+            products = products.order_by('-photo__created_at')
 
         # Start with the base querysets
         photos = Photo.objects.all()
