@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'userprofiles',
     'products',
     'checkout',
+    'blog',
 ]
 
 # Simple JWT Configuration
