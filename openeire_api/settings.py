@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'django_countries',
+    'django_summernote',
     'userprofiles',
     'products',
     'checkout',
