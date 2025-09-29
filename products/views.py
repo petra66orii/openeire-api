@@ -1,4 +1,5 @@
 from rest_framework import generics
+from django.db.models import Q
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
@@ -32,12 +33,30 @@ class GalleryListView(generics.ListAPIView):
     def get_queryset(self):
         queryset = []
         product_type = self.request.query_params.get('type')
-        collection = self.request.query_params.get('collection') # <-- Get the collection filter
+        collection = self.request.query_params.get('collection')
+        search_term = self.request.query_params.get('search')
 
         # Start with the base querysets
         photos = Photo.objects.all()
         videos = Video.objects.all()
         products = Product.objects.all()
+
+        if search_term:
+            # Create a query that searches title, description, and tags
+            photo_video_query = (
+                Q(title__icontains=search_term) |
+                Q(description__icontains=search_term) |
+                Q(tags__icontains=search_term)
+            )
+            # Apply the filter to Photo and Video querysets
+            photos = photos.filter(photo_video_query)
+            videos = videos.filter(photo_video_query)
+            # For physical products, search the related photo's details
+            products = products.filter(
+                Q(photo__title__icontains=search_term) |
+                Q(photo__description__icontains=search_term) |
+                Q(photo__tags__icontains=search_term)
+            )
 
         # Apply collection filter if it exists
         if collection and collection != 'all':
