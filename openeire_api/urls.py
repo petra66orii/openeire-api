@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/auth/', include('userprofiles.urls')),
     path('api/', include('products.urls')),
     path('api/blog/', include('blog.urls')),
+    path('api/home/', include('home.urls')),
     path('api/checkout/', include('checkout.urls')),
 ]
 
