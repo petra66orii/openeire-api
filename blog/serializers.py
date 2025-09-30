@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import BlogPost
+from .models import BlogPost, Comment
 
 class BlogPostListSerializer(serializers.ModelSerializer):
     """
@@ -21,3 +21,14 @@ class BlogPostDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = BlogPost
         fields = ['id', 'title', 'slug', 'author', 'featured_image', 'content', 'created_at', 'updated_at']
+
+class CommentSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the Comment model.
+    """
+    user = serializers.ReadOnlyField(source='user.username')
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'user', 'content', 'created_at']
+        read_only_fields = ['id', 'user', 'created_at']
