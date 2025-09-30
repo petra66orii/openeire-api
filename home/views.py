@@ -1,7 +1,7 @@
 from rest_framework import generics
 from rest_framework.permissions import AllowAny
-from .models import Testimonial
-from .serializers import TestimonialSerializer
+from .models import Testimonial, NewsletterSubscriber
+from .serializers import TestimonialSerializer, NewsletterSubscriberSerializer
 
 class TestimonialListView(generics.ListAPIView):
     """
@@ -9,4 +9,9 @@ class TestimonialListView(generics.ListAPIView):
     """
     queryset = Testimonial.objects.all()
     serializer_class = TestimonialSerializer
+    permission_classes = [AllowAny]
+
+class NewsletterSignupView(generics.CreateAPIView):
+    queryset = NewsletterSubscriber.objects.all()
+    serializer_class = NewsletterSubscriberSerializer
     permission_classes = [AllowAny]
