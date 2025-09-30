@@ -10,3 +10,14 @@ class Testimonial(models.Model):
 
     def __str__(self):
         return f"Testimonial by {self.name}"
+
+
+class NewsletterSubscriber(models.Model):
+    """
+    Model to store emails of users who sign up for the newsletter.
+    """
+    email = models.EmailField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.email
