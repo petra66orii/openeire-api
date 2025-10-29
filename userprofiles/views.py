@@ -4,6 +4,9 @@ from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.contrib.auth.models import User
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
 from .serializers import UserSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -16,7 +19,6 @@ class RegisterView(generics.CreateAPIView):
     permission_classes = (AllowAny,)
     serializer_class = UserSerializer
 
-    # Override the default create method
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -26,9 +28,28 @@ class RegisterView(generics.CreateAPIView):
         refresh = RefreshToken.for_user(user)
         token = str(refresh.access_token)
         
-        # TODO: Send an email with a link like /verify-email/confirm/{token}
-        print(f"--- VERIFICATION TOKEN FOR {user.email}: {token} ---")
+        # --- Email Sending Logic ---
+        frontend_url = 'http://localhost:5173'
+        verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         
+        subject = 'Welcome to OpenEire Studios! Verify Your Email'
+        context = {
+            'username': user.username,
+            'verification_link': verification_link
+        }
+        
+        html_message = render_to_string('emails/verification_email.html', context)
+        plain_message = strip_tags(html_message)
+        from_email = settings.DEFAULT_FROM_EMAIL
+        to_email = user.email
+
+        try:
+            send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
+            print(f"--- Verification email sent to {user.email} ---")
+        except Exception as e:
+            print(f"--- FAILED to send email: {e} ---")
+        # --- End of Email Sending Logic ---
+
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
