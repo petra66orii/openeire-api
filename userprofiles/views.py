@@ -12,7 +12,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .models import UserProfile
-from .serializers import UserProfileSerializer, ResendVerificationSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .serializers import UserProfileSerializer, ResendVerificationSerializer, MyTokenObtainPairSerializer
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -177,3 +178,9 @@ class ResendVerificationView(generics.GenericAPIView):
         except Exception as e:
             print(f"--- FAILED to resend email: {e} ---")
             return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class MyTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom view using the custom serializer to allow email/username login.
+    """
+    serializer_class = MyTokenObtainPairSerializer

@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password as django_validate_password
 from .models import UserProfile
 from django_countries.serializer_fields import CountryField
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 class UserSerializer(serializers.ModelSerializer):
     """
@@ -123,3 +125,43 @@ class ResendVerificationSerializer(serializers.Serializer):
         except User.DoesNotExist:
             raise serializers.ValidationError("No account found with this email address.")
         return value
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """
+    Custom token serializer to allow login with either username or email.
+    """
+    def validate(self, attrs):
+        # Get the identifier (could be username or email) and password
+        identifier = attrs.get(self.username_field)
+        password = attrs.get('password')
+
+        user = None
+        # Try authenticating with the identifier directly as username
+        user_by_username = authenticate(request=self.context.get('request'), username=identifier, password=password)
+
+        if user_by_username:
+            user = user_by_username
+        else:
+            # If username auth failed, try finding the user by email
+            try:
+                user_obj = User.objects.get(email__iexact=identifier)
+                # Then authenticate using the found user's actual username
+                user_by_email = authenticate(request=self.context.get('request'), username=user_obj.username, password=password)
+                if user_by_email:
+                    user = user_by_email
+            except User.DoesNotExist:
+                # No user with this email exists, authentication fails
+                pass
+
+        # If no user was found by either method or if the user is inactive
+        if not user or not user.is_active:
+            raise serializers.ValidationError('No active account found with the given credentials')
+
+        # If authentication succeeds, proceed with token generation
+        refresh = self.get_token(user)
+
+        data = {}
+        data['refresh'] = str(refresh)
+        data['access'] = str(refresh.access_token)
+
+        return data
