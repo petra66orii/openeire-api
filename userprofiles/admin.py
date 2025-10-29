@@ -1,8 +1,12 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.models import User
 from .models import UserProfile
+from openeire_api.admin import custom_admin_site
 
-# Register your models here.
-@admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ('user', 'default_country')
-    search_fields = ('user__username', 'user__email')
+    list_display = ('user', 'default_phone_number', 'default_country')
+    search_fields = ('user__username', 'default_phone_number')
+
+custom_admin_site.register(UserProfile, UserProfileAdmin)
+custom_admin_site.register(User, UserAdmin)
