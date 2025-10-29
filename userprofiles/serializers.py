@@ -12,14 +12,34 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'first_name', 'last_name', 'email', 'password')
-        extra_kwargs = {'password': {'write_only': True}}
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'first_name': {'required': False, 'allow_blank': True},
+            'last_name': {'required': False, 'allow_blank': True},
+        }
+
+    def validate_email(self, value):
+        """
+        Check that the email is not already in use.
+        """
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
+    def validate_username(self, value):
+        """
+        Check that the username is not already in use.
+        """
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("A user with that username already exists.")
+        return value
 
     def create(self, validated_data):
         user = User(
             email=validated_data['email'],
             username=validated_data['username'],
-            first_name=validated_data['first_name'],
-            last_name=validated_data['last_name']
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', '')
         )
         user.set_password(validated_data['password'])
         user.is_active = False
