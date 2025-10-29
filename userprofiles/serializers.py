@@ -110,3 +110,16 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs['password'] != attrs['confirm_password']: raise serializers.ValidationError({"password": "Passwords do not match."})
         return attrs
+
+class ResendVerificationSerializer(serializers.Serializer):
+    """Serializer for requesting a new verification email."""
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        try:
+            user = User.objects.get(email=value)
+            if user.is_active:
+                raise serializers.ValidationError("This account is already verified.")
+        except User.DoesNotExist:
+            raise serializers.ValidationError("No account found with this email address.")
+        return value

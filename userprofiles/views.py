@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .models import UserProfile
-from .serializers import UserProfileSerializer
+from .serializers import UserProfileSerializer, ResendVerificationSerializer
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -142,3 +142,38 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
         This view should return an object for the currently authenticated user.
         """
         return self.request.user.userprofile
+    
+class ResendVerificationView(generics.GenericAPIView):
+    """
+    API endpoint to resend the verification email.
+    """
+    serializer_class = ResendVerificationSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        user = User.objects.get(email=email)
+
+        # Generate a new token
+        refresh = RefreshToken.for_user(user)
+        token = str(refresh.access_token)
+
+        # Resend the email (reuse logic from RegisterView)
+        frontend_url = 'http://localhost:5173'
+        verification_link = f"{frontend_url}/verify-email/confirm/{token}"
+        subject = 'Verify Your OpenEire Studios Email Address'
+        context = {'username': user.username, 'verification_link': verification_link}
+        html_message = render_to_string('emails/verification_email.html', context)
+        plain_message = strip_tags(html_message)
+        from_email = settings.DEFAULT_FROM_EMAIL
+        to_email = user.email
+
+        try:
+            send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
+            print(f"--- Re-sent verification email to {user.email} ---")
+            return Response({"message": "Verification email sent."}, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(f"--- FAILED to resend email: {e} ---")
+            return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
