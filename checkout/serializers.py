@@ -4,6 +4,7 @@ from products.models import Photo, Video, Product
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
+from userprofiles.models import UserProfile
 
 class OrderItemSerializer(serializers.ModelSerializer):
     """
@@ -31,11 +32,18 @@ class OrderSerializer(serializers.ModelSerializer):
     """
     items = OrderItemSerializer(many=True)
 
+    user_profile = serializers.PrimaryKeyRelatedField(
+        queryset=UserProfile.objects.all(),
+        required=False, # Make it optional for guests
+        allow_null=True
+    )
+
     class Meta:
         model = Order
         fields = (
             'id',
             'order_number',
+            'user_profile',
             'first_name',
             'email',
             'phone_number',
@@ -58,7 +66,9 @@ class OrderSerializer(serializers.ModelSerializer):
         Custom create method to handle creating the order and its items.
         """
         items_data = validated_data.pop('items')
-        order = Order.objects.create(**validated_data)
+        user_profile = validated_data.pop('user_profile', None)
+
+        order = Order.objects.create(user_profile=user_profile, **validated_data)
 
         # A map to get the correct model class from the string 'product_type'
         model_map = {'photo': Photo, 'video': Video, 'physical': Product}
