@@ -2,6 +2,8 @@ from rest_framework import serializers
 from .models import Order, OrderItem
 from products.models import Photo, Video, Product
 from django.contrib.contenttypes.models import ContentType
+from django_countries.serializer_fields import CountryField
+from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
 
 class OrderItemSerializer(serializers.ModelSerializer):
     """
@@ -97,3 +99,46 @@ class OrderSerializer(serializers.ModelSerializer):
         order.save()
 
         return order
+
+class OrderHistoryItemSerializer(serializers.ModelSerializer):
+    """
+    Serializer for OrderItem to show product details for order history.
+    """
+    # We use a custom field to get the correct serializer for the product
+    product = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderItem
+        fields = ('id', 'product', 'quantity', 'item_total', 'details')
+
+    def get_product(self, obj):
+        """
+        Return the serialized data for the specific product type.
+        """
+        if isinstance(obj.product, Photo):
+            return PhotoListSerializer(obj.product, context=self.context).data
+        if isinstance(obj.product, Video):
+            return VideoListSerializer(obj.product, context=self.context).data
+        if isinstance(obj.product, Product):
+            return ProductListSerializer(obj.product, context=self.context).data
+        return None
+
+class OrderHistoryListSerializer(serializers.ModelSerializer):
+    """
+    Serializer for listing a user's orders, with nested items.
+    """
+    items = OrderHistoryItemSerializer(many=True, read_only=True)
+    country = CountryField(name_only=True) # Display country name
+
+    class Meta:
+        model = Order
+        fields = (
+            'order_number',
+            'date',
+            'order_total',
+            'total_price',
+            'street_address1',
+            'town',
+            'country',
+            'items',
+        )

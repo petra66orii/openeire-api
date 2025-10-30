@@ -5,10 +5,13 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from products.models import Photo, Video, Product
 from userprofiles.models import UserProfile
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from .models import Order
 import stripe
 import json
 
-from .serializers import OrderSerializer
+from .serializers import OrderSerializer, OrderHistoryListSerializer
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -147,3 +150,17 @@ class StripeWebhookView(APIView):
                 return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         
         return Response(status=status.HTTP_200_OK)
+
+class OrderHistoryView(generics.ListAPIView):
+    """
+    API endpoint to list all orders for the currently authenticated user.
+    """
+    serializer_class = OrderHistoryListSerializer
+    permission_classes = [IsAuthenticated] # Only logged-in users can see this
+
+    def get_queryset(self):
+        """
+        This view should return a list of all the orders
+        for the currently authenticated user.
+        """
+        return Order.objects.filter(user_profile=self.request.user.userprofile).order_by('-date')
