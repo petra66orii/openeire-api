@@ -59,7 +59,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source='user.email')
     
     # Use the special serializer field for the country
-    country = CountryField(source='default_country', country_dict=True)
+    country = CountryField(source='default_country', name_only=True)
 
     class Meta:
         model = UserProfile
@@ -77,26 +77,32 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'country',
         )
 
-    def update(self, instance, validated_data):
-        # Handle User data update if provided
-        user_data = validated_data.pop('user', {})
-        if user_data:
-            user = instance.user
-            user.username = user_data.get('username', user.username)
-            user.first_name = user_data.get('first_name', user.first_name)
-            user.last_name = user_data.get('last_name', user.last_name)
-            user.email = user_data.get('email', user.email)
-            user.save()
+def update(self, instance, validated_data):
+        """
+        Custom update method to handle nested User object and UserProfile.
+        """
 
-            country_data = validated_data.pop('country', None)
-        if country_data:
-            # When updating, CountryField(country_dict=True) might give a dict,
-            # we need the country code for the model.
-            instance.default_country = country_data.get('code') if isinstance(country_data, dict) else country_data
+        # Get the User object
+        user = instance.user
+        
+        # Check for user data being sent from the frontend
+        user.username = validated_data.get('username', user.username)
+        user.email = validated_data.get('email', user.email)
+        user.first_name = validated_data.get('first_name', user.first_name)
+        user.last_name = validated_data.get('last_name', user.last_name)
+        user.save()
 
-        # Handle UserProfile data update
+        # Update UserProfile fields
+        instance.default_phone_number = validated_data.get('default_phone_number', instance.default_phone_number)
+        instance.default_street_address1 = validated_data.get('default_street_address1', instance.default_street_address1)
+        instance.default_street_address2 = validated_data.get('default_street_address2', instance.default_street_address2)
+        instance.default_town = validated_data.get('default_town', instance.default_town)
+        instance.default_county = validated_data.get('default_county', instance.default_county)
+        instance.default_postcode = validated_data.get('default_postcode', instance.default_postcode)
+        instance.default_country = validated_data.get('default_country', instance.default_country)
+        # instance.save() is called by super().update()
+
         return super().update(instance, validated_data)
-
 
 # --- (Password Reset Serializers remain the same) ---
 class PasswordResetRequestSerializer(serializers.Serializer):
@@ -165,3 +171,31 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         data['access'] = str(refresh.access_token)
 
         return data
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    Serializer for password change endpoint.
+    """
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True)
+
+    def validate_new_password(self, value):
+        # Run the new password through Django's built-in validators
+        django_validate_password(value, self.context['request'].user)
+        return value
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Your old password was entered incorrectly. Please try again.")
+        return value
+
+    def update(self, instance, validated_data):
+        # set_password hashes the password
+        instance.set_password(validated_data['new_password'])
+        instance.save()
+        return instance
+
+    def create(self, validated_data):
+        # This serializer is only for updating, not creating
+        raise NotImplementedError()
