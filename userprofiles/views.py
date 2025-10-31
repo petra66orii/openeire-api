@@ -1,6 +1,6 @@
 import jwt
 from django.conf import settings
-from rest_framework import generics, status
+from rest_framework import generics, status, serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.contrib.auth.models import User
@@ -13,7 +13,13 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from .models import UserProfile
 from rest_framework_simplejwt.views import TokenObtainPairView
-from .serializers import UserProfileSerializer, ResendVerificationSerializer, MyTokenObtainPairSerializer
+from .serializers import (
+    UserProfileSerializer,
+    ResendVerificationSerializer,
+    MyTokenObtainPairSerializer,
+    ChangePasswordSerializer,
+    ChangeEmailSerializer
+)
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -184,3 +190,26 @@ class MyTokenObtainPairView(TokenObtainPairView):
     Custom view using the custom serializer to allow email/username login.
     """
     serializer_class = MyTokenObtainPairSerializer
+
+
+class ChangePasswordView(generics.UpdateAPIView):
+    """
+    An endpoint for changing the password.
+    """
+    serializer_class = ChangePasswordSerializer
+    model = User
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, queryset=None):
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid(raise_exception=True):
+            # The serializer's .update() method handles password hashing and saving
+            serializer.save()
+            return Response({"message": "Password updated successfully"}, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
