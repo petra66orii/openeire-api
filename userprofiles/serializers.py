@@ -199,3 +199,41 @@ class ChangePasswordSerializer(serializers.Serializer):
     def create(self, validated_data):
         # This serializer is only for updating, not creating
         raise NotImplementedError()
+
+class ChangeEmailSerializer(serializers.Serializer):
+    """
+    Serializer for email change endpoint.
+    """
+    new_email = serializers.EmailField(required=True)
+    current_password = serializers.CharField(required=True)
+
+    def validate_new_email(self, value):
+        """
+        Check that the new email is not already in use.
+        """
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("This email is already in use by another account.")
+        return value
+
+    def validate_current_password(self, value):
+        """
+        Validate the user's current password.
+        """
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Your old password was entered incorrectly. Please try again.")
+        return value
+
+    def update(self, instance, validated_data):
+        """
+        Update the user's email.
+        """
+        instance.email = validated_data['new_email']
+        
+        # We also set the user to 'inactive' to force re-verification of the new email.
+        instance.is_active = False 
+        instance.save(update_fields=['email', 'username', 'is_active'])
+        return instance
+
+    def create(self, validated_data):
+        raise NotImplementedError()

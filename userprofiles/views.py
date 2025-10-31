@@ -213,3 +213,46 @@ class ChangePasswordView(generics.UpdateAPIView):
             return Response({"message": "Password updated successfully"}, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class ChangeEmailView(generics.UpdateAPIView):
+    """
+    An endpoint for changing the user's email.
+    Requires the current password.
+    """
+    serializer_class = ChangeEmailSerializer
+    model = User
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, queryset=None):
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid(raise_exception=True):
+            # The serializer's .update() method saves the new email and sets user inactive
+            serializer.save() 
+            
+            # --- Now, send a new verification email ---
+            user = self.object
+            refresh = RefreshToken.for_user(user)
+            token = str(refresh.access_token)
+            
+            frontend_url = 'http://localhost:5173'
+            verification_link = f"{frontend_url}/verify-email/confirm/{token}"
+            
+            subject = 'Please Verify Your New Email Address'
+            context = {'username': user.username, 'verification_link': verification_link}
+            html_message = render_to_string('emails/verification_email.html', context)
+            plain_message = strip_tags(html_message)
+            
+            try:
+                send_mail(subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email], html_message=html_message)
+            except Exception as e:
+                print(f"--- FAILED to send re-verification email: {e} ---")
+                # We don't fail the whole request, just log the email error
+            
+            return Response({"message": "Email updated successfully. Please check your new email address to re-verify your account."}, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
