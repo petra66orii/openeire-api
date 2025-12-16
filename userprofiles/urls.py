@@ -10,6 +10,7 @@ from .views import (
     MyTokenObtainPairView,
     ChangePasswordView,
     ChangeEmailView,
+    DeleteAccountView,
     )
 
 urlpatterns = [
@@ -23,4 +24,5 @@ urlpatterns = [
     path('password/change/', ChangePasswordView.as_view(), name='auth_password_change'),
     path('email/change/', ChangeEmailView.as_view(), name='auth_email_change'),
     path('profile/', UserProfileView.as_view(), name='user_profile'),
+    path('delete/', DeleteAccountView.as_view(), name='delete_account'),
 ]

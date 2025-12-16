@@ -18,7 +18,8 @@ from .serializers import (
     ResendVerificationSerializer,
     MyTokenObtainPairSerializer,
     ChangePasswordSerializer,
-    ChangeEmailSerializer
+    ChangeEmailSerializer,
+    DeleteAccountSerializer,
 )
 
 class RegisterView(generics.CreateAPIView):
@@ -255,4 +256,19 @@ class ChangeEmailView(generics.UpdateAPIView):
             
             return Response({"message": "Email updated successfully. Please check your new email address to re-verify your account."}, status=status.HTTP_200_OK)
 
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class DeleteAccountView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = DeleteAccountSerializer
+
+    def delete(self, request):
+        serializer = self.get_serializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            user = request.user
+            user.delete()
+            return Response(
+                {"message": "Account deleted successfully."},
+                status=status.HTTP_204_NO_CONTENT
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
