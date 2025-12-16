@@ -237,3 +237,12 @@ class ChangeEmailSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         raise NotImplementedError()
+
+class DeleteAccountSerializer(serializers.Serializer):
+    password = serializers.CharField(required=True)
+
+    def validate_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Incorrect password.")
+        return value
