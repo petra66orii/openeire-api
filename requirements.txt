@@ -1,0 +1,26 @@
+# Core Django & API
+Django==4.2.17
+djangorestframework==3.16.0
+djangorestframework_simplejwt==5.5.1
+django-cors-headers==4.9.0
+
+# Database & Utilities
+psycopg2-binary==2.9.10
+python-decouple==3.8
+python-dotenv==1.1.1
+django-countries==7.6.1  # Used in your Order model [cite: 416]
+
+# Image Handling
+Pillow==10.2.0  # Essential for ImageFields [cite: 307]
+
+# HTTP Requests (likely for Printful/Stripe APIs)
+requests==2.31.0
+urllib3==2.2.1
+
+# Rich Text Editor
+# Note: Your freeze list has ckeditor, but your status report mentioned Summernote.
+# If you are using CKEditor, keep this line. If Summernote, replace it.
+django-ckeditor==6.7.3
+
+# Server (Needed for Render/Production)
+gunicorn  # Highly recommended to add this now
