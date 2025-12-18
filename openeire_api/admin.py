@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.db.models import Sum, Count
 from checkout.models import Order
+from django.contrib.sites.models import Site
+from allauth.socialaccount.models import SocialApp, SocialAccount, SocialToken
 
 class CustomAdminSite(admin.AdminSite):
     def index(self, request, extra_context=None):
@@ -36,3 +38,8 @@ class CustomAdminSite(admin.AdminSite):
 
 # Create an instance of our custom admin site
 custom_admin_site = CustomAdminSite(name='customadmin')
+
+custom_admin_site.register(Site)
+custom_admin_site.register(SocialApp)
+custom_admin_site.register(SocialAccount)
+custom_admin_site.register(SocialToken)
