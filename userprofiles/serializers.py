@@ -77,31 +77,25 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'country',
         )
 
-def update(self, instance, validated_data):
+    def update(self, instance, validated_data):
         """
         Custom update method to handle nested User object and UserProfile.
         """
+        # 1. Pop the nested 'user' dictionary entirely.
+        # This prevents the 'dotted-source' error in the default update method.
+        user_data = validated_data.pop('user', {})
 
-        # Get the User object
+        # 2. Update the User model manually
         user = instance.user
         
-        # Check for user data being sent from the frontend
-        user.username = validated_data.get('username', user.username)
-        user.email = validated_data.get('email', user.email)
-        user.first_name = validated_data.get('first_name', user.first_name)
-        user.last_name = validated_data.get('last_name', user.last_name)
+        # Loop through whatever user fields were sent (username, email, etc.)
+        for attr, value in user_data.items():
+            setattr(user, attr, value)
+        
         user.save()
 
-        # Update UserProfile fields
-        instance.default_phone_number = validated_data.get('default_phone_number', instance.default_phone_number)
-        instance.default_street_address1 = validated_data.get('default_street_address1', instance.default_street_address1)
-        instance.default_street_address2 = validated_data.get('default_street_address2', instance.default_street_address2)
-        instance.default_town = validated_data.get('default_town', instance.default_town)
-        instance.default_county = validated_data.get('default_county', instance.default_county)
-        instance.default_postcode = validated_data.get('default_postcode', instance.default_postcode)
-        instance.default_country = validated_data.get('default_country', instance.default_country)
-        # instance.save() is called by super().update()
-
+        # 3. Update UserProfile fields using the default Django logic
+        # Since 'user' data is gone from validated_data, this won't crash.
         return super().update(instance, validated_data)
 
 # --- (Password Reset Serializers remain the same) ---
