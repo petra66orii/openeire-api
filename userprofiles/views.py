@@ -7,6 +7,7 @@ from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+from django_countries import countries
 from .serializers import UserSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
@@ -288,3 +289,17 @@ class GoogleLogin(SocialLoginView):
         if response.status_code != 200:
              print(f"❌ FAILED: {response.data}")
         return response
+
+class CountryListView(APIView):
+    """
+    Returns a list of all countries for the frontend dropdown.
+    """
+    permission_classes = [AllowAny] # Allow anyone to see the country list
+
+    def get(self, request):
+        # countries is an iterator of (code, name) tuples
+        country_list = [
+            {'code': code, 'name': name} 
+            for code, name in list(countries)
+        ]
+        return Response(country_list)

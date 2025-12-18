@@ -11,6 +11,7 @@ from .views import (
     ChangePasswordView,
     ChangeEmailView,
     DeleteAccountView,
+    CountryListView,
     )
 
 urlpatterns = [
@@ -25,4 +26,5 @@ urlpatterns = [
     path('email/change/', ChangeEmailView.as_view(), name='auth_email_change'),
     path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('delete/', DeleteAccountView.as_view(), name='delete_account'),
+    path('countries/', CountryListView.as_view(), name='country-list'),
 ]
