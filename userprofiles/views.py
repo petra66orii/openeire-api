@@ -11,6 +11,9 @@ from .serializers import UserSerializer, PasswordResetRequestSerializer, Passwor
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
+from allauth.socialaccount.providers.oauth2.client import OAuth2Client
+from dj_rest_auth.registration.views import SocialLoginView
 from .models import UserProfile
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers import (
@@ -272,3 +275,16 @@ class DeleteAccountView(generics.GenericAPIView):
                 status=status.HTTP_204_NO_CONTENT
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class GoogleLogin(SocialLoginView):
+    adapter_class = GoogleOAuth2Adapter
+    callback_url = "postmessage" 
+    client_class = OAuth2Client
+
+    def post(self, request, *args, **kwargs):
+        print("--- GOOGLE LOGIN DEBUG ---")
+        print(f"Request Data: {request.data}")
+        response = super().post(request, *args, **kwargs)
+        if response.status_code != 200:
+             print(f"❌ FAILED: {response.data}")
+        return response
