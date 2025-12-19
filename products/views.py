@@ -4,7 +4,7 @@ from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny 
-from .models import Photo, Video, Product, ProductReview
+from .models import Photo, Video, ProductVariant, ProductReview
 from django.http import Http404
 from django.contrib.contenttypes.models import ContentType
 from .serializers import (
@@ -40,7 +40,7 @@ class GalleryListView(generics.ListAPIView):
 
         photos = Photo.objects.annotate(display_price=Coalesce('price_hd', 0))
         videos = Video.objects.annotate(display_price=Coalesce('price_hd', 0))
-        products = Product.objects.annotate(display_price=Coalesce('price', 0))
+        products = ProductVariant.objects.annotate(display_price=Coalesce('price', 0))
 
         if sort_key == 'price_asc':
             photos = photos.order_by('display_price')
@@ -59,7 +59,7 @@ class GalleryListView(generics.ListAPIView):
         # Start with the base querysets
         photos = Photo.objects.all()
         videos = Video.objects.all()
-        products = Product.objects.all()
+        products = ProductVariant.objects.all()
 
         if search_term:
             # Create a query that searches title, description, and tags
@@ -131,7 +131,7 @@ class VideoDetailView(generics.RetrieveAPIView):
     permission_classes = [AllowAny]
 
 class ProductDetailView(generics.RetrieveAPIView):
-    queryset = Product.objects.all()
+    queryset = ProductVariant.objects.all()
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
 
@@ -185,7 +185,7 @@ class ProductReviewListCreateView(generics.ListCreateAPIView): # <-- Changed to 
         product_type_str = self.kwargs.get('product_type')
         product_pk = self.kwargs.get('pk')
         
-        model_map = {'photo': Photo, 'video': Video, 'product': Product}
+        model_map = {'photo': Photo, 'video': Video, 'product': ProductVariant}
         model_class = model_map.get(product_type_str)
         
         if not model_class:

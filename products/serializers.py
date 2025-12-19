@@ -1,8 +1,30 @@
 from rest_framework import serializers
-from .models import Photo, Video, Product, ProductReview
+from .models import Photo, Video, ProductVariant, ProductReview
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Avg, Count
+from django.db.models import Avg
 
+# 1. Helper Serializer for Variants (Nested inside Photo)
+class ProductVariantSerializer(serializers.ModelSerializer):
+    """
+    Serializes the physical options (Size/Material/Price).
+    Includes 'display' fields for human-readable labels in the UI.
+    """
+    material_display = serializers.CharField(source='get_material_display', read_only=True)
+    size_display = serializers.CharField(source='get_size_display', read_only=True)
+
+    class Meta:
+        model = ProductVariant
+        fields = (
+            'id', 
+            'material', 
+            'material_display', 
+            'size', 
+            'size_display', 
+            'price', 
+            'sku'
+        )
+
+# 2. List Serializers (For catalog pages)
 class PhotoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
 
@@ -20,17 +42,26 @@ class VideoListSerializer(serializers.ModelSerializer):
 
 
 class ProductListSerializer(serializers.ModelSerializer):
+    """
+    Used if you want to list specific physical variants directly.
+    """
     product_type = serializers.CharField(default='physical', read_only=True)
+    # Fetch title/image from the parent Photo
     title = serializers.CharField(source='photo.title', read_only=True)
     preview_image = serializers.ImageField(source='photo.preview_image', read_only=True)
 
     class Meta:
-        model = Product
+        model = ProductVariant
         fields = ('id', 'title', 'preview_image', 'price', 'product_type', 'material', 'size')
 
 
+# 3. Detail Serializers (For single product pages)
 class PhotoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
+    
+    # 👇 The Magic: This sends the list of physical options to the frontend
+    variants = ProductVariantSerializer(many=True, read_only=True)
+    
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
     
@@ -39,7 +70,7 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'title', 'description', 'collection', 'preview_image', 
             'high_res_file', 'price_hd', 'price_4k', 'tags', 'created_at',
-            'product_type', 'average_rating', 'review_count'
+            'product_type', 'variants', 'average_rating', 'review_count'
         )
 
     def get_average_rating(self, obj):
@@ -48,7 +79,6 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
             object_id=obj.pk,
             approved=True
         )
-        # Use the correct key 'rating__avg' and handle None if no reviews exist
         avg = reviews.aggregate(Avg('rating'))['rating__avg']
         return round(avg, 2) if avg is not None else 0
     
@@ -58,6 +88,7 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
             object_id=obj.pk,
             approved=True
         ).count()
+
 
 class VideoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
@@ -88,20 +119,26 @@ class VideoDetailSerializer(serializers.ModelSerializer):
             approved=True
         ).count()
 
+
 class ProductDetailSerializer(serializers.ModelSerializer):
+    """
+    Serializer for a specific variant (e.g. A4 Canvas of Sunset).
+    Useful if you link directly to a specific physical item.
+    """
     photo = PhotoDetailSerializer(read_only=True) 
     product_type = serializers.CharField(default='physical', read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
 
     class Meta:
-        model = Product
+        model = ProductVariant
         fields = (
             'id', 'photo', 'material', 'size', 'price', 'sku', 'product_type',
             'average_rating', 'review_count'
         )
 
     def get_average_rating(self, obj):
+        # Reviews are likely attached to the Parent Photo, but if attached to variant:
         reviews = ProductReview.objects.filter(
             content_type=ContentType.objects.get_for_model(obj),
             object_id=obj.pk,
@@ -117,10 +154,9 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             approved=True
         ).count()
 
+
+# 4. Review Serializer
 class ProductReviewSerializer(serializers.ModelSerializer):
-    """
-    Serializer for creating a product review.
-    """
     user = serializers.ReadOnlyField(source='user.username')
 
     class Meta:
@@ -129,10 +165,6 @@ class ProductReviewSerializer(serializers.ModelSerializer):
         read_only_fields = ['user', 'created_at']
 
     def validate(self, data):
-        """
-        Check that the user has not already reviewed this product.
-        """
-        # The product object is passed in the context from the view
         product = self.context['product']
         user = self.context['request'].user
         

@@ -1,29 +1,39 @@
 from django.contrib import admin
-from .models import Photo, Video, Product, ProductReview
+from .models import Photo, Video, ProductVariant, ProductReview
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
 
-#@admin.register(Photo)
+# 1. Create an Inline for Variants
+class ProductVariantInline(admin.TabularInline):
+    model = ProductVariant
+    extra = 1  # Show 1 empty row by default
+    fields = ('material', 'size', 'price', 'sku')
+
+# @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
     list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
     list_filter = ('collection',)
     search_fields = ('title', 'tags', 'description')
+    
+    # 👇 Connect the Inline here
+    inlines = [ProductVariantInline]
 
-#@admin.register(Video)
+# @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):
     list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
     list_filter = ('collection',)
     search_fields = ('title', 'tags', 'description')
 
-#@admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
-    list_display = ('__str__', 'material', 'size', 'price')
+# @admin.register(ProductVariant)
+class ProductVariantAdmin(admin.ModelAdmin):
+    # Updated to show parent Photo and SKU
+    list_display = ('photo', 'material', 'size', 'price', 'sku')
     list_filter = ('material', 'size')
-    search_fields = ('photo__title',)
+    search_fields = ('photo__title', 'sku')
+    ordering = ('photo', 'material', 'size')
 
-# Register ProductReview with custom Admin options
-#@admin.register(ProductReview)
+# @admin.register(ProductReview)
 class ProductReviewAdmin(admin.ModelAdmin):
     # We add 'comment_snippet' to the list of displayed fields
     list_display = ('product_link', 'user', 'rating', 'comment_snippet', 'approved', 'created_at')
@@ -39,9 +49,11 @@ class ProductReviewAdmin(admin.ModelAdmin):
                 f'admin:{content_type.app_label}_{content_type.model}_change',
                 args=[obj.object_id]
             )
-            return format_html('<a href="{}">{}</a>', url, obj.product.title)
+            # Safe check to display title if it exists
+            title = getattr(obj.product, 'title', str(obj.product))
+            return format_html('<a href="{}">{}</a>', url, title)
         return "N/A"
-    product_link.short_description = 'Product'
+    product_link.short_description = 'ProductVariant'
 
     # This method creates a short preview of the comment
     def comment_snippet(self, obj):
@@ -60,5 +72,5 @@ class ProductReviewAdmin(admin.ModelAdmin):
 
 custom_admin_site.register(Photo, PhotoAdmin)
 custom_admin_site.register(Video, VideoAdmin)
-custom_admin_site.register(Product, ProductAdmin)
+custom_admin_site.register(ProductVariant, ProductVariantAdmin)
 custom_admin_site.register(ProductReview, ProductReviewAdmin)
