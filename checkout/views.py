@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
-from products.models import Photo, Video, Product
+from products.models import Photo, Video, ProductVariant
 from userprofiles.models import UserProfile
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
@@ -27,7 +27,7 @@ class CreatePaymentIntentView(APIView):
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
         
         total = 0
-        model_map = {'photo': Photo, 'video': Video, 'physical': Product}
+        model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
 
         try:
             for item in cart:
