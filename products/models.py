@@ -49,10 +49,12 @@ class ProductVariant(models.Model):
     
     # Prodigi Material Codes (Expanded for realism)
     MATERIAL_CHOICES = [
-        ('matte', 'Fine Art Print (Matte)'),
-        ('gloss', 'Fine Art Print (Gloss)'),
-        ('canvas', 'Premium Canvas'),
-        ('framed', 'Framed Fine Art Print'),
+        ('matte', 'Fine Art Paper (Matte)'),
+        ('c-type', 'C-Type Silver Halide'),
+        ('canvas', 'Eco Canvas'),
+        ('etching', 'Hahnemuhle German Etching'),
+        ('photo-rag', 'Hahnemuhle Photo Rag'),
+        ('lustre', 'Photo Art Lustre Paper'),
     ]
 
     # Prodigi/Standard Sizes
@@ -86,10 +88,12 @@ class PrintTemplate(models.Model):
     Example: 'A4 Canvas', Price: 50.00, SKU Suffix: 'CAN-A4'
     """
     MATERIAL_CHOICES = [
-        ('matte', 'Fine Art Print (Matte)'),
-        ('gloss', 'Fine Art Print (Gloss)'),
-        ('canvas', 'Premium Canvas'),
-        ('framed', 'Framed Fine Art Print'),
+        ('matte', 'Fine Art Paper (Matte)'),
+        ('c-type', 'C-Type Silver Halide'),
+        ('canvas', 'Eco Canvas'),
+        ('etching', 'Hahnemuhle German Etching'),
+        ('photo-rag', 'Hahnemuhle Photo Rag'),
+        ('lustre', 'Photo Art Lustre Paper'),
     ]
 
     SIZE_CHOICES = [
