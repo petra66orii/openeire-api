@@ -1,5 +1,5 @@
 from rest_framework import generics
-from django.db.models import Q
+from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -92,15 +92,33 @@ class GalleryListView(generics.ListAPIView):
             for video in videos:
                 queryset.append({'item': video, 'serializer': VideoListSerializer(video)})
         elif product_type == 'physical':
-            for product in products:
-                queryset.append({'item': product, 'serializer': ProductListSerializer(product)})
-        else: # All products
-            for photo in photos:
+            has_variants = ProductVariant.objects.filter(photo=OuterRef('pk'))
+            physical_photos = Photo.objects.annotate(
+                has_physical=Exists(has_variants),
+                starting_price=Min('variants__price') 
+            ).filter(has_physical=True)
+
+            if collection and collection != 'all':
+                physical_photos = physical_photos.filter(collection=collection)
+            
+            if search_term:
+                physical_photos = physical_photos.filter(
+                    Q(title__icontains=search_term) |
+                    Q(description__icontains=search_term) |
+                    Q(tags__icontains=search_term)
+                )
+
+            if sort_key == 'price_asc':
+                physical_photos = physical_photos.order_by('starting_price')
+            elif sort_key == 'price_desc':
+                physical_photos = physical_photos.order_by('-starting_price')
+            else:
+                physical_photos = physical_photos.order_by('-created_at')
+
+            for photo in physical_photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
-            for video in videos:
-                queryset.append({'item': video, 'serializer': VideoListSerializer(video)})
-            for product in products:
-                queryset.append({'item': product, 'serializer': ProductListSerializer(product)})
+            
+            # --- END OF NEW LOGIC ---
         
         return queryset
 

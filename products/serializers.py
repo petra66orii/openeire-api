@@ -26,11 +26,12 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
 # 2. List Serializers (For catalog pages)
 class PhotoListSerializer(serializers.ModelSerializer):
-    product_type = serializers.CharField(default='photo', read_only=True)
+    product_type = serializers.CharField(default='physical', read_only=True)
+    starting_price = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
 
     class Meta:
         model = Photo
-        fields = ('id', 'title', 'preview_image', 'price_hd', 'product_type')
+        fields = ('id', 'title', 'preview_image', 'price_hd', 'product_type', 'starting_price')
 
 
 class VideoListSerializer(serializers.ModelSerializer):
@@ -122,19 +123,21 @@ class VideoDetailSerializer(serializers.ModelSerializer):
 
 class ProductDetailSerializer(serializers.ModelSerializer):
     """
-    Serializer for a specific variant (e.g. A4 Canvas of Sunset).
-    Useful if you link directly to a specific physical item.
+    Serializer for a specific variant (e.g. A4 Canvas).
     """
     photo = PhotoDetailSerializer(read_only=True) 
     product_type = serializers.CharField(default='physical', read_only=True)
+    title = serializers.CharField(source='photo.title', read_only=True)
+    description = serializers.CharField(source='photo.description', read_only=True)
+    variants = ProductVariantSerializer(source='photo.variants', many=True, read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
         fields = (
-            'id', 'photo', 'material', 'size', 'price', 'sku', 'product_type',
-            'average_rating', 'review_count'
+            'id', 'photo', 'title', 'description', 'material', 'size', 'price', 'sku', 
+            'product_type', 'variants', 'average_rating', 'review_count'
         )
 
     def get_average_rating(self, obj):
@@ -154,8 +157,6 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             approved=True
         ).count()
 
-
-# 4. Review Serializer
 class ProductReviewSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='user.username')
 

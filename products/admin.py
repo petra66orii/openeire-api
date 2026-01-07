@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Photo, Video, ProductVariant, ProductReview
+from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
@@ -18,12 +18,39 @@ class PhotoAdmin(admin.ModelAdmin):
     
     # 👇 Connect the Inline here
     inlines = [ProductVariantInline]
+    actions = ['regenerate_variants']
+
+    @admin.action(description="Generate missing variants from Templates")
+    def regenerate_variants(self, request, queryset):
+        templates = PrintTemplate.objects.filter(is_active=True)
+        count = 0
+        for photo in queryset:
+            for t in templates:
+                # Check if it exists to avoid duplicates
+                obj, created = ProductVariant.objects.get_or_create(
+                    photo=photo,
+                    material=t.material,
+                    size=t.size,
+                    defaults={
+                        'price': t.base_price,
+                        'sku': f"PHOTO-{photo.id}-{t.sku_suffix}"
+                    }
+                )
+                if created:
+                    count += 1
+        self.message_user(request, f"Created {count} new variants.")
 
 # @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):
     list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
     list_filter = ('collection',)
     search_fields = ('title', 'tags', 'description')
+
+# @admin.register(PrintTemplate)
+class PrintTemplateAdmin(admin.ModelAdmin):
+    list_display = ('material', 'size', 'base_price', 'sku_suffix', 'is_active')
+    list_filter = ('material', 'is_active')
+    list_editable = ('base_price', 'is_active')
 
 # @admin.register(ProductVariant)
 class ProductVariantAdmin(admin.ModelAdmin):
@@ -74,3 +101,4 @@ custom_admin_site.register(Photo, PhotoAdmin)
 custom_admin_site.register(Video, VideoAdmin)
 custom_admin_site.register(ProductVariant, ProductVariantAdmin)
 custom_admin_site.register(ProductReview, ProductReviewAdmin)
+custom_admin_site.register(PrintTemplate, PrintTemplateAdmin)
