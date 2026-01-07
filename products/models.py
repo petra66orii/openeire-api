@@ -177,3 +177,31 @@ class ProductReview(models.Model):
 
     def __str__(self):
         return f'Review by {self.user.username}'
+    
+
+@receiver(post_save, sender=Photo)
+def generate_variants_for_photo(sender, instance, created, **kwargs):
+    """
+    Automatically create ProductVariants for a new Photo based on active PrintTemplates.
+    """
+    if created:
+        templates = PrintTemplate.objects.filter(is_active=True)
+        
+        variants_to_create = []
+        for t in templates:
+            # Generate a unique SKU: "PHOTO-{ID}-{SUFFIX}"
+            # e.g. "PHOTO-25-CAN-A4"
+            sku = f"PHOTO-{instance.id}-{t.sku_suffix}"
+            
+            variants_to_create.append(
+                ProductVariant(
+                    photo=instance,
+                    material=t.material,
+                    size=t.size,
+                    price=t.base_price,
+                    sku=sku
+                )
+            )
+        
+        if variants_to_create:
+            ProductVariant.objects.bulk_create(variants_to_create)
