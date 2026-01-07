@@ -1,4 +1,6 @@
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
@@ -64,24 +66,93 @@ class ProductVariant(models.Model):
         ('24x36', '24x36"'),
     ]
 
-    # Link back to the parent Photo
-    # related_name='variants' allows us to say: photo.variants.all()
     photo = models.ForeignKey(Photo, on_delete=models.CASCADE, related_name="variants")
-    
     material = models.CharField(max_length=20, choices=MATERIAL_CHOICES)
     size = models.CharField(max_length=20, choices=SIZE_CHOICES)
     price = models.DecimalField(max_digits=6, decimal_places=2)
-    
-    # Critical for Prodigi Automation
-    sku = models.CharField(max_length=254, null=True, blank=True, help_text="Prodigi SKU (e.g. GLOBAL-CAN-12x16)")
+    sku = models.CharField(max_length=254, null=True, blank=True, help_text="Internal SKU (e.g. PHOTO-1-CAN-A4)")
+    prodigi_sku = models.CharField(max_length=50, blank=True, null=True, help_text="Prodigi SKU (e.g. GLOBAL-CAN-A4)")
 
     class Meta:
-        # Prevent creating the exact same variant twice for one photo
         unique_together = ('photo', 'material', 'size')
         ordering = ['material', 'size']
 
     def __str__(self):
         return f'{self.get_material_display()} - {self.get_size_display()} ({self.photo.title})'
+
+class PrintTemplate(models.Model):
+    """
+    Defines a standard variation that should exist for ALL photos.
+    Example: 'A4 Canvas', Price: 50.00, SKU Suffix: 'CAN-A4'
+    """
+    MATERIAL_CHOICES = [
+        ('matte', 'Fine Art Print (Matte)'),
+        ('gloss', 'Fine Art Print (Gloss)'),
+        ('canvas', 'Premium Canvas'),
+        ('framed', 'Framed Fine Art Print'),
+    ]
+
+    SIZE_CHOICES = [
+        ('A4', 'A4 (210x297mm)'),
+        ('A3', 'A3 (297x420mm)'),
+        ('A2', 'A2 (420x594mm)'),
+        ('12x16', '12x16"'),
+        ('16x20', '16x20"'),
+        ('18x24', '18x24"'),
+        ('24x36', '24x36"'),
+    ]
+
+    material = models.CharField(max_length=20, choices=MATERIAL_CHOICES)
+    size = models.CharField(max_length=20, choices=SIZE_CHOICES)
+    base_price = models.DecimalField(max_digits=6, decimal_places=2, help_text="Default price")
+    sku_suffix = models.CharField(max_length=50, help_text="Internal Suffix e.g. 'CAN-A4'")
+    
+    # 👇 NEW: Store the Prodigi mapping here
+    prodigi_sku = models.CharField(
+        max_length=50, 
+        blank=True, 
+        help_text="Prodigi Product Code (e.g. 'GLOBAL-CAN-A4')"
+    )
+    prodigi_shipping_method = models.CharField(
+        max_length=50,
+        default="Budget",
+        help_text="Shipping tier (Budget, Standard, Express)"
+    )
+    
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ('material', 'size')
+        ordering = ['material', 'size']
+
+    def __str__(self):
+        return f"TEMPLATE: {self.get_material_display()} - {self.get_size_display()}"
+
+
+
+@receiver(post_save, sender=Photo)
+def generate_variants_for_photo(sender, instance, created, **kwargs):
+    if created:
+        templates = PrintTemplate.objects.filter(is_active=True)
+        
+        variants_to_create = []
+        for t in templates:
+            # Internal SKU
+            sku = f"PHOTO-{instance.id}-{t.sku_suffix}"
+            
+            variants_to_create.append(
+                ProductVariant(
+                    photo=instance,
+                    material=t.material,
+                    size=t.size,
+                    price=t.base_price,
+                    sku=sku,
+                    prodigi_sku=t.prodigi_sku  # 👈 Copy from Template to Variant
+                )
+            )
+        
+        if variants_to_create:
+            ProductVariant.objects.bulk_create(variants_to_create)
 
 class ProductReview(models.Model):
     """
