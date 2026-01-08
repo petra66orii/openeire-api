@@ -118,7 +118,6 @@ class GalleryListView(generics.ListAPIView):
             for photo in physical_photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
             
-            # --- END OF NEW LOGIC ---
         
         return queryset
 

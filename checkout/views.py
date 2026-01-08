@@ -13,6 +13,8 @@ import json
 
 from .serializers import OrderSerializer, OrderHistoryListSerializer
 
+from .prodigi import create_prodigi_order 
+
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
@@ -52,26 +54,28 @@ class CreatePaymentIntentView(APIView):
         if shipping_details:
             customer_email = shipping_details.get('email')
         
-        # Fallback if no email (e.g., guest just loaded)
         if not customer_email and request.user.is_authenticated:
              customer_email = request.user.email
 
         try:
             metadata = {
-                'cart': json.dumps(cart), # The cart is already the simplified version
-                'username': request.user.username if request.user.is_authenticated else 'Guest'
+                'cart': json.dumps(cart),
+                'username': request.user.username if request.user.is_authenticated else 'Guest',
+                'save_info': str(request.data.get('save_info', False)).lower() # Ensure this is passed!
             }
 
             intent = stripe.PaymentIntent.create(
                 amount=amount_in_cents,
                 currency='eur',
                 automatic_payment_methods={'enabled': True},
-                metadata=metadata
+                metadata=metadata,
+                receipt_email=customer_email 
             )
             
             return Response({'clientSecret': intent.client_secret}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class StripeWebhookView(APIView):
     permission_classes = [AllowAny]
@@ -99,12 +103,12 @@ class StripeWebhookView(APIView):
 
             # 2. Determine the email
             order_email = payment_intent.receipt_email
-            if not order_email or not '@' in order_email:
+            if not order_email or '@' not in order_email:
                 order_email = metadata.get('username')
-                if not order_email or not '@' in order_email:
+                if not order_email or '@' not in order_email:
                     order_email = "guest@example.com"
 
-            # 3. Create the order_data dictionary FIRST
+            # 3. Create the order_data dictionary
             order_data = {
                 'stripe_pid': payment_intent.id,
                 'first_name': shipping_details.get('name', ''),
@@ -119,14 +123,14 @@ class StripeWebhookView(APIView):
                 'items': json.loads(cart_items_str),
             }
 
-            # 4. NOW, check for the logged-in user and modify the dictionary
+            # 4. Check for User Profile
             username = metadata.get('username')
             save_info = metadata.get('save_info') == 'true'
 
             if username and username != 'Guest':
                 try:
                     profile = UserProfile.objects.get(user__username=username)
-                    order_data['user_profile'] = profile.id # <-- This is now safe
+                    order_data['user_profile'] = profile.id
                     
                     if save_info:
                         profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
@@ -141,92 +145,20 @@ class StripeWebhookView(APIView):
                 except UserProfile.DoesNotExist:
                     pass
 
-            # 5. Validate and save
+            # 5. Validate and Save
             serializer = OrderSerializer(data=order_data)
             if serializer.is_valid():
                 order = serializer.save()
                 print(f"✅ Order {order.order_number} created successfully. Email: {order.email}")
-            else:
-                print(f"❌ Error creating order: {serializer.errors}")
-                return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        
-        return Response(status=status.HTTP_200_OK)
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        webhook_secret = settings.STRIPE_WEBHOOK_SECRET
-        payload = request.body
-        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
-
-        try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except (ValueError, stripe.error.SignatureVerificationError) as e:
-            print(f"Webhook signature verification failed: {e}")
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        if event['type'] == 'payment_intent.succeeded':
-            payment_intent = event['data']['object']
-            metadata = payment_intent.get('metadata', {})
-            
-            metadata = payment_intent.get('metadata', {})
-            cart_items_str = metadata.get('cart', '[]')
-            
-            shipping_details = payment_intent.get('shipping') or {}
-            address_details = shipping_details.get('address') or {}
-
-            # Try to get email from payment_intent.receipt_email, then metadata, then provide a placeholder
-            order_email = payment_intent.receipt_email # This might be None for test cards
-            if not order_email or not '@' in order_email: # Basic check for validity
-                order_email = metadata.get('username') # If logged in
-                if not order_email or not '@' in order_email:
-                    order_email = "guest@example.com" # Fallback for guest or invalid test data
-
-            username = metadata.get('username')
-            save_info = metadata.get('save_info') == 'true'
-
-            if username and username != 'Guest':
+                
                 try:
-                    profile = UserProfile.objects.get(user__username=username)
-                    order_data['user_profile'] = profile.id
-                    
-                    # If user checked "Save Info", update their profile
-                    if save_info:
-                        profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
-                        profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
-                        profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
-                        profile.default_town = address_details.get('city', profile.default_town)
-                        profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
-                        profile.default_county = address_details.get('state', profile.default_county)
-                        profile.default_country = address_details.get('country', profile.default_country)
-                        profile.save()
+                    print(f"🏭 Sending Order {order.order_number} to Prodigi...")
+                    create_prodigi_order(order)
+                    print(f"🚀 Sent to Prodigi successfully!")
+                except Exception as e:
+                    print(f"❌ PRODIGI ERROR: Failed to fulfill order {order.order_number}: {e}")
+                    # TODO: Add email alert here so you know if fulfillment fails
 
-                except UserProfile.DoesNotExist:
-                    pass
-
-            order_data = {
-                'stripe_pid': payment_intent.id,
-                'first_name': shipping_details.get('name', ''),
-                'email': order_email,
-                'phone_number': shipping_details.get('phone', ''),
-                'country': address_details.get('country', ''),
-                'town': address_details.get('city', ''),
-                'street_address1': address_details.get('line1', ''),
-                'street_address2': address_details.get('line2', ''),
-                'postcode': address_details.get('postal_code', ''),
-                'county': address_details.get('state', ''),
-                'items': json.loads(cart_items_str),
-            }
-
-            username = metadata.get('username')
-            if username and username != 'Guest':
-                try:
-                    profile = UserProfile.objects.get(user__username=username)
-                    order_data['user_profile'] = profile.id
-                except UserProfile.DoesNotExist:
-                    pass
-
-            serializer = OrderSerializer(data=order_data)
-            if serializer.is_valid():
-                order = serializer.save()
-                print(f"✅ Order {order.order_number} created successfully. Email: {order.email}")
             else:
                 print(f"❌ Error creating order: {serializer.errors}")
                 # Return the errors so we can see them more clearly if needed
