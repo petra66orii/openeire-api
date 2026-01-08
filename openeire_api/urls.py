@@ -1,3 +1,4 @@
+import os
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
@@ -5,8 +6,10 @@ from django.conf.urls.static import static
 from .admin import custom_admin_site
 from userprofiles.views import GoogleLogin
 
+ADMIN_URL = os.getenv('DJANGO_ADMIN_URL', 'admin/')
+
 urlpatterns = [
-    path('admin/', custom_admin_site.urls),
+    path(ADMIN_URL, custom_admin_site.urls),
     path('accounts/', include('allauth.urls')),
     path('summernote/', include('django_summernote.urls')),
     path('api/auth/', include('userprofiles.urls')),
