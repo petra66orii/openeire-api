@@ -17,6 +17,51 @@ from .serializers import (
     ProductReviewSerializer
 )
 from rest_framework.permissions import IsAuthenticated
+from django.core.mail import send_mail
+from django.utils import timezone
+from rest_framework.views import APIView
+from rest_framework import status
+from .models import GalleryAccess
+from .permissions import IsDigitalGalleryAuthorized
+from django.conf import settings
+
+class RequestGalleryAccessView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        access_record = GalleryAccess.objects.create(email=email)
+
+        # Ensure EMAIL_HOST_USER is set in settings.py
+        send_mail(
+            subject="OpenEire Studios - Private Gallery Access",
+            message=f"Hello,\n\nHere is your access code for the Digital Stock Gallery:\n\n{access_record.access_code}\n\nValid for 30 days.",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+        return Response({"message": "Code sent"}, status=status.HTTP_200_OK)
+
+class VerifyGalleryAccessView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        code = request.data.get('access_code', '').upper().strip()
+        try:
+            access_record = GalleryAccess.objects.get(access_code=code)
+            if access_record.is_valid:
+                return Response({
+                    "message": "Access granted", 
+                    "expires_at": access_record.expires_at,
+                    "valid": True
+                })
+            else:
+                return Response({"error": "Code expired"}, status=status.HTTP_403_FORBIDDEN)
+        except GalleryAccess.DoesNotExist:
+            return Response({"error": "Invalid code"}, status=status.HTTP_404_NOT_FOUND)
 
 class CustomPagination(PageNumberPagination):
     page_size = 10 # Number of items per page
@@ -34,6 +79,16 @@ class GalleryListView(generics.ListAPIView):
     def get_queryset(self):
         queryset = []
         product_type = self.request.query_params.get('type')
+
+        if not product_type or product_type == 'all':
+            product_type = 'physical'
+
+        if product_type == 'digital':
+            checker = IsDigitalGalleryAuthorized()
+            if not checker.has_permission(self.request, self):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(checker.message)
+
         collection = self.request.query_params.get('collection')
         search_term = self.request.query_params.get('search')
         sort_key = self.request.query_params.get('sort')
@@ -123,21 +178,20 @@ class GalleryListView(generics.ListAPIView):
 
 
     def list(self, request, *args, **kwargs):
-        # get_queryset returns a list of dictionaries, each containing an item and its serializer
-        queryset_with_serializers = self.get_queryset()
-
-        # Extract just the serialized data
-        data = [item['serializer'].data for item in queryset_with_serializers]
-        
-        # Now, we manually apply pagination since our queryset is a combined list
-        page = self.paginate_queryset(data)
-        if page is not None:
-            return self.get_paginated_response(page)
-
-        return Response(data)
+            queryset_with_serializers = self.get_queryset()
+            data = [item['serializer'].data for item in queryset_with_serializers]
+            page = self.paginate_queryset(data)
+            if page is not None:
+                return self.get_paginated_response(page)
+            return Response(data)
     
 
-class PhotoDetailView(generics.RetrieveAPIView):
+class DigitalPhotoDetailView(generics.RetrieveAPIView):
+    queryset = Photo.objects.all()
+    serializer_class = PhotoDetailSerializer
+    permission_classes = [IsDigitalGalleryAuthorized]
+
+class PhysicalPhotoDetailView(generics.RetrieveAPIView):
     queryset = Photo.objects.all()
     serializer_class = PhotoDetailSerializer
     permission_classes = [AllowAny]
@@ -145,7 +199,7 @@ class PhotoDetailView(generics.RetrieveAPIView):
 class VideoDetailView(generics.RetrieveAPIView):
     queryset = Video.objects.all()
     serializer_class = VideoDetailSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsDigitalGalleryAuthorized]
 
 class ProductDetailView(generics.RetrieveAPIView):
     queryset = ProductVariant.objects.all()
