@@ -42,9 +42,25 @@ class PhotoAdmin(admin.ModelAdmin):
 
 # @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):
-    list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
-    list_filter = ('collection',)
-    search_fields = ('title', 'tags', 'description')
+    list_display = ('title', 'collection', 'resolution', 'frame_rate', 'price_hd')
+    list_filter = ('collection', 'resolution')
+    search_fields = ('title', 'description', 'tags')
+    
+    # Organizes the detail view nicely
+    fieldsets = (
+        ('General Info', {
+            'fields': ('title', 'description', 'collection', 'tags')
+        }),
+        ('Media', {
+            'fields': ('thumbnail_image', 'video_file')
+        }),
+        ('Technical Specs', {
+            'fields': ('duration', 'resolution', 'frame_rate')
+        }),
+        ('Pricing', {
+            'fields': ('price_hd', 'price_4k')
+        }),
+    )
 
 # @admin.register(PrintTemplate)
 class PrintTemplateAdmin(admin.ModelAdmin):

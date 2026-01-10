@@ -101,7 +101,8 @@ class VideoDetailSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'title', 'description', 'collection', 'thumbnail_image', 
             'video_file', 'price_hd', 'price_4k', 'tags', 'created_at',
-            'product_type', 'average_rating', 'review_count'
+            'product_type', 'average_rating', 'review_count',
+            'duration', 'resolution', 'frame_rate'
         )
     
     def get_average_rating(self, obj):
