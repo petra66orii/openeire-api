@@ -16,6 +16,7 @@ class UserProfile(models.Model):
     default_county = models.CharField(max_length=100, null=True, blank=True)
     default_postcode = models.CharField(max_length=20, null=True, blank=True)
     default_country = CountryField(blank=True, null=True)
+    can_access_gallery = models.BooleanField(default=False)
 
     def __str__(self):
         return self.user.username
