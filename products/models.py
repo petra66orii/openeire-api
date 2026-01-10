@@ -1,3 +1,6 @@
+import uuid
+from django.utils import timezone
+from datetime import timedelta
 from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -5,6 +8,32 @@ from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 
+class GalleryAccess(models.Model):
+    """
+    Stores temporary access codes for the Digital Gallery.
+    Codes are valid for 30 days.
+    """
+    email = models.EmailField()
+    access_code = models.CharField(max_length=8, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    def save(self, *args, **kwargs):
+        if not self.access_code:
+            # Generate a readable 8-char code (e.g., A1B2C3D4)
+            self.access_code = uuid.uuid4().hex[:8].upper()
+        if not self.expires_at:
+            # Set expiration to 30 days from now
+            self.expires_at = timezone.now() + timedelta(days=30)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_valid(self):
+        return timezone.now() < self.expires_at
+
+    def __str__(self):
+        return f"{self.email} ({self.access_code})"
+    
 class Photo(models.Model):
     """Model for the main design/photo asset."""
     title = models.CharField(max_length=254)
