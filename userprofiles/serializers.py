@@ -75,6 +75,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'default_county',
             'default_postcode',
             'country',
+            'can_access_gallery',
         )
 
     def update(self, instance, validated_data):
