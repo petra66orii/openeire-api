@@ -64,6 +64,19 @@ class Video(models.Model):
     video_file = models.FileField(upload_to="digital_products/videos/")
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
     price_4k = models.DecimalField(max_digits=6, decimal_places=2)
+    duration = models.PositiveIntegerField(help_text="Duration in seconds", null=True, blank=True)
+    resolution = models.CharField(
+        max_length=50, 
+        help_text="e.g. 3840x2160 (4K)", 
+        null=True, 
+        blank=True
+    )
+    frame_rate = models.CharField(
+        max_length=20, 
+        help_text="e.g. 24fps, 60fps", 
+        null=True, 
+        blank=True
+    )
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
