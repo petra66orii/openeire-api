@@ -60,18 +60,20 @@ class ProductListSerializer(serializers.ModelSerializer):
 class PhotoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
     
-    # 👇 The Magic: This sends the list of physical options to the frontend
+    # Existing Fields
     variants = ProductVariantSerializer(many=True, read_only=True)
-    
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
+    
+    related_products = serializers.SerializerMethodField()
     
     class Meta:
         model = Photo
         fields = (
             'id', 'title', 'description', 'collection', 'preview_image', 
             'high_res_file', 'price_hd', 'price_4k', 'tags', 'created_at',
-            'product_type', 'variants', 'average_rating', 'review_count'
+            'product_type', 'variants', 'average_rating', 'review_count',
+            'related_products'
         )
 
     def get_average_rating(self, obj):
@@ -90,11 +92,19 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
             approved=True
         ).count()
 
+    def get_related_products(self, obj):
+        # Filter by collection, exclude current photo, randomize order, limit to 4
+        qs = Photo.objects.filter(collection=obj.collection).exclude(id=obj.id).order_by('?')[:4]
+        # Reuse the existing List Serializer so the format matches your Grid Cards
+        return PhotoListSerializer(qs, many=True, context=self.context).data
+
 
 class VideoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
+    
+    related_products = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
@@ -102,7 +112,8 @@ class VideoDetailSerializer(serializers.ModelSerializer):
             'id', 'title', 'description', 'collection', 'thumbnail_image', 
             'video_file', 'price_hd', 'price_4k', 'tags', 'created_at',
             'product_type', 'average_rating', 'review_count',
-            'duration', 'resolution', 'frame_rate'
+            'duration', 'resolution', 'frame_rate',
+            'related_products'
         )
     
     def get_average_rating(self, obj):
@@ -120,6 +131,10 @@ class VideoDetailSerializer(serializers.ModelSerializer):
             object_id=obj.pk,
             approved=True
         ).count()
+        
+    def get_related_products(self, obj):
+        qs = Video.objects.filter(collection=obj.collection).exclude(id=obj.id).order_by('?')[:4]
+        return VideoListSerializer(qs, many=True, context=self.context).data
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
@@ -142,7 +157,6 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         )
 
     def get_average_rating(self, obj):
-        # Reviews are likely attached to the Parent Photo, but if attached to variant:
         reviews = ProductReview.objects.filter(
             content_type=ContentType.objects.get_for_model(obj),
             object_id=obj.pk,
