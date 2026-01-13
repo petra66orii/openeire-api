@@ -177,8 +177,8 @@ class ProductReviewSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ProductReview
-        fields = ['id', 'user', 'rating', 'comment', 'created_at']
-        read_only_fields = ['user', 'created_at']
+        fields = ['id', 'user', 'rating', 'comment', 'created_at', 'admin_reply']
+        read_only_fields = ['user', 'created_at', 'admin_reply']
 
     def validate(self, data):
         product = self.context['product']
