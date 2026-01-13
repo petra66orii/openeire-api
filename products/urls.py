@@ -7,10 +7,12 @@ from .views import (
     ProductDetailView,
     ProductReviewListCreateView,
     RequestGalleryAccessView,
-    VerifyGalleryAccessView
+    VerifyGalleryAccessView,
+    ShoppingBagRecommendationsView,
 )
 
 urlpatterns = [
+    path('products/recommendations/', ShoppingBagRecommendationsView.as_view(), name='bag-recommendations'),
     path('gallery-request/', RequestGalleryAccessView.as_view(), name='gallery_request'),
     path('gallery-verify/', VerifyGalleryAccessView.as_view(), name='gallery_verify'),
     path('gallery/', GalleryListView.as_view(), name='gallery_list'),
