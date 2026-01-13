@@ -263,3 +263,21 @@ class ProductReviewListCreateView(generics.ListCreateAPIView): # <-- Changed to 
             raise Http404("Invalid product type.")
         
         return generics.get_object_or_404(model_class.objects.all(), pk=product_pk)
+    
+class ShoppingBagRecommendationsView(APIView):
+    """
+    Returns 4 random photos to display as recommendations 
+    on the Shopping Bag / Cart page.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # 2. UPDATE THE QUERY
+        # We add .annotate(starting_price=Min('variants__price'))
+        # This calculates the lowest price from the 'ProductVariant' table
+        photos = Photo.objects.annotate(
+            starting_price=Min('variants__price')
+        ).order_by('?')[:4]
+        
+        serializer = PhotoListSerializer(photos, many=True)
+        return Response(serializer.data)
