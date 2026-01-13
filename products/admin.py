@@ -78,11 +78,26 @@ class ProductVariantAdmin(admin.ModelAdmin):
 
 # @admin.register(ProductReview)
 class ProductReviewAdmin(admin.ModelAdmin):
-    # We add 'comment_snippet' to the list of displayed fields
-    list_display = ('product_link', 'user', 'rating', 'comment_snippet', 'approved', 'created_at')
+# 1. Put 'id' first. This gives you a clear number to click to edit THE REVIEW.
+    list_display = ('id', 'user', 'product_link', 'rating', 'short_comment', 'approved', 'created_at')
+    
+    # 2. Explicitly tell Django: "Clicking the ID opens the review edit page"
+    list_display_links = ('id', 'short_comment')
+    
     list_filter = ('approved', 'rating')
     search_fields = ('comment', 'user__username')
+    
+    # 3. FORCE the 'admin_reply' field to appear in the edit form
+    fields = ('user', 'rating', 'comment', 'approved', 'admin_reply')
+    
+    # 4. Make these read-only so you don't accidentally change history
+    readonly_fields = ('user', 'rating', 'comment')
     actions = ['mark_as_approved', 'mark_as_unapproved']
+
+    # Helper to keep the list view clean
+    def short_comment(self, obj):
+        return obj.comment[:50] + "..." if len(obj.comment) > 50 else obj.comment
+    short_comment.short_description = "Comment"
 
     # This method creates the clickable link to the product
     def product_link(self, obj):
