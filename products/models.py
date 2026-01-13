@@ -216,6 +216,7 @@ class ProductReview(models.Model):
     comment = models.TextField(blank=True, null=True)
     approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    admin_reply = models.TextField(blank=True, null=True)
 
     class Meta:
         unique_together = ('content_type', 'object_id', 'user')
