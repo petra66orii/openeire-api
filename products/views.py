@@ -1,29 +1,30 @@
-from rest_framework import generics
+import os
+from django.shortcuts import get_object_or_404
+from django.core.exceptions import PermissionDenied
+from django.http import FileResponse, Http404
 from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
+from django.contrib.contenttypes.models import ContentType
+from django.core.mail import send_mail
+from django.utils import timezone
+from django.conf import settings
+from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny 
-from .models import Photo, Video, ProductVariant, ProductReview
-from django.http import Http404
-from django.contrib.contenttypes.models import ContentType
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.views import APIView
+from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess
+from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
     VideoListSerializer,
-    ProductListSerializer,
     PhotoDetailSerializer,
     VideoDetailSerializer,
     ProductDetailSerializer,
     ProductReviewSerializer
 )
-from rest_framework.permissions import IsAuthenticated
-from django.core.mail import send_mail
-from django.utils import timezone
-from rest_framework.views import APIView
-from rest_framework import status
-from .models import GalleryAccess
 from .permissions import IsDigitalGalleryAuthorized
-from django.conf import settings
+
 
 class RequestGalleryAccessView(APIView):
     permission_classes = [AllowAny]
@@ -206,7 +207,7 @@ class ProductDetailView(generics.RetrieveAPIView):
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
 
-class ProductReviewListCreateView(generics.ListCreateAPIView): # <-- Changed to ListCreateAPIView
+class ProductReviewListCreateView(generics.ListCreateAPIView):
     """
     API endpoint to list all APPROVED reviews for a specific product (GET)
     and allow an authenticated user to create a review (POST).
@@ -272,12 +273,71 @@ class ShoppingBagRecommendationsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        # 2. UPDATE THE QUERY
-        # We add .annotate(starting_price=Min('variants__price'))
-        # This calculates the lowest price from the 'ProductVariant' table
         photos = Photo.objects.annotate(
             starting_price=Min('variants__price')
         ).order_by('?')[:4]
         
         serializer = PhotoListSerializer(photos, many=True)
         return Response(serializer.data)
+
+class ProtectedDownloadView(APIView):
+    """
+    Securely serves the high-res file ONLY if the user has purchased it.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, product_type, product_id):
+        user = request.user
+        # 1. Map string (URL) to actual Model Class
+        model_map = {
+            'photo': Photo,
+            'video': Video
+        }
+        model_class = model_map.get(product_type)
+        if not model_class:
+            raise Http404("Invalid product type")
+
+        # 2. Determine ContentType for the GenericForeignKey lookup 
+        try:
+            content_type = ContentType.objects.get_for_model(model_class)
+        except:
+             raise Http404("Content Type not found")
+
+        # 3. VERIFY PURCHASE
+        has_purchased = OrderItem.objects.filter(
+            order__user_profile__user=user, # Link Order -> Profile -> User
+            content_type=content_type,      # Match the type (Photo vs Video)
+            object_id=product_id            # Match the specific ID
+        ).exists()
+
+        if not has_purchased:
+            # Allow Admin/Staff to bypass (useful for testing)
+            if not user.is_staff:
+                raise PermissionDenied("You have not purchased this item.")
+
+        # 4. Fetch the Product to get the file path
+        product = get_object_or_404(model_class, id=product_id)
+        
+        # Logic to get the correct file field
+        file_handle = None
+        if product_type == 'photo':
+            file_handle = product.high_res_file
+        elif product_type == 'video':
+
+            file_handle = product.video_file
+
+        if not file_handle:
+            raise Http404("File not attached to product")
+
+        file_path = file_handle.path
+
+        if not os.path.exists(file_path):
+            raise Http404("File on disk not found")
+        # 5. Serve the file as an attachment
+        response = FileResponse(open(file_path, 'rb'))
+        
+        # Set filename so the browser saves it nicely (e.g., "sunset.jpg")
+        filename = os.path.basename(file_path)
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        
+        return response
