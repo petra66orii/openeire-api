@@ -30,12 +30,15 @@ class CreatePaymentIntentView(APIView):
         
         total = 0
         model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
+        has_physical_items = False
 
         try:
             for item in cart:
                 product_id = item['product_id']
                 product_type = item['product_type']
                 quantity = item['quantity']
+                if product_type == 'physical':
+                    has_physical_items = True
                 
                 model_class = model_map.get(product_type)
                 if not model_class: continue
@@ -48,7 +51,11 @@ class CreatePaymentIntentView(APIView):
         except (KeyError, model_class.DoesNotExist) as e:
             return Response({"error": f"Invalid cart data provided: {e}"}, status=status.HTTP_400_BAD_REQUEST)
         
-        amount_in_cents = int(total * 100)
+        shipping_cost = 5.99 if has_physical_items else 0.00
+        
+        # Add shipping to total
+        grand_total = total + shipping_cost
+        amount_in_cents = int(grand_total * 100)
 
         customer_email = None
         if shipping_details:
@@ -61,7 +68,8 @@ class CreatePaymentIntentView(APIView):
             metadata = {
                 'cart': json.dumps(cart),
                 'username': request.user.username if request.user.is_authenticated else 'Guest',
-                'save_info': str(request.data.get('save_info', False)).lower() # Ensure this is passed!
+                'save_info': str(request.data.get('save_info', False)).lower(),
+                'shipping_cost': shipping_cost
             }
 
             intent = stripe.PaymentIntent.create(
@@ -101,6 +109,8 @@ class StripeWebhookView(APIView):
             shipping_details = payment_intent.get('shipping') or {}
             address_details = shipping_details.get('address') or {}
 
+            shipping_cost = float(metadata.get('shipping_cost', 0.00))
+
             # 2. Determine the email
             order_email = payment_intent.receipt_email
             if not order_email or '@' not in order_email:
@@ -121,6 +131,7 @@ class StripeWebhookView(APIView):
                 'postcode': address_details.get('postal_code', ''),
                 'county': address_details.get('state', ''),
                 'items': json.loads(cart_items_str),
+                'delivery_cost': shipping_cost,
             }
 
             # 4. Check for User Profile
@@ -152,12 +163,23 @@ class StripeWebhookView(APIView):
                 print(f"✅ Order {order.order_number} created successfully. Email: {order.email}")
                 
                 try:
-                    print(f"🏭 Sending Order {order.order_number} to Prodigi...")
-                    create_prodigi_order(order)
-                    print(f"🚀 Sent to Prodigi successfully!")
+                    has_physical_items = False
+                    for item in order.items.all():
+                        if item.content_type.model == 'productvariant':
+                            has_physical_items = True
+                            break
+                    
+                    if has_physical_items:
+                        # Only contact Prodigi if we actually have prints
+                        print(f"🏭 Sending Order {order.order_number} to Prodigi...")
+                        create_prodigi_order(order)
+                        print(f"🚀 Sent to Prodigi successfully!")
+                    else:
+                        # Digital-only order: Stay silent
+                        print(f"💾 Digital Order {order.order_number} detected. Skipping Prodigi fulfillment.")
+
                 except Exception as e:
                     print(f"❌ PRODIGI ERROR: Failed to fulfill order {order.order_number}: {e}")
-                    # TODO: Add email alert here so you know if fulfillment fails
 
             else:
                 print(f"❌ Error creating order: {serializer.errors}")
