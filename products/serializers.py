@@ -26,7 +26,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
 # 2. List Serializers (For catalog pages)
 class PhotoListSerializer(serializers.ModelSerializer):
-    product_type = serializers.CharField(default='physical', read_only=True)
+    product_type = serializers.CharField(default='photo', read_only=True)
     starting_price = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
 
     class Meta:
