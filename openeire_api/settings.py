@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'checkout',
     'blog',
     'home',
+    'taggit',
 ]
 
 SITE_ID = 1
