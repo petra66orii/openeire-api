@@ -1,18 +1,16 @@
-from django.conf import settings
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.permissions import AllowAny
-from products.models import Photo, Video, ProductVariant
-from userprofiles.models import UserProfile
-from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
-from .models import Order
 import stripe
 import json
-
+from django.conf import settings
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, generics
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from products.models import Photo, Video, ProductVariant
+from userprofiles.models import UserProfile
+from .models import Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer
-
 from .prodigi import create_prodigi_order 
 
 # Set the Stripe secret key
@@ -88,6 +86,25 @@ class CreatePaymentIntentView(APIView):
 class StripeWebhookView(APIView):
     permission_classes = [AllowAny]
 
+    def _send_confirmation_email(self, order):
+        """Send the user a confirmation email"""
+        cust_email = order.email
+        subject = render_to_string(
+            'checkout/confirmation_emails/confirmation_email_subject.txt',
+            {'order': order}
+        )
+        body = render_to_string(
+            'checkout/confirmation_emails/confirmation_email_body.txt',
+            {'order': order, 'contact_email': settings.DEFAULT_FROM_EMAIL}
+        )
+        
+        send_mail(
+            subject,
+            body,
+            settings.DEFAULT_FROM_EMAIL,
+            [cust_email]
+        )
+
     def post(self, request):
         stripe.api_key = settings.STRIPE_SECRET_KEY
         webhook_secret = settings.STRIPE_WEBHOOK_SECRET
@@ -161,6 +178,12 @@ class StripeWebhookView(APIView):
             if serializer.is_valid():
                 order = serializer.save()
                 print(f"✅ Order {order.order_number} created successfully. Email: {order.email}")
+
+                try:
+                    self._send_confirmation_email(order)
+                    print(f"📧 Confirmation email sent to {order.email}")
+                except Exception as e:
+                    print(f"❌ EMAIL ERROR: Could not send email to {order.email}: {e}")
                 
                 try:
                     has_physical_items = False
