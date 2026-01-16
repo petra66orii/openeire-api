@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils.text import slugify
+from taggit.managers import TaggableManager  # 👈 New Import
 
 class BlogPost(models.Model):
     """
@@ -17,12 +18,18 @@ class BlogPost(models.Model):
     status = models.IntegerField(choices=STATUS, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    tags = TaggableManager()
+    likes = models.ManyToManyField(User, related_name='blog_likes', blank=True)
 
     class Meta:
         ordering = ['-created_at']
 
     def __str__(self):
         return self.title
+
+    def number_of_likes(self):
+        """Helper to count likes"""
+        return self.likes.count()
 
     def save(self, *args, **kwargs):
         """
