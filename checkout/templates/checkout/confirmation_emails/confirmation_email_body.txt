@@ -1,0 +1,15 @@
+Thank you for your order, {{ order.first_name }}!
+
+This is a confirmation that your transaction was successful.
+
+Order Number: {{ order.order_number }}
+Order Date: {{ order.date }}
+Total: €{{ order.order_total }}
+
+You can view your order history and download any digital items by logging into your profile:
+https://openeire.online/profile
+
+If you have any questions, feel free to contact us at {{ contact_email }}.
+
+Best regards,
+OpenÉire Studios Team
