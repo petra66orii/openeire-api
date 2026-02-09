@@ -38,7 +38,7 @@ class Photo(models.Model):
     """Model for the main design/photo asset."""
     title = models.CharField(max_length=254)
     description = models.TextField()
-    collection = models.CharField(max_length=100, default='General')
+    collection = models.CharField(max_length=100)
     
     # Images
     preview_image = models.ImageField(upload_to="previews/photos/")
@@ -59,7 +59,7 @@ class Video(models.Model):
     """Model for digital video products"""
     title = models.CharField(max_length=254)
     description = models.TextField()
-    collection = models.CharField(max_length=100, default='General')
+    collection = models.CharField(max_length=100)
     thumbnail_image = models.ImageField(upload_to="previews/videos/")
     video_file = models.FileField(upload_to="digital_products/videos/")
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
