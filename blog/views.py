@@ -73,3 +73,16 @@ class CommentListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         post = get_object_or_404(BlogPost, slug=self.kwargs['slug'])
         serializer.save(user=self.request.user, post=post)
+
+
+class LikedPostsView(generics.ListAPIView):
+    """
+    API endpoint to list all blog posts liked by the authenticated user.
+    """
+    serializer_class = BlogPostListSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = CustomPagination
+
+    def get_queryset(self):
+        # Filter posts where the 'likes' field contains the current user
+        return BlogPost.objects.filter(likes=self.request.user).order_by('-created_at')
