@@ -70,100 +70,87 @@ class CustomPagination(PageNumberPagination):
     max_page_size = 100
 
 class GalleryListView(generics.ListAPIView):
-    """
-    API endpoint to list all photos, videos, and physical products.
-    Supports filtering by 'type' (digital, physical) and pagination.
-    """
     permission_classes = [AllowAny]
-    pagination_class = CustomPagination
+    # pagination_class = CustomPagination # Uncomment if you have this imported
 
     def get_queryset(self):
         queryset = []
+        
+        # 1. GET PARAMS
         product_type = self.request.query_params.get('type')
+        collection = self.request.query_params.get('collection')
+        search_term = self.request.query_params.get('search')
+        sort_key = self.request.query_params.get('sort')
 
+        # Default to physical if no type provided
         if not product_type or product_type == 'all':
             product_type = 'physical'
 
+        # Digital Gate Check
         if product_type == 'digital':
             checker = IsDigitalGalleryAuthorized()
             if not checker.has_permission(self.request, self):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied(checker.message)
 
-        collection = self.request.query_params.get('collection')
-        search_term = self.request.query_params.get('search')
-        sort_key = self.request.query_params.get('sort')
-
-        photos = Photo.objects.annotate(display_price=Coalesce('price_hd', 0))
-        videos = Video.objects.annotate(display_price=Coalesce('price_hd', 0))
-        products = ProductVariant.objects.annotate(display_price=Coalesce('price', 0))
-
-        if sort_key == 'price_asc':
-            photos = photos.order_by('display_price')
-            videos = videos.order_by('display_price')
-            products = products.order_by('display_price')
-        elif sort_key == 'price_desc':
-            photos = photos.order_by('-display_price')
-            videos = videos.order_by('-display_price')
-            products = products.order_by('-display_price')
-        elif sort_key == 'date_desc':
-            photos = photos.order_by('-created_at')
-            videos = videos.order_by('-created_at')
-            # Physical products don't have created_at, sort by related photo's date
-            products = products.order_by('-photo__created_at')
-
-        # Start with the base querysets
+        # 2. INITIALIZE BASE QUERYSETS
         photos = Photo.objects.all()
         videos = Video.objects.all()
-        products = ProductVariant.objects.all()
 
+        # 3. APPLY COLLECTION FILTER (Case Insensitive)
+        # Using __iexact fixes the "thailand" vs "Thailand" issue
+        if collection and collection != 'all':
+            photos = photos.filter(collection__iexact=collection)
+            videos = videos.filter(collection__iexact=collection)
+
+        # 4. APPLY SEARCH FILTER
         if search_term:
-            # Create a query that searches title, description, and tags
-            photo_video_query = (
+            query = (
                 Q(title__icontains=search_term) |
                 Q(description__icontains=search_term) |
                 Q(tags__icontains=search_term)
             )
-            # Apply the filter to Photo and Video querysets
-            photos = photos.filter(photo_video_query)
-            videos = videos.filter(photo_video_query)
-            # For physical products, search the related photo's details
-            products = products.filter(
-                Q(photo__title__icontains=search_term) |
-                Q(photo__description__icontains=search_term) |
-                Q(photo__tags__icontains=search_term)
-            )
+            photos = photos.filter(query)
+            videos = videos.filter(query)
 
-        # Apply collection filter if it exists
-        if collection and collection != 'all':
-            photos = photos.filter(collection=collection)
-            videos = videos.filter(collection=collection)
-            # Physical products are linked to photos, so we filter the photos
-            products = products.filter(photo__collection=collection)
-
-        # The rest of the logic remains the same
+        # 5. SPLIT LOGIC BASED ON TYPE
         if product_type == 'digital':
+            # --- DIGITAL LOGIC ---
+            
+            # Annotate prices for sorting
+            photos = photos.annotate(display_price=Coalesce('price_hd', 'price_4k'))
+            videos = videos.annotate(display_price=Coalesce('price_hd', 'price_4k'))
+
+            # Apply Sorting
+            if sort_key == 'price_asc':
+                photos = photos.order_by('display_price')
+                videos = videos.order_by('display_price')
+            elif sort_key == 'price_desc':
+                photos = photos.order_by('-display_price')
+                videos = videos.order_by('-display_price')
+            else: # date_desc
+                photos = photos.order_by('-created_at')
+                videos = videos.order_by('-created_at')
+
+            # Serialize
             for photo in photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
             for video in videos:
                 queryset.append({'item': video, 'serializer': VideoListSerializer(video)})
+
         elif product_type == 'physical':
+            # --- PHYSICAL LOGIC ---
+            
+            # Only get photos that have Physical Variants
             has_variants = ProductVariant.objects.filter(photo=OuterRef('pk'))
-            physical_photos = Photo.objects.annotate(
+            
+            # We filter the 'photos' queryset which has ALREADY been filtered by collection/search above
+            physical_photos = photos.annotate(
                 has_physical=Exists(has_variants),
-                starting_price=Min('variants__price') 
+                starting_price=Min('variants__price')
             ).filter(has_physical=True)
 
-            if collection and collection != 'all':
-                physical_photos = physical_photos.filter(collection=collection)
-            
-            if search_term:
-                physical_photos = physical_photos.filter(
-                    Q(title__icontains=search_term) |
-                    Q(description__icontains=search_term) |
-                    Q(tags__icontains=search_term)
-                )
-
+            # Apply Sorting
             if sort_key == 'price_asc':
                 physical_photos = physical_photos.order_by('starting_price')
             elif sort_key == 'price_desc':
@@ -171,20 +158,24 @@ class GalleryListView(generics.ListAPIView):
             else:
                 physical_photos = physical_photos.order_by('-created_at')
 
+            # Serialize
             for photo in physical_photos:
                 queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
-            
-        
+
         return queryset
 
-
     def list(self, request, *args, **kwargs):
-            queryset_with_serializers = self.get_queryset()
-            data = [item['serializer'].data for item in queryset_with_serializers]
-            page = self.paginate_queryset(data)
-            if page is not None:
-                return self.get_paginated_response(page)
-            return Response(data)
+        queryset_dict = self.get_queryset()
+        
+        # Extract the data from the dictionary wrapper
+        data = [item['serializer'].data for item in queryset_dict]
+        
+        # Manual Pagination since we built a custom list
+        page = self.paginate_queryset(data)
+        if page is not None:
+            return self.get_paginated_response(page)
+            
+        return Response(data)
     
 
 class DigitalPhotoDetailView(generics.RetrieveAPIView):
