@@ -31,7 +31,7 @@ class PhotoListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Photo
-        fields = ('id', 'title', 'preview_image', 'price_hd', 'product_type', 'starting_price')
+        fields = ('id', 'title', 'description', 'collection', 'preview_image', 'price_hd', 'price_4k', 'product_type', 'starting_price')
 
 
 class VideoListSerializer(serializers.ModelSerializer):
@@ -39,7 +39,7 @@ class VideoListSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Video
-        fields = ('id', 'title', 'thumbnail_image', 'price_hd', 'product_type')
+        fields = ('id', 'title', 'description', 'thumbnail_image', 'collection', 'price_hd', 'price_4k', 'product_type', 'video_file', 'duration', 'resolution', 'frame_rate')
 
 
 class ProductListSerializer(serializers.ModelSerializer):
