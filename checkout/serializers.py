@@ -1,6 +1,6 @@
 from rest_framework import serializers
-from .models import Order, OrderItem
-from products.models import Photo, Video, ProductVariant
+from .models import Order, OrderItem, ProductShipping
+from products.models import Photo, Video, ProductVariant, PrintTemplate
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
@@ -49,16 +49,16 @@ class OrderSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('order_number', 'delivery_cost', 'order_total', 'total_price')
 
-    def create(self, validated_data):
-        """
-        Custom create method to handle creating the order and its items.
-        """
+def create(self, validated_data):
         items_data = validated_data.pop('items')
         user_profile = validated_data.pop('user_profile', None)
+        
+        # 1. Capture the shipping country from the order data
+        shipping_country = validated_data.get('country') 
+        shipping_method = validated_data.get('shipping_method', 'budget')
 
         order = Order.objects.create(user_profile=user_profile, **validated_data)
 
-        # Map frontend strings to actual Models
         model_map = {
             'photo': Photo, 
             'video': Video, 
@@ -66,12 +66,12 @@ class OrderSerializer(serializers.ModelSerializer):
         }
         
         order_total = 0
+        calculated_delivery_cost = 0  # Start at 0
 
         for item_data in items_data:
             product_id = item_data['product_id']
             product_type_str = item_data['product_type']
             quantity = item_data['quantity']
-            # 👇 Extract options (defaults to empty dict)
             options = item_data.get('options', {})
             
             model_class = model_map.get(product_type_str)
@@ -85,12 +85,32 @@ class OrderSerializer(serializers.ModelSerializer):
                 price = 0
                 
                 if product_type_str == 'physical':
-                    # For physical variants, price is fixed on the variant model
                     price = product_instance.price
+                    try:
+                        template = PrintTemplate.objects.get(
+                            material=product_instance.material,
+                            size=product_instance.size
+                        )
+                        
+                        # Find the exact cost from our fixtures
+                        shipping_rule = ProductShipping.objects.get(
+                            product=template,
+                            country=shipping_country,
+                            method=shipping_method
+                        )
+                        
+                        # Add to total delivery cost (Cost * Quantity)
+                        # Note: Prodigi sometimes bundles, but charging per item is safer for now
+                        calculated_delivery_cost += (shipping_rule.cost * quantity)
+
+                    except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
+                        # Fallback if data is missing (prevents crash)
+                        print(f"Warning: No shipping rule found for {product_instance}")
+                        pass # or add a default flat rate
                 
                 elif product_type_str in ['photo', 'video']:
-                    # For digital, price depends on the License selected!
-                    license_type = options.get('license', 'hd') # Default to HD if missing
+                    # Digital items have NO shipping cost
+                    license_type = options.get('license', 'hd')
                     if license_type == '4k':
                         price = product_instance.price_4k
                     else:
@@ -99,26 +119,49 @@ class OrderSerializer(serializers.ModelSerializer):
                 item_total = price * quantity
                 order_total += item_total
 
-                # Create OrderItem
-                # Note: passing 'product=product_instance' automatically handles the GenericForeignKey
                 OrderItem.objects.create(
                     order=order,
                     product=product_instance,
                     quantity=quantity,
                     item_total=item_total,
-                    details=options # 👇 Save the options to the JSONField
+                    details=options
                 )
 
             except model_class.DoesNotExist:
                 continue
         
-        # Calculate totals
+        # 3. Save the calculated values to the order
         order.order_total = order_total
-        # You can add logic here for delivery thresholds later (e.g. Free shipping over €100)
+        order.delivery_cost = calculated_delivery_cost # Update the field
         order.total_price = order.order_total + order.delivery_cost
         order.save()
 
         return order
+
+def validate(self, data):
+        """
+        Ensure physical products are only shipped to allowed countries.
+        """
+        country = data.get('country')
+        items = data.get('items', [])
+        
+        # valid shipping destinations for physical goods
+        ALLOWED_SHIPPING_COUNTRIES = ['IE', 'US']
+
+        # Loop through items to check if any are physical
+        for item in items:
+            # We assume 'product_type' is passed from the frontend for each item
+            p_type = item.get('product_type')
+
+            if p_type == 'physical':
+                # Check if the selected country is in our allowed list
+                # Note: 'country' comes in as a Country object, so we convert to string
+                if str(country) not in ALLOWED_SHIPPING_COUNTRIES:
+                    raise serializers.ValidationError(
+                        {"country": f"Physical products can currently only be shipped to Ireland (IE) or the US. You selected {country}."}
+                    )
+        
+        return data
 
 class OrderHistoryItemSerializer(serializers.ModelSerializer):
     product = serializers.SerializerMethodField()
