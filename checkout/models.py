@@ -10,6 +10,13 @@ from django.contrib.contenttypes.models import ContentType
 from django_countries.fields import CountryField
 
 class Order(models.Model):
+
+    SHIPPING_METHOD_CHOICES = [
+        ('budget', 'Budget'),
+        ('standard', 'Standard'),
+        ('express', 'Express'),
+    ]
+
     order_number = models.CharField(max_length=32, null=False, editable=False)
     user_profile = models.ForeignKey(UserProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     
@@ -24,6 +31,12 @@ class Order(models.Model):
     postcode = models.CharField(max_length=20, null=True, blank=True)
     country = CountryField(null=True, blank=True)    
     date = models.DateTimeField(auto_now_add=True)
+    shipping_method = models.CharField(
+        max_length=20, 
+        choices=SHIPPING_METHOD_CHOICES, 
+        default='budget',
+        help_text="The shipping speed selected by the customer"
+    )
     delivery_cost = models.DecimalField(max_digits=6, decimal_places=2, null=False, default=0)
     order_total = models.DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
     total_price = models.DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
@@ -61,8 +74,8 @@ class OrderItem(models.Model):
     # Store details at time of purchase
     details = models.JSONField(null=True, blank=True) # e.g., {'quality': '4k'} or {'size': 'A4'}
 
-    def __str__(_self):
-        return f"Item for order {_self.order.order_number}"
+    def __str__(self):
+        return f"Item for order {self.order.order_number}"
 
 class ProductShipping(models.Model):
     """
