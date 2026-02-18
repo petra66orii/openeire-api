@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from django.utils import timezone
 from datetime import timedelta
 from django.db import models
@@ -91,23 +92,35 @@ class ProductVariant(models.Model):
     
     # Prodigi Material Codes (Expanded for realism)
     MATERIAL_CHOICES = [
-        ('matte', 'Fine Art Paper (Matte)'),
-        ('c-type', 'C-Type Silver Halide'),
         ('canvas', 'Eco Canvas'),
-        ('etching', 'Hahnemuhle German Etching'),
+        ('lustre', 'Lustre Photo Paper'),
+        ('matte', 'Enhanced Matte Art Paper'),
         ('photo-rag', 'Hahnemuhle Photo Rag'),
-        ('lustre', 'Photo Art Lustre Paper'),
     ]
 
-    # Prodigi/Standard Sizes
+    # Exact sizes from your PDF 
     SIZE_CHOICES = [
-        ('A4', 'A4 (210x297mm)'),
-        ('A3', 'A3 (297x420mm)'),
-        ('A2', 'A2 (420x594mm)'),
-        ('12x16', '12x16"'),
-        ('16x20', '16x20"'),
-        ('18x24', '18x24"'),
-        ('24x36', '24x36"'),
+        # Eco Canvas Sizes
+        ('12x18', '12x18" (30x45cm)'),
+        ('16x24', '16x24" (40x60cm)'),
+        ('20x30', '20x30" (50x75cm)'),
+
+        # Lustre/Matte/Rag Sizes
+        ('18x30', '18x30" (46x76cm)'),
+        ('24x36', '24x36" (60x90cm)'),
+        ('26x38', '26x38" (66x96cm)'),
+        ('13x60', '13x60" (33x152cm)'),
+        ('72x24', '72x24" (183x61cm)'),
+        ('24x35', '24x35" (60x89cm)'),
+        ('28x41', '28x41" (71x104cm)'),
+        
+        # Specific Large Format
+        ('16x32', '16x32" (40x80cm)'),
+        ('24x39', '24x39" (60x99cm)'),
+        ('24x40', '24x40" (60x100cm)'),
+        ('28x40', '28x40" (70x100cm)'),
+        ('42x56', '42x56" (107x142cm)'),
+        ('60x48', '60x48" (152x122cm)'),
     ]
 
     photo = models.ForeignKey(Photo, on_delete=models.CASCADE, related_name="variants")
@@ -124,81 +137,62 @@ class ProductVariant(models.Model):
     def __str__(self):
         return f'{self.get_material_display()} - {self.get_size_display()} ({self.photo.title})'
 
+# --- PRODUCT MODELS ---
+
 class PrintTemplate(models.Model):
-    """
-    Defines a standard variation that should exist for ALL photos.
-    Example: 'A4 Canvas', Price: 50.00, SKU Suffix: 'CAN-A4'
-    """
     MATERIAL_CHOICES = [
-        ('matte', 'Fine Art Paper (Matte)'),
-        ('c-type', 'C-Type Silver Halide'),
-        ('canvas', 'Eco Canvas'),
-        ('etching', 'Hahnemuhle German Etching'),
-        ('photo-rag', 'Hahnemuhle Photo Rag'),
-        ('lustre', 'Photo Art Lustre Paper'),
+        ('eco_canvas', 'Eco Canvas'),
+        ('lustre_photo_paper', 'Lustre Photo Paper'),
+        ('enhanced_matte_art_paper', 'Enhanced Matte Art Paper'),
+        ('hahnemuhle_photo_rag', 'Hahnemuhle Photo Rag'),
     ]
 
+    # CORRECTED SIZES FROM PDF
     SIZE_CHOICES = [
-        ('A4', 'A4 (210x297mm)'),
-        ('A3', 'A3 (297x420mm)'),
-        ('A2', 'A2 (420x594mm)'),
-        ('12x16', '12x16"'),
-        ('16x20', '16x20"'),
-        ('18x24', '18x24"'),
-        ('24x36', '24x36"'),
+        # Eco Canvas 
+        ('12x18', '12x18" (30x45cm)'),
+        ('16x24', '16x24" (40x60cm)'),
+        ('20x30', '20x30" (50x75cm)'),
+
+        # Lustre
+        ('24x36', '24x36" (60x90cm)'),
+        ('26x38', '26x38" (66x96cm)'),
+        ('13x60', '13x60" (33x152cm)'),
+        ('72x24', '72x24" (183x61cm)'),
+        ('27x41', '27x41" (70x105cm)'),
+
+        # Matte
+        ('18x30', '18x30" (46x76cm)'),
+        ('42x56', '42x56" (107x142cm)'),
+        ('60x48', '60x48" (152x122cm)'),
+
+        # Hahnemuhle
+        ('16x32', '16x32" (40x80cm)'),
+        ('24x40', '24x40" (60x100cm)'),
+        ('28x40', '28x40" (70x100cm)'),
+        
+        # Note: Duplicate sizes across materials (like 20x30) are handled by the unique_together constraint
     ]
 
-    material = models.CharField(max_length=20, choices=MATERIAL_CHOICES)
+    material = models.CharField(max_length=50, choices=MATERIAL_CHOICES)
     size = models.CharField(max_length=20, choices=SIZE_CHOICES)
-    base_price = models.DecimalField(max_digits=6, decimal_places=2, help_text="Default price")
-    sku_suffix = models.CharField(max_length=50, help_text="Internal Suffix e.g. 'CAN-A4'")
     
-    # 👇 NEW: Store the Prodigi mapping here
-    prodigi_sku = models.CharField(
-        max_length=50, 
-        blank=True, 
-        help_text="Prodigi Product Code (e.g. 'GLOBAL-CAN-A4')"
-    )
-    prodigi_shipping_method = models.CharField(
-        max_length=50,
-        default="Budget",
-        help_text="Shipping tier (Budget, Standard, Express)"
-    )
-    
-    is_active = models.BooleanField(default=True)
+    # PRODUCTION COST ONLY (The "Item" column in your PDF)
+    production_cost = models.DecimalField(max_digits=6, decimal_places=2, help_text="Cost to produce (Item Price)")
+    prodigi_sku = models.CharField(max_length=50, blank=True, null=True, help_text="Prodigi Product Code")
+    sku_suffix = models.CharField(max_length=50)
 
     class Meta:
         unique_together = ('material', 'size')
-        ordering = ['material', 'size']
 
     def __str__(self):
-        return f"TEMPLATE: {self.get_material_display()} - {self.get_size_display()}"
+        return f"{self.get_material_display()} - {self.size}"
 
-
-
-@receiver(post_save, sender=Photo)
-def generate_variants_for_photo(sender, instance, created, **kwargs):
-    if created:
-        templates = PrintTemplate.objects.filter(is_active=True)
-        
-        variants_to_create = []
-        for t in templates:
-            # Internal SKU
-            sku = f"PHOTO-{instance.id}-{t.sku_suffix}"
-            
-            variants_to_create.append(
-                ProductVariant(
-                    photo=instance,
-                    material=t.material,
-                    size=t.size,
-                    price=t.base_price,
-                    sku=sku,
-                    prodigi_sku=t.prodigi_sku  # 👈 Copy from Template to Variant
-                )
-            )
-        
-        if variants_to_create:
-            ProductVariant.objects.bulk_create(variants_to_create)
+    @property
+    def retail_price(self):
+        # Example logic: Production Cost * 2.5 Profit Margin
+        # You can make the multiplier a setting or a field later
+        return self.production_cost * Decimal('2.5')
 
 class ProductReview(models.Model):
     """

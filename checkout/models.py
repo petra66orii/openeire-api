@@ -4,6 +4,7 @@ from django.db.models import Sum
 from django.conf import settings
 
 from userprofiles.models import UserProfile
+from products.models import PrintTemplate
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django_countries.fields import CountryField
@@ -62,3 +63,33 @@ class OrderItem(models.Model):
 
     def __str__(_self):
         return f"Item for order {_self.order.order_number}"
+
+class ProductShipping(models.Model):
+    """
+    Stores the EXACT shipping cost for a specific product to a specific country.
+    This replaces generic 'Tiers'.
+    """
+    product = models.ForeignKey(PrintTemplate, on_delete=models.CASCADE, related_name='shipping_costs')
+    
+    COUNTRY_CHOICES = [
+        ('IE', 'Ireland'),
+        ('US', 'United States'),
+    ]
+    country = models.CharField(max_length=2, choices=COUNTRY_CHOICES)
+    
+    METHOD_CHOICES = [
+        ('budget', 'Budget'),
+        ('standard', 'Standard'),
+        ('express', 'Express'),
+    ]
+    method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    
+    # THE SHIPPING COST (The "Shipping" column in your PDF)
+    cost = models.DecimalField(max_digits=6, decimal_places=2)
+
+    class Meta:
+        # Ensures we only have one price per product+country+method
+        unique_together = ('product', 'country', 'method')
+
+    def __str__(self):
+        return f"Ship {self.product} to {self.country} ({self.method}): €{self.cost}"
