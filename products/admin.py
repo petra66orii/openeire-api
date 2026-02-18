@@ -1,4 +1,6 @@
 from django.contrib import admin
+
+from checkout.models import ProductShipping
 from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate
 from django.utils.html import format_html
 from django.urls import reverse
@@ -62,11 +64,36 @@ class VideoAdmin(admin.ModelAdmin):
         }),
     )
 
+class ProductShippingInline(admin.TabularInline):
+    """
+    Allows editing shipping costs directly inside the Product page.
+    """
+    model = ProductShipping
+    extra = 0  # Removes empty extra rows to keep the UI clean
+    fields = ('country', 'method', 'cost')
+    ordering = ('country', 'cost')
+
 # @admin.register(PrintTemplate)
 class PrintTemplateAdmin(admin.ModelAdmin):
-    list_display = ('material', 'size', 'base_price', 'sku_suffix', 'is_active')
-    list_filter = ('material', 'is_active')
-    list_editable = ('base_price', 'is_active')
+    # Display the production cost and the calculated retail price
+    list_display = ('material', 'size', 'production_cost', 'get_retail_price', 'sku_suffix')
+    
+    # Filters to easily find specific groups of products
+    list_filter = ('material',)
+    
+    # Allow quick editing of production costs from the list view
+    list_editable = ('production_cost',)
+    
+    # Search by material or SKU
+    search_fields = ('material', 'sku_suffix')
+    
+    # Add the shipping costs table inside the product edit page
+    inlines = [ProductShippingInline]
+
+    # Helper to display the calculated property in the admin list
+    def get_retail_price(self, obj):
+        return f"€{obj.retail_price:.2f}"
+    get_retail_price.short_description = 'Retail Price (Est.)'
 
 # @admin.register(ProductVariant)
 class ProductVariantAdmin(admin.ModelAdmin):

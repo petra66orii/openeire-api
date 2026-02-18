@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Order, OrderItem
+from .models import Order, OrderItem, ProductShipping
 from openeire_api.admin import custom_admin_site
 
 class OrderItemInline(admin.TabularInline):
@@ -31,4 +31,12 @@ class OrderAdmin(admin.ModelAdmin):
     search_fields = ('order_number', 'email', 'first_name')
     ordering = ('-date',)
 
+class ProductShippingAdmin(admin.ModelAdmin):
+    list_display = ('product', 'country', 'method', 'cost')
+    list_filter = ('country', 'method', 'product__material')
+    search_fields = ('product__sku_suffix', 'product__material')
+    list_editable = ('cost',)
+    ordering = ('product', 'country', 'cost')
+
 custom_admin_site.register(Order, OrderAdmin)
+custom_admin_site.register(ProductShipping, ProductShippingAdmin)
