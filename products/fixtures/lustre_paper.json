@@ -1,0 +1,85 @@
+[
+  {
+    "model": "products.printtemplate",
+    "pk": 4,
+    "fields": { "material": "lustre_photo_paper", "size": "16x24", "production_cost": "12.67", "sku_suffix": "LUS-PAP-16x24", "prodigi_sku": "GLOBAL-PAP-16X24" }
+  },
+  { "model": "checkout.productshipping", "pk": 19, "fields": { "product": 4, "country": "IE", "method": "budget", "cost": "8.45" } },
+  { "model": "checkout.productshipping", "pk": 20, "fields": { "product": 4, "country": "IE", "method": "standard", "cost": "8.45" } },
+  { "model": "checkout.productshipping", "pk": 21, "fields": { "product": 4, "country": "IE", "method": "express", "cost": "11.47" } },
+  { "model": "checkout.productshipping", "pk": 22, "fields": { "product": 4, "country": "US", "method": "budget", "cost": "5.53" } },
+  { "model": "checkout.productshipping", "pk": 23, "fields": { "product": 4, "country": "US", "method": "standard", "cost": "10.10" } },
+  { "model": "checkout.productshipping", "pk": 24, "fields": { "product": 4, "country": "US", "method": "express", "cost": "12.67" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 5,
+    "fields": { "material": "lustre_photo_paper", "size": "20x30", "production_cost": "16.90", "sku_suffix": "LUS-PAP-20x30", "prodigi_sku": "GLOBAL-PAP-20X30" }
+  },
+  { "model": "checkout.productshipping", "pk": 25, "fields": { "product": 5, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 26, "fields": { "product": 5, "country": "IE", "method": "standard", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 27, "fields": { "product": 5, "country": "IE", "method": "express", "cost": "13.76" } },
+  { "model": "checkout.productshipping", "pk": 28, "fields": { "product": 5, "country": "US", "method": "budget", "cost": "9.88" } },
+  { "model": "checkout.productshipping", "pk": 29, "fields": { "product": 5, "country": "US", "method": "standard", "cost": "10.94" } },
+  { "model": "checkout.productshipping", "pk": 30, "fields": { "product": 5, "country": "US", "method": "express", "cost": "16.90" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 6,
+    "fields": { "material": "lustre_photo_paper", "size": "24x36", "production_cost": "18.58", "sku_suffix": "LUS-PAP-24x36", "prodigi_sku": "GLOBAL-PAP-24X36" }
+  },
+  { "model": "checkout.productshipping", "pk": 31, "fields": { "product": 6, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 32, "fields": { "product": 6, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 33, "fields": { "product": 6, "country": "IE", "method": "express", "cost": "20.64" } },
+  { "model": "checkout.productshipping", "pk": 34, "fields": { "product": 6, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 35, "fields": { "product": 6, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 36, "fields": { "product": 6, "country": "US", "method": "express", "cost": "18.58" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 7,
+    "fields": { "material": "lustre_photo_paper", "size": "26x38", "production_cost": "19.43", "sku_suffix": "LUS-PAP-26x38", "prodigi_sku": "GLOBAL-PAP-26X38" }
+  },
+  { "model": "checkout.productshipping", "pk": 37, "fields": { "product": 7, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 38, "fields": { "product": 7, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 39, "fields": { "product": 7, "country": "IE", "method": "express", "cost": "21.79" } },
+  { "model": "checkout.productshipping", "pk": 40, "fields": { "product": 7, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 41, "fields": { "product": 7, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 42, "fields": { "product": 7, "country": "US", "method": "express", "cost": "19.43" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 8,
+    "fields": { "material": "lustre_photo_paper", "size": "27x41", "production_cost": "21.96", "sku_suffix": "LUS-PAP-27x41", "prodigi_sku": "GLOBAL-PAP-27X41" }
+  },
+  { "model": "checkout.productshipping", "pk": 43, "fields": { "product": 8, "country": "IE", "method": "budget", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 44, "fields": { "product": 8, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 45, "fields": { "product": 8, "country": "IE", "method": "express", "cost": "24.08" } },
+  { "model": "checkout.productshipping", "pk": 46, "fields": { "product": 8, "country": "US", "method": "budget", "cost": "12.29" } },
+  { "model": "checkout.productshipping", "pk": 47, "fields": { "product": 8, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 48, "fields": { "product": 8, "country": "US", "method": "express", "cost": "21.96" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 9,
+    "fields": { "material": "lustre_photo_paper", "size": "72x24", "production_cost": "40.14", "sku_suffix": "LUS-PAP-72x24", "prodigi_sku": "P-PHO-LPP-610X1829" }
+  },
+  { "model": "checkout.productshipping", "pk": 49, "fields": { "product": 9, "country": "IE", "method": "budget", "cost": "120.52" } },
+  { "model": "checkout.productshipping", "pk": 50, "fields": { "product": 9, "country": "IE", "method": "standard", "cost": "120.52" } },
+  { "model": "checkout.productshipping", "pk": 51, "fields": { "product": 9, "country": "IE", "method": "express", "cost": "120.52" } },
+  { "model": "checkout.productshipping", "pk": 52, "fields": { "product": 9, "country": "US", "method": "budget", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 53, "fields": { "product": 9, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 54, "fields": { "product": 9, "country": "US", "method": "express", "cost": "21.50" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 10,
+    "fields": { "material": "lustre_photo_paper", "size": "13x60", "production_cost": "25.34", "sku_suffix": "LUS-PAP-13x60", "prodigi_sku": "P-PHO-LPP-330X1524" }
+  },
+  { "model": "checkout.productshipping", "pk": 55, "fields": { "product": 10, "country": "IE", "method": "budget", "cost": "120.52" } },
+  { "model": "checkout.productshipping", "pk": 56, "fields": { "product": 10, "country": "IE", "method": "standard", "cost": "120.52" } },
+  { "model": "checkout.productshipping", "pk": 57, "fields": { "product": 10, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 58, "fields": { "product": 10, "country": "US", "method": "budget", "cost": "12.29" } },
+  { "model": "checkout.productshipping", "pk": 59, "fields": { "product": 10, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 60, "fields": { "product": 10, "country": "US", "method": "express", "cost": "19.81" } }
+]

@@ -1,0 +1,125 @@
+[
+  {
+    "model": "products.printtemplate",
+    "pk": 1,
+    "fields": {
+      "material": "eco_canvas",
+      "size": "12x18",
+      "production_cost": "16.00",
+      "sku_suffix": "ECO-CAN-12x18",
+      "prodigi_sku": "ECO-CAN-12X18"
+    }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 1,
+    "fields": { "product": 1, "country": "IE", "method": "budget", "cost": "12.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 2,
+    "fields": { "product": 1, "country": "IE", "method": "standard", "cost": "12.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 3,
+    "fields": { "product": 1, "country": "IE", "method": "express", "cost": "17.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 4,
+    "fields": { "product": 1, "country": "US", "method": "budget", "cost": "60.78" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 5,
+    "fields": { "product": 1, "country": "US", "method": "standard", "cost": "60.78" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 6,
+    "fields": { "product": 1, "country": "US", "method": "express", "cost": "60.78" }
+  },
+  {
+    "model": "products.printtemplate",
+    "pk": 2,
+    "fields": {
+      "material": "eco_canvas",
+      "size": "16x24",
+      "production_cost": "26.00",
+      "sku_suffix": "ECO-CAN-16x24",
+      "prodigi_sku": "ECO-CAN-16X24"
+    }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 7,
+    "fields": { "product": 2, "country": "IE", "method": "budget", "cost": "12.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 8,
+    "fields": { "product": 2, "country": "IE", "method": "standard", "cost": "12.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 9,
+    "fields": { "product": 2, "country": "IE", "method": "express", "cost": "17.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 10,
+    "fields": { "product": 2, "country": "US", "method": "budget", "cost": "20.23" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 11,
+    "fields": { "product": 2, "country": "US", "method": "standard", "cost": "20.23" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 12,
+    "fields": { "product": 2, "country": "US", "method": "express", "cost": "33.75" }
+  },
+  {
+    "model": "products.printtemplate",
+    "pk": 3,
+    "fields": {
+      "material": "eco_canvas",
+      "size": "20x30",
+      "production_cost": "32.00",
+      "sku_suffix": "ECO-CAN-20x30",
+      "prodigi_sku": "ECO-CAN-20X30"
+    }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 13,
+    "fields": { "product": 3, "country": "IE", "method": "budget", "cost": "15.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 14,
+    "fields": { "product": 3, "country": "IE", "method": "standard", "cost": "17.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 15,
+    "fields": { "product": 3, "country": "IE", "method": "express", "cost": "17.95" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 16,
+    "fields": { "product": 3, "country": "US", "method": "budget", "cost": "25.30" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 17,
+    "fields": { "product": 3, "country": "US", "method": "standard", "cost": "25.30" }
+  },
+  {
+    "model": "checkout.productshipping",
+    "pk": 18,
+    "fields": { "product": 3, "country": "US", "method": "express", "cost": "50.64" }
+  }
+]

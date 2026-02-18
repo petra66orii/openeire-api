@@ -1,0 +1,73 @@
+[
+  {
+    "model": "products.printtemplate",
+    "pk": 17,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "16x32", "production_cost": "22.81", "sku_suffix": "HPR-PAP-16x32", "prodigi_sku": "GLOBAL-HPR-16X32" }
+  },
+  { "model": "checkout.productshipping", "pk": 97, "fields": { "product": 17, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 98, "fields": { "product": 17, "country": "IE", "method": "standard", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 99, "fields": { "product": 17, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 100, "fields": { "product": 17, "country": "US", "method": "budget", "cost": "9.88" } },
+  { "model": "checkout.productshipping", "pk": 101, "fields": { "product": 17, "country": "US", "method": "standard", "cost": "10.94" } },
+  { "model": "checkout.productshipping", "pk": 102, "fields": { "product": 17, "country": "US", "method": "express", "cost": "18.54" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 18,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "20x30", "production_cost": "27.03", "sku_suffix": "HPR-PAP-20x30", "prodigi_sku": "GLOBAL-HPR-20X30" }
+  },
+  { "model": "checkout.productshipping", "pk": 103, "fields": { "product": 18, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 104, "fields": { "product": 18, "country": "IE", "method": "standard", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 105, "fields": { "product": 18, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 106, "fields": { "product": 18, "country": "US", "method": "budget", "cost": "9.88" } },
+  { "model": "checkout.productshipping", "pk": 107, "fields": { "product": 18, "country": "US", "method": "standard", "cost": "10.94" } },
+  { "model": "checkout.productshipping", "pk": 108, "fields": { "product": 18, "country": "US", "method": "express", "cost": "18.54" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 19,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "24x40", "production_cost": "41.00", "sku_suffix": "HPR-PAP-24x40", "prodigi_sku": "GLOBAL-HPR-24X40" }
+  },
+  { "model": "checkout.productshipping", "pk": 109, "fields": { "product": 19, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 110, "fields": { "product": 19, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 111, "fields": { "product": 19, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 112, "fields": { "product": 19, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 113, "fields": { "product": 19, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 114, "fields": { "product": 19, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 20,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "26x38", "production_cost": "43.00", "sku_suffix": "HPR-PAP-26x38", "prodigi_sku": "GLOBAL-HPR-26X38" }
+  },
+  { "model": "checkout.productshipping", "pk": 115, "fields": { "product": 20, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 116, "fields": { "product": 20, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 117, "fields": { "product": 20, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 118, "fields": { "product": 20, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 119, "fields": { "product": 20, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 120, "fields": { "product": 20, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 21,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "28x40", "production_cost": "48.00", "sku_suffix": "HPR-PAP-28x40", "prodigi_sku": "GLOBAL-HPR-28X40" }
+  },
+  { "model": "checkout.productshipping", "pk": 121, "fields": { "product": 21, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 122, "fields": { "product": 21, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 123, "fields": { "product": 21, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 124, "fields": { "product": 21, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 125, "fields": { "product": 21, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 126, "fields": { "product": 21, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 22,
+    "fields": { "material": "hahnemuhle_photo_rag", "size": "42x56", "production_cost": "105.00", "sku_suffix": "HPR-PAP-42x56", "prodigi_sku": "GLOBAL-HPR-42X56" }
+  },
+  { "model": "checkout.productshipping", "pk": 127, "fields": { "product": 22, "country": "IE", "method": "budget", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 128, "fields": { "product": 22, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 129, "fields": { "product": 22, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 130, "fields": { "product": 22, "country": "US", "method": "budget", "cost": "12.29" } },
+  { "model": "checkout.productshipping", "pk": 131, "fields": { "product": 22, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 132, "fields": { "product": 22, "country": "US", "method": "express", "cost": "19.81" } }
+]

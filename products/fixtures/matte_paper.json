@@ -1,0 +1,73 @@
+[
+  {
+    "model": "products.printtemplate",
+    "pk": 11,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "18x30", "production_cost": "16.05", "sku_suffix": "MAT-PAP-18x30", "prodigi_sku": "GLOBAL-FAP-18X30" }
+  },
+  { "model": "checkout.productshipping", "pk": 61, "fields": { "product": 11, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 62, "fields": { "product": 11, "country": "IE", "method": "standard", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 63, "fields": { "product": 11, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 64, "fields": { "product": 11, "country": "US", "method": "budget", "cost": "9.88" } },
+  { "model": "checkout.productshipping", "pk": 65, "fields": { "product": 11, "country": "US", "method": "standard", "cost": "10.94" } },
+  { "model": "checkout.productshipping", "pk": 66, "fields": { "product": 11, "country": "US", "method": "express", "cost": "18.54" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 12,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "20x30", "production_cost": "16.90", "sku_suffix": "MAT-PAP-20x30", "prodigi_sku": "GLOBAL-FAP-20X30" }
+  },
+  { "model": "checkout.productshipping", "pk": 67, "fields": { "product": 12, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 68, "fields": { "product": 12, "country": "IE", "method": "standard", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 69, "fields": { "product": 12, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 70, "fields": { "product": 12, "country": "US", "method": "budget", "cost": "9.88" } },
+  { "model": "checkout.productshipping", "pk": 71, "fields": { "product": 12, "country": "US", "method": "standard", "cost": "10.94" } },
+  { "model": "checkout.productshipping", "pk": 72, "fields": { "product": 12, "country": "US", "method": "express", "cost": "18.54" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 13,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "24x36", "production_cost": "18.58", "sku_suffix": "MAT-PAP-24x36", "prodigi_sku": "GLOBAL-FAP-24X36" }
+  },
+  { "model": "checkout.productshipping", "pk": 73, "fields": { "product": 13, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 74, "fields": { "product": 13, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 75, "fields": { "product": 13, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 76, "fields": { "product": 13, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 77, "fields": { "product": 13, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 78, "fields": { "product": 13, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 14,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "26x38", "production_cost": "20.27", "sku_suffix": "MAT-PAP-26x38", "prodigi_sku": "GLOBAL-FAP-26X38" }
+  },
+  { "model": "checkout.productshipping", "pk": 79, "fields": { "product": 14, "country": "IE", "method": "budget", "cost": "9.45" } },
+  { "model": "checkout.productshipping", "pk": 80, "fields": { "product": 14, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 81, "fields": { "product": 14, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 82, "fields": { "product": 14, "country": "US", "method": "budget", "cost": "11.45" } },
+  { "model": "checkout.productshipping", "pk": 83, "fields": { "product": 14, "country": "US", "method": "standard", "cost": "12.42" } },
+  { "model": "checkout.productshipping", "pk": 84, "fields": { "product": 14, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 15,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "42x56", "production_cost": "43.93", "sku_suffix": "MAT-PAP-42x56", "prodigi_sku": "GLOBAL-FAP-42X56" }
+  },
+  { "model": "checkout.productshipping", "pk": 85, "fields": { "product": 15, "country": "IE", "method": "budget", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 86, "fields": { "product": 15, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 87, "fields": { "product": 15, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 88, "fields": { "product": 15, "country": "US", "method": "budget", "cost": "12.29" } },
+  { "model": "checkout.productshipping", "pk": 89, "fields": { "product": 15, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 90, "fields": { "product": 15, "country": "US", "method": "express", "cost": "19.81" } },
+
+  {
+    "model": "products.printtemplate",
+    "pk": 16,
+    "fields": { "material": "enhanced_matte_art_paper", "size": "60x48", "production_cost": "42.00", "sku_suffix": "MAT-PAP-60x48", "prodigi_sku": "ART-FAP-EMA-60X48" }
+  },
+  { "model": "checkout.productshipping", "pk": 91, "fields": { "product": 16, "country": "IE", "method": "budget", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 92, "fields": { "product": 16, "country": "IE", "method": "standard", "cost": "10.45" } },
+  { "model": "checkout.productshipping", "pk": 93, "fields": { "product": 16, "country": "IE", "method": "express", "cost": "17.14" } },
+  { "model": "checkout.productshipping", "pk": 94, "fields": { "product": 16, "country": "US", "method": "budget", "cost": "12.29" } },
+  { "model": "checkout.productshipping", "pk": 95, "fields": { "product": 16, "country": "US", "method": "standard", "cost": "13.26" } },
+  { "model": "checkout.productshipping", "pk": 96, "fields": { "product": 16, "country": "US", "method": "express", "cost": "19.81" } }
+]
