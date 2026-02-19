@@ -92,10 +92,10 @@ class ProductVariant(models.Model):
     
     # Prodigi Material Codes (Expanded for realism)
     MATERIAL_CHOICES = [
-        ('canvas', 'Eco Canvas'),
-        ('lustre', 'Lustre Photo Paper'),
-        ('matte', 'Enhanced Matte Art Paper'),
-        ('photo-rag', 'Hahnemuhle Photo Rag'),
+        ('eco_canvas', 'Eco Canvas'),
+        ('lustre_photo_paper', 'Lustre Photo Paper'),
+        ('enhanced_matte_art_paper', 'Enhanced Matte Art Paper'),
+        ('hahnemuhle_photo_rag', 'Hahnemuhle Photo Rag'),
     ]
 
     SIZE_CHOICES = [
@@ -125,7 +125,7 @@ class ProductVariant(models.Model):
     ]
 
     photo = models.ForeignKey(Photo, on_delete=models.CASCADE, related_name="variants")
-    material = models.CharField(max_length=20, choices=MATERIAL_CHOICES)
+    material = models.CharField(max_length=30, choices=MATERIAL_CHOICES)
     size = models.CharField(max_length=20, choices=SIZE_CHOICES)
     price = models.DecimalField(max_digits=6, decimal_places=2)
     sku = models.CharField(max_length=254, null=True, blank=True, help_text="Internal SKU (e.g. PHOTO-1-CAN-A4)")

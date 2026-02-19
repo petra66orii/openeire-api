@@ -110,7 +110,11 @@ class CreatePaymentIntentView(APIView):
                 receipt_email=customer_email 
             )
             
-            return Response({'clientSecret': intent.client_secret}, status=status.HTTP_200_OK)
+            return Response({
+                'clientSecret': intent.client_secret,
+                'shippingCost': shipping_cost, 
+                'totalPrice': grand_total
+            }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

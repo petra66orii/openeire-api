@@ -1,3 +1,6 @@
+import json
+from django import forms
+from django.utils.safestring import mark_safe
 from django.contrib import admin
 
 from checkout.models import ProductShipping
@@ -5,6 +8,160 @@ from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
+
+def get_price_autofill_script():
+    """Generates the JS needed to auto-fill prices, SKUs, and filter Size dropdowns."""
+    data_map = {}
+    valid_sizes = {} # 👇 New dictionary for the dependent dropdown
+    
+    try:
+        for template in PrintTemplate.objects.all():
+            mat = template.material
+            sz = template.size
+            
+            # 1. Map for prices and SKUs
+            data_map[f"{mat}-{sz}"] = {
+                'price': f"{template.retail_price:.2f}",
+                'prodigi_sku': template.prodigi_sku or '',
+                'sku_suffix': template.sku_suffix or ''
+            }
+            
+            # 2. Map for Size filtering
+            if mat not in valid_sizes:
+                valid_sizes[mat] = []
+            valid_sizes[mat].append(sz)
+            
+    except Exception:
+        pass 
+
+    js_script = f"""
+    <script>
+        (function() {{
+            const dataMap = {json.dumps(data_map)};
+            const validSizes = {json.dumps(valid_sizes)};
+
+            // 👇 Helper function to hide/disable invalid sizes
+            function filterSizeDropdown(matInput, szInput) {{
+                if (!matInput || !szInput) return;
+                
+                let selectedMat = matInput.value;
+                let allowedSizes = validSizes[selectedMat] || [];
+
+                // Loop through all options in the Size dropdown
+                Array.from(szInput.options).forEach(option => {{
+                    if (option.value === '') return; // Keep the blank '---------' option
+                    
+                    if (allowedSizes.includes(option.value)) {{
+                        option.hidden = false;
+                        option.disabled = false;
+                    }} else {{
+                        option.hidden = true;
+                        option.disabled = true;
+                    }}
+                }});
+
+                // If the currently selected size is now hidden, reset the fields
+                if (szInput.value && !allowedSizes.includes(szInput.value)) {{
+                    szInput.value = '';
+                    
+                    let container = szInput.closest('tr') || szInput.closest('fieldset') || document;
+                    let prInput = container.querySelector('input[name$="price"]');
+                    let prodigiSkuInput = container.querySelector('input[name$="prodigi_sku"]');
+                    let internalSkuInput = container.querySelector('input[name$="sku"]:not([name$="prodigi_sku"])');
+                    
+                    if (prInput) prInput.value = '';
+                    if (prodigiSkuInput) prodigiSkuInput.value = '';
+                    if (internalSkuInput) internalSkuInput.value = '';
+                }}
+            }}
+
+            // 👇 Run once on page load to filter any existing rows
+            document.addEventListener('DOMContentLoaded', function() {{
+                let matInputs = document.querySelectorAll('select[name$="material"]');
+                matInputs.forEach(matInput => {{
+                    let container = matInput.closest('tr') || matInput.closest('fieldset') || document;
+                    let szInput = container.querySelector('select[name$="size"]');
+                    filterSizeDropdown(matInput, szInput);
+                }});
+            }});
+
+            // 👇 Existing Change Listener
+            document.addEventListener('change', function(e) {{
+                if (!e.target || !e.target.name) return;
+
+                let isMaterial = e.target.name.endsWith('material');
+                let isSize = e.target.name.endsWith('size');
+                let isPhoto = e.target.id === 'id_photo';
+
+                if (isMaterial || isSize || isPhoto) {{
+                    let container = e.target.closest('tr') || e.target.closest('fieldset') || document;
+                    
+                    let matInput = container.querySelector('select[name$="material"]');
+                    let szInput = container.querySelector('select[name$="size"]');
+                    let prInput = container.querySelector('input[name$="price"]');
+                    let prodigiSkuInput = container.querySelector('input[name$="prodigi_sku"]');
+                    let internalSkuInput = container.querySelector('input[name$="sku"]:not([name$="prodigi_sku"])');
+                    
+                    // 👇 If Material changed, filter the Size dropdown immediately
+                    if (isMaterial) {{
+                        filterSizeDropdown(matInput, szInput);
+                    }}
+
+                    if (matInput && szInput && matInput.value && szInput.value) {{
+                        let key = matInput.value + '-' + szInput.value;
+                        
+                        if (dataMap[key]) {{
+                            if (prInput) prInput.value = dataMap[key].price;
+                            if (prodigiSkuInput) prodigiSkuInput.value = dataMap[key].prodigi_sku;
+                            
+                            let photoId = '';
+                            let photoDropdown = document.getElementById('id_photo');
+                            
+                            if (photoDropdown && photoDropdown.value) {{
+                                photoId = photoDropdown.value; 
+                            }} else {{
+                                let urlMatch = window.location.pathname.match(/\\/photo\\/(\\d+)\\//);
+                                if (urlMatch) photoId = urlMatch[1];
+                            }}
+
+                            if (internalSkuInput && photoId && dataMap[key].sku_suffix) {{
+                                internalSkuInput.value = 'PHOTO-' + photoId + '-' + dataMap[key].sku_suffix;
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }})();
+    </script>
+    """
+    return mark_safe(js_script)
+
+
+# --- CUSTOM FORMS ---
+class PhotoAdminForm(forms.ModelForm):
+    class Meta:
+        model = Photo
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Inject script into the 'title' field help text so it loads on the Photo page
+        if 'title' in self.fields:
+            existing_help = self.fields['title'].help_text or ''
+            self.fields['title'].help_text = existing_help + get_price_autofill_script()
+
+
+class ProductVariantAdminForm(forms.ModelForm):
+    class Meta:
+        model = ProductVariant
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Inject script into the 'price' field so it loads on standalone Variant page
+        if 'price' in self.fields:
+            existing_help = self.fields['price'].help_text or ''
+            self.fields['price'].help_text = existing_help + get_price_autofill_script()
 
 # 1. Create an Inline for Variants
 class ProductVariantInline(admin.TabularInline):
@@ -14,11 +171,12 @@ class ProductVariantInline(admin.TabularInline):
 
 # @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
+    form = PhotoAdminForm # 👇 Added the custom form here!
+    
     list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
     list_filter = ('collection',)
     search_fields = ('title', 'tags', 'description')
     
-    # 👇 Connect the Inline here
     inlines = [ProductVariantInline]
     actions = ['regenerate_variants']
 
@@ -28,13 +186,13 @@ class PhotoAdmin(admin.ModelAdmin):
         count = 0
         for photo in queryset:
             for t in templates:
-                # Check if it exists to avoid duplicates
+                # Calculate retail price dynamically here as well
                 obj, created = ProductVariant.objects.get_or_create(
                     photo=photo,
                     material=t.material,
                     size=t.size,
                     defaults={
-                        'price': t.base_price,
+                        'price': t.retail_price, # Ensure this uses the *retail* price, not base price!
                         'sku': f"PHOTO-{photo.id}-{t.sku_suffix}"
                     }
                 )
@@ -97,7 +255,8 @@ class PrintTemplateAdmin(admin.ModelAdmin):
 
 # @admin.register(ProductVariant)
 class ProductVariantAdmin(admin.ModelAdmin):
-    # Updated to show parent Photo and SKU
+    form = ProductVariantAdminForm
+
     list_display = ('photo', 'material', 'size', 'price', 'sku')
     list_filter = ('material', 'size')
     search_fields = ('photo__title', 'sku')

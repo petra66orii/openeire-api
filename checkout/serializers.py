@@ -187,5 +187,5 @@ class OrderHistoryListSerializer(serializers.ModelSerializer):
         model = Order
         fields = (
             'order_number', 'date', 'order_total', 'total_price', 
-            'street_address1', 'town', 'country', 'items'
+            'street_address1', 'town', 'country', 'items', 'shipping_method', 'delivery_cost'
         )
