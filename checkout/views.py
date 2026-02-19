@@ -7,9 +7,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from products.models import Photo, Video, ProductVariant
+
+from products.models import Photo, Video, ProductVariant, PrintTemplate
 from userprofiles.models import UserProfile
-from .models import Order
+from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
 from .prodigi import create_prodigi_order 
 
@@ -23,35 +24,65 @@ class CreatePaymentIntentView(APIView):
         cart = request.data.get('cart')
         shipping_details = request.data.get('shipping_details')
         
+        # NEW: Get the selected shipping method from the frontend (default to budget)
+        shipping_method = request.data.get('shipping_method', 'budget')
+        
         if not cart:
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
         
         total = 0
+        shipping_cost = 0.00
         model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
-        has_physical_items = False
+        
+        # Safely extract the country from shipping details (default to IE if missing)
+        shipping_country = 'IE'
+        if shipping_details and isinstance(shipping_details, dict):
+            address = shipping_details.get('address', {})
+            shipping_country = address.get('country', 'IE')
 
         try:
             for item in cart:
                 product_id = item['product_id']
                 product_type = item['product_type']
-                quantity = item['quantity']
-                if product_type == 'physical':
-                    has_physical_items = True
+                quantity = item.get('quantity', 1)
                 
                 model_class = model_map.get(product_type)
                 if not model_class: continue
 
                 product_instance = model_class.objects.get(id=product_id)
-                price_str = getattr(product_instance, 'price', getattr(product_instance, 'price_hd', '0'))
+                
+                # Digital Pricing (HD/4K) vs Physical Pricing
+                if product_type in ['photo', 'video']:
+                    options = item.get('options', {})
+                    license_type = options.get('license', 'hd')
+                    price_str = getattr(product_instance, f'price_{license_type}', '0')
+                else:
+                    price_str = getattr(product_instance, 'price', '0')
+                    
                 price = float(price_str)
                 total += price * quantity
+
+                # --- NEW DYNAMIC SHIPPING CALCULATION ---
+                if product_type == 'physical':
+                    try:
+                        template = PrintTemplate.objects.get(
+                            material=product_instance.material, 
+                            size=product_instance.size
+                        )
+                        shipping_rule = ProductShipping.objects.get(
+                            product=template, 
+                            country=shipping_country, 
+                            method=shipping_method
+                        )
+                        shipping_cost += float(shipping_rule.cost) * quantity
+                    except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
+                        print(f"Warning: No shipping rule for {product_instance.material} {product_instance.size} to {shipping_country}")
+                        # You could add a fallback flat rate here if desired
 
         except (KeyError, model_class.DoesNotExist) as e:
             return Response({"error": f"Invalid cart data provided: {e}"}, status=status.HTTP_400_BAD_REQUEST)
         
-        shipping_cost = 5.99 if has_physical_items else 0.00
-        
-        # Add shipping to total
+        # Add dynamic shipping to total
         grand_total = total + shipping_cost
         amount_in_cents = int(grand_total * 100)
 
@@ -67,7 +98,8 @@ class CreatePaymentIntentView(APIView):
                 'cart': json.dumps(cart),
                 'username': request.user.username if request.user.is_authenticated else 'Guest',
                 'save_info': str(request.data.get('save_info', False)).lower(),
-                'shipping_cost': shipping_cost
+                'shipping_cost': shipping_cost,
+                'shipping_method': shipping_method # Store method in metadata for Webhook
             }
 
             intent = stripe.PaymentIntent.create(
@@ -127,6 +159,8 @@ class StripeWebhookView(APIView):
             address_details = shipping_details.get('address') or {}
 
             shipping_cost = float(metadata.get('shipping_cost', 0.00))
+            # NEW: Retrieve shipping_method from metadata
+            shipping_method = metadata.get('shipping_method', 'budget') 
 
             # 2. Determine the email
             order_email = payment_intent.receipt_email
@@ -149,6 +183,7 @@ class StripeWebhookView(APIView):
                 'county': address_details.get('state', ''),
                 'items': json.loads(cart_items_str),
                 'delivery_cost': shipping_cost,
+                'shipping_method': shipping_method, # NEW: Pass this to the serializer
             }
 
             # 4. Check for User Profile
@@ -169,7 +204,6 @@ class StripeWebhookView(APIView):
                         profile.default_county = address_details.get('state', profile.default_county)
                         profile.default_country = address_details.get('country', profile.default_country)
                         profile.save()
-
                 except UserProfile.DoesNotExist:
                     pass
 

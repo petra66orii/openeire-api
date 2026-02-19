@@ -98,29 +98,30 @@ class ProductVariant(models.Model):
         ('photo-rag', 'Hahnemuhle Photo Rag'),
     ]
 
-    # Exact sizes from your PDF 
     SIZE_CHOICES = [
-        # Eco Canvas Sizes
+        # Eco Canvas 
         ('12x18', '12x18" (30x45cm)'),
         ('16x24', '16x24" (40x60cm)'),
         ('20x30', '20x30" (50x75cm)'),
 
-        # Lustre/Matte/Rag Sizes
-        ('18x30', '18x30" (46x76cm)'),
+        # Lustre
         ('24x36', '24x36" (60x90cm)'),
         ('26x38', '26x38" (66x96cm)'),
         ('13x60', '13x60" (33x152cm)'),
         ('72x24', '72x24" (183x61cm)'),
-        ('24x35', '24x35" (60x89cm)'),
-        ('28x41', '28x41" (71x104cm)'),
-        
-        # Specific Large Format
-        ('16x32', '16x32" (40x80cm)'),
-        ('24x39', '24x39" (60x99cm)'),
-        ('24x40', '24x40" (60x100cm)'),
-        ('28x40', '28x40" (70x100cm)'),
+        ('27x41', '27x41" (70x105cm)'),
+
+        # Matte
+        ('18x30', '18x30" (46x76cm)'),
         ('42x56', '42x56" (107x142cm)'),
         ('60x48', '60x48" (152x122cm)'),
+
+        # Hahnemuhle
+        ('16x32', '16x32" (40x80cm)'),
+        ('24x40', '24x40" (60x100cm)'),
+        ('28x40', '28x40" (70x100cm)'),
+        
+        # Note: Duplicate sizes across materials (like 20x30) are handled by the unique_together constraint
     ]
 
     photo = models.ForeignKey(Photo, on_delete=models.CASCADE, related_name="variants")
@@ -137,7 +138,6 @@ class ProductVariant(models.Model):
     def __str__(self):
         return f'{self.get_material_display()} - {self.get_size_display()} ({self.photo.title})'
 
-# --- PRODUCT MODELS ---
 
 class PrintTemplate(models.Model):
     MATERIAL_CHOICES = [
