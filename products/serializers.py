@@ -11,6 +11,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     """
     material_display = serializers.CharField(source='get_material_display', read_only=True)
     size_display = serializers.CharField(source='get_size_display', read_only=True)
+    product_type = serializers.CharField(default='physical', read_only=True)
 
     class Meta:
         model = ProductVariant
@@ -21,7 +22,8 @@ class ProductVariantSerializer(serializers.ModelSerializer):
             'size', 
             'size_display', 
             'price', 
-            'sku'
+            'sku',
+            'product_type'
         )
 
 # 2. List Serializers (For catalog pages)
@@ -51,9 +53,16 @@ class ProductListSerializer(serializers.ModelSerializer):
     title = serializers.CharField(source='photo.title', read_only=True)
     preview_image = serializers.ImageField(source='photo.preview_image', read_only=True)
 
+    photo_id = serializers.IntegerField(source='photo.id', read_only=True) 
+    material_display = serializers.CharField(source='get_material_display', read_only=True)
+    size_display = serializers.CharField(source='get_size_display', read_only=True)
+
     class Meta:
         model = ProductVariant
-        fields = ('id', 'title', 'preview_image', 'price', 'product_type', 'material', 'size')
+        fields = (
+            'id', 'title', 'preview_image', 'price', 'product_type', 
+            'material', 'material_display', 'size', 'size_display', 'photo_id'
+        )
 
 
 # 3. Detail Serializers (For single product pages)

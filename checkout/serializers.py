@@ -45,11 +45,11 @@ class OrderSerializer(serializers.ModelSerializer):
             'street_address1', 'street_address2', 
             'town', 'county', 'postcode', 'country', 
             'delivery_cost', 'order_total', 'total_price', 
-            'stripe_pid', 'items'
+            'stripe_pid', 'items', 'shipping_method'
         )
         read_only_fields = ('order_number', 'delivery_cost', 'order_total', 'total_price')
 
-def create(self, validated_data):
+    def create(self, validated_data):
         items_data = validated_data.pop('items')
         user_profile = validated_data.pop('user_profile', None)
         
@@ -138,7 +138,7 @@ def create(self, validated_data):
 
         return order
 
-def validate(self, data):
+    def validate(self, data):
         """
         Ensure physical products are only shipped to allowed countries.
         """

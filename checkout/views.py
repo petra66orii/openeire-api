@@ -120,6 +120,7 @@ class CreatePaymentIntentView(APIView):
 
 
 class StripeWebhookView(APIView):
+    authentication_classes = [] 
     permission_classes = [AllowAny]
 
     def _send_confirmation_email(self, order):
@@ -146,6 +147,8 @@ class StripeWebhookView(APIView):
         webhook_secret = settings.STRIPE_WEBHOOK_SECRET
         payload = request.body
         sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+
+        print("🚨 WEBHOOK RECEIVED! 🚨") # 👇 ADD THIS TRIPWIRE
 
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)

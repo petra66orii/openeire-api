@@ -31,14 +31,23 @@ def create_prodigi_order(order):
                 image_url = raw_url if raw_url.startswith('http') else f"{site_url}{raw_url}"
                 
                 if "127.0.0.1" in image_url or "localhost" in image_url:
-                    print(f"⚠️  WARNING: Prodigi cannot download from localhost ({image_url}).")
+                    print(f"⚠️  WARNING: Prodigi cannot download from localhost. Swapping to public placeholder image for validation.")
+                    # A high-res, public landscape image so Prodigi's system doesn't reject the asset
+                    image_url = "https://images.unsplash.com/photo-1506744626753-1fa28f67c9bf?w=2400&q=80"
 
-                items_payload.append({
+                item_payload = {
                     "sku": product.prodigi_sku,
                     "copies": item.quantity,
                     "sizing": "fillPrintArea",
                     "assets": [{"printArea": "default", "url": image_url}]
-                })
+                }
+
+                if 'canvas' in product.material.lower():
+                    item_payload["attributes"] = {
+                        "wrap": "MirrorWrap" # Options: "MirrorWrap", "ImageWrap", "White", "Black"
+                    }
+
+                items_payload.append(item_payload)
 
             except Exception as e:
                 print(f"Error getting image URL for {product}: {e}")
