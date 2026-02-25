@@ -6,14 +6,14 @@ from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
-from django.utils import timezone
 from django.conf import settings
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
-from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess
+from rest_framework.throttling import ScopedRateThrottle
+from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess, LicenseRequest
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
@@ -21,7 +21,8 @@ from .serializers import (
     PhotoDetailSerializer,
     VideoDetailSerializer,
     ProductDetailSerializer,
-    ProductReviewSerializer
+    ProductReviewSerializer,
+    LicenseRequestSerializer,
 )
 from .permissions import IsDigitalGalleryAuthorized
 
@@ -192,6 +193,13 @@ class VideoDetailView(generics.RetrieveAPIView):
     queryset = Video.objects.all()
     serializer_class = VideoDetailSerializer
     permission_classes = [IsDigitalGalleryAuthorized]
+
+class LicenseRequestCreateView(generics.CreateAPIView):
+    queryset = LicenseRequest.objects.all()
+    serializer_class = LicenseRequestSerializer
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'license_request'
 
 class ProductDetailView(generics.RetrieveAPIView):
     queryset = ProductVariant.objects.all()

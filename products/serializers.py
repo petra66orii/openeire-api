@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Photo, Video, ProductVariant, ProductReview
+from .models import Photo, Video, ProductVariant, ProductReview, LicenseRequest
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Avg
 
@@ -43,6 +43,43 @@ class VideoListSerializer(serializers.ModelSerializer):
         model = Video
         fields = ('id', 'title', 'description', 'thumbnail_image', 'collection', 'price_hd', 'price_4k', 'product_type', 'video_file', 'duration', 'resolution', 'frame_rate')
 
+class LicenseRequestSerializer(serializers.ModelSerializer):
+    asset_type = serializers.CharField(write_only=True)
+    asset_id = serializers.IntegerField(min_value=1, write_only=True)
+    message = serializers.CharField(max_length=2000, allow_blank=True, allow_null=True, required=False)
+
+    class Meta:
+        model = LicenseRequest
+        fields = [
+            'id', 'client_name', 'company', 'email', 'project_type', 
+            'duration', 'message', 'asset_type', 'asset_id', 'status', 'created_at'
+        ]
+        # 👇 Prevents users from injecting status, prices, or AI drafts via POST
+        read_only_fields = ['id', 'status', 'created_at']
+
+    def validate(self, data):
+        asset_type = data.pop('asset_type')
+        asset_id = data.pop('asset_id')
+        asset_type = asset_type.strip().lower()
+        if asset_type not in {'photo', 'video'}:
+            raise serializers.ValidationError({"asset_type": "Invalid asset type."})
+        
+        try:
+            content_type = ContentType.objects.get(app_label='products', model=asset_type)
+            model_class = content_type.model_class()
+            
+            # 👇 IDOR Prevention: Ensure the specific media asset actually exists
+            if not model_class.objects.filter(id=asset_id, is_active=True).exists():
+                raise serializers.ValidationError({"asset_id": "The requested media asset does not exist."})
+                
+            # Attach the resolved content type and ID to the validated data
+            data['content_type'] = content_type
+            data['object_id'] = asset_id
+            
+        except ContentType.DoesNotExist:
+            raise serializers.ValidationError({"asset_type": "Invalid asset type."})
+
+        return data
 
 class ProductListSerializer(serializers.ModelSerializer):
     """

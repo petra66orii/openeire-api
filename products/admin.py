@@ -4,7 +4,7 @@ from django.utils.safestring import mark_safe
 from django.contrib import admin
 
 from checkout.models import ProductShipping
-from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate
+from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate, LicenseRequest
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
@@ -222,6 +222,49 @@ class VideoAdmin(admin.ModelAdmin):
         }),
     )
 
+class LicenseRequestAdmin(admin.ModelAdmin):
+    list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
+    list_filter = ('status', 'project_type', 'created_at')
+    search_fields = ('client_name', 'email', 'company')
+    readonly_fields = ('asset_link', 'content_type', 'object_id', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Client Info', {
+            'fields': ('client_name', 'company', 'email')
+        }),
+        ('Request Details', {
+            'fields': ('asset_link', 'project_type', 'duration', 'message')
+        }),
+        ('Admin / Fulfillment', {
+            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
+            'description': 'These fields will be utilized in Stage 3 for AI quoting.'
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('content_type').prefetch_related('asset')
+
+    def get_asset_link(self, obj):
+        asset = obj.asset
+        if not asset:
+            return "-"
+        url = reverse(
+            f"{custom_admin_site.name}:{asset._meta.app_label}_{asset._meta.model_name}_change",
+            args=[asset.pk],
+        )
+        return format_html('<a href="{}">{}</a>', url, asset)
+    get_asset_link.short_description = 'Requested Asset'
+    get_asset_link.admin_order_field = 'object_id'
+
+    def asset_link(self, obj):
+        return self.get_asset_link(obj)
+    asset_link.short_description = 'Requested Asset'
+
 class ProductShippingInline(admin.TabularInline):
     """
     Allows editing shipping costs directly inside the Product page.
@@ -319,3 +362,4 @@ custom_admin_site.register(Video, VideoAdmin)
 custom_admin_site.register(ProductVariant, ProductVariantAdmin)
 custom_admin_site.register(ProductReview, ProductReviewAdmin)
 custom_admin_site.register(PrintTemplate, PrintTemplateAdmin)
+custom_admin_site.register(LicenseRequest, LicenseRequestAdmin)

@@ -51,6 +51,7 @@ class Photo(models.Model):
     
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self):
         return self.title
@@ -80,9 +81,61 @@ class Video(models.Model):
     )
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self):
         return self.title
+    
+class LicenseRequest(models.Model):
+    STATUS_CHOICES = [
+        ('NEW', 'New'),
+        ('REVIEWED', 'Reviewed'),
+        ('QUOTED', 'Quoted'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+    ]
+    
+    PROJECT_TYPE_CHOICES = [
+        ('REAL_ESTATE', 'Real Estate / Property'),
+        ('EDITORIAL', 'Editorial / Documentary'),
+        ('COMMERCIAL', 'Commercial / Advertising'),
+        ('OTHER', 'Other'),
+    ]
+    
+    DURATION_CHOICES = [
+        ('1_YEAR', '1 Year'),
+        ('2_YEARS', '2 Years'),
+        ('PERPETUAL', 'Perpetual / Lifetime'),
+        ('OTHER', 'Other'),
+    ]
+
+    # 👇 Generic Foreign Key to link to either Photo or Video
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, limit_choices_to={'model__in': ('photo', 'video')})
+    object_id = models.PositiveIntegerField()
+    asset = GenericForeignKey('content_type', 'object_id')
+
+    # Client Details
+    client_name = models.CharField(max_length=255)
+    company = models.CharField(max_length=255, blank=True, null=True)
+    email = models.EmailField()
+    
+    # Request Details
+    project_type = models.CharField(max_length=50, choices=PROJECT_TYPE_CHOICES)
+    duration = models.CharField(max_length=50, choices=DURATION_CHOICES)
+    message = models.TextField(blank=True, null=True, max_length=2000)
+    
+    # Tracking
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='NEW')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # 👇 Future-proofing for Stage 3 (AI & Stripe)
+    ai_draft_response = models.TextField(blank=True, null=True, help_text="AI generated draft response")
+    quoted_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    stripe_payment_link = models.URLField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Request by {self.client_name} for {self.asset}"
 
 class ProductVariant(models.Model):
     """
