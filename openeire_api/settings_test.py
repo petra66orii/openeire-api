@@ -1,8 +1,6 @@
 from .settings import *  # noqa
 
 # Force local file storage for tests (avoid R2/S3 calls)
-DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
-
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
     "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
