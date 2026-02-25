@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import sys
 from dotenv import load_dotenv
 from datetime import timedelta
 from corsheaders.defaults import default_headers
@@ -150,6 +151,14 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'openeire_api.wsgi.application'
 
+RUNNING_TESTS = "test" in sys.argv
+
+if RUNNING_TESTS:
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+    MEDIA_ROOT = BASE_DIR / "test_media"
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
