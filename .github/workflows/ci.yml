@@ -29,7 +29,7 @@ jobs:
           --health-retries 5
 
     env:
-      DJANGO_SETTINGS_MODULE: openeire_api.settings
+      DJANGO_SETTINGS_MODULE: openeire_api.settings_test
       SECRET_KEY: ci-secret-key
       DEBUG: "False"
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
