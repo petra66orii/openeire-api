@@ -56,11 +56,14 @@ class LicenseRequestTests(APITestCase):
         }
 
     def test_license_request_throttled_after_10(self):
-        payload = self._payload()
-        for _ in range(10):
+        for i in range(10):
+            payload = self._payload()
+            payload["email"] = f"test+{i}@example.com"
             response = self.client.post(self.url, payload, format="json")
             self.assertEqual(response.status_code, 201)
 
+        payload = self._payload()
+        payload["email"] = "test+final@example.com"
         response = self.client.post(self.url, payload, format="json")
         self.assertEqual(response.status_code, 429)
 
