@@ -110,8 +110,13 @@ class LicenseRequest(models.Model):
     ]
 
     # 👇 Generic Foreign Key to link to either Photo or Video
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, limit_choices_to={'model__in': ('photo', 'video')})
-    object_id = models.PositiveIntegerField()
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        limit_choices_to={'model__in': ('photo', 'video')},
+        db_index=True
+    )
+    object_id = models.PositiveBigIntegerField(db_index=True)
     asset = GenericForeignKey('content_type', 'object_id')
 
     # Client Details
@@ -136,6 +141,15 @@ class LicenseRequest(models.Model):
 
     def __str__(self):
         return f"Request by {self.client_name} for {self.asset}"
+    
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ('content_type', 'object_id', 'email')  # Prevent duplicate requests for same asset by same email
+        verbose_name = "License Request"
+        verbose_name_plural = "License Requests"
+        indexes = [
+            models.Index(fields=['content_type', 'object_id'], name='license_asset_idx'),
+        ]
 
 class ProductVariant(models.Model):
     """

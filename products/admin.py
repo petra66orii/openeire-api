@@ -247,7 +247,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('content_type').prefetch_related('asset')
+        return qs.select_related('content_type')
 
     def get_asset_link(self, obj):
         asset = obj.asset

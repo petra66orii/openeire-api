@@ -140,7 +140,10 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
 
     def get_related_products(self, obj):
         # Filter by collection, exclude current photo, randomize order, limit to 4
-        qs = Photo.objects.filter(collection=obj.collection).exclude(id=obj.id).order_by('?')[:4]
+        qs = Photo.objects.filter(
+            collection=obj.collection,
+            is_active=True
+        ).exclude(id=obj.id).order_by('?')[:4]
         # Reuse the existing List Serializer so the format matches your Grid Cards
         return PhotoListSerializer(qs, many=True, context=self.context).data
 
@@ -179,7 +182,10 @@ class VideoDetailSerializer(serializers.ModelSerializer):
         ).count()
         
     def get_related_products(self, obj):
-        qs = Video.objects.filter(collection=obj.collection).exclude(id=obj.id).order_by('?')[:4]
+        qs = Video.objects.filter(
+            collection=obj.collection,
+            is_active=True
+        ).exclude(id=obj.id).order_by('?')[:4]
         return VideoListSerializer(qs, many=True, context=self.context).data
 
 
