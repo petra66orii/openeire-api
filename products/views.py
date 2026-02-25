@@ -6,14 +6,14 @@ from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
-from django.utils import timezone
 from django.conf import settings
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
-from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess
+from rest_framework.throttling import ScopedRateThrottle
+from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess, LicenseRequest
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
@@ -21,7 +21,8 @@ from .serializers import (
     PhotoDetailSerializer,
     VideoDetailSerializer,
     ProductDetailSerializer,
-    ProductReviewSerializer
+    ProductReviewSerializer,
+    LicenseRequestSerializer,
 )
 from .permissions import IsDigitalGalleryAuthorized
 
@@ -94,8 +95,8 @@ class GalleryListView(generics.ListAPIView):
                 raise PermissionDenied(checker.message)
 
         # 2. INITIALIZE BASE QUERYSETS
-        photos = Photo.objects.all()
-        videos = Video.objects.all()
+        photos = Photo.objects.filter(is_active=True)
+        videos = Video.objects.filter(is_active=True)
 
         # 3. APPLY COLLECTION FILTER (Case Insensitive)
         # Using __iexact fixes the "thailand" vs "Thailand" issue
@@ -179,22 +180,29 @@ class GalleryListView(generics.ListAPIView):
     
 
 class DigitalPhotoDetailView(generics.RetrieveAPIView):
-    queryset = Photo.objects.all()
+    queryset = Photo.objects.filter(is_active=True)
     serializer_class = PhotoDetailSerializer
     permission_classes = [IsDigitalGalleryAuthorized]
 
 class PhysicalPhotoDetailView(generics.RetrieveAPIView):
-    queryset = Photo.objects.all()
+    queryset = Photo.objects.filter(is_active=True)
     serializer_class = PhotoDetailSerializer
     permission_classes = [AllowAny]
 
 class VideoDetailView(generics.RetrieveAPIView):
-    queryset = Video.objects.all()
+    queryset = Video.objects.filter(is_active=True)
     serializer_class = VideoDetailSerializer
     permission_classes = [IsDigitalGalleryAuthorized]
 
+class LicenseRequestCreateView(generics.CreateAPIView):
+    queryset = LicenseRequest.objects.all()
+    serializer_class = LicenseRequestSerializer
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'license_request'
+
 class ProductDetailView(generics.RetrieveAPIView):
-    queryset = ProductVariant.objects.all()
+    queryset = ProductVariant.objects.filter(photo__is_active=True)
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
 
@@ -248,13 +256,16 @@ class ProductReviewListCreateView(generics.ListCreateAPIView):
         product_type_str = self.kwargs.get('product_type')
         product_pk = self.kwargs.get('pk')
         
-        model_map = {'photo': Photo, 'video': Video, 'product': ProductVariant}
-        model_class = model_map.get(product_type_str)
-        
-        if not model_class:
+        if product_type_str == 'photo':
+            queryset = Photo.objects.filter(is_active=True)
+        elif product_type_str == 'video':
+            queryset = Video.objects.filter(is_active=True)
+        elif product_type_str == 'product':
+            queryset = ProductVariant.objects.filter(photo__is_active=True)
+        else:
             raise Http404("Invalid product type.")
         
-        return generics.get_object_or_404(model_class.objects.all(), pk=product_pk)
+        return generics.get_object_or_404(queryset, pk=product_pk)
     
 class ShoppingBagRecommendationsView(APIView):
     """
@@ -264,7 +275,7 @@ class ShoppingBagRecommendationsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        photos = Photo.objects.annotate(
+        photos = Photo.objects.filter(is_active=True).annotate(
             starting_price=Min('variants__price')
         ).order_by('?')[:4]
         
