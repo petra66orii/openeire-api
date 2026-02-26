@@ -2,6 +2,7 @@ import os
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404
+from django.db import transaction
 from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
@@ -240,26 +241,34 @@ class AILicenseDraftUpdateView(APIView):
     permission_classes = [IsAIWorkerAuthorized]
 
     def post(self, request, pk):
-        req_obj = get_object_or_404(LicenseRequest, pk=pk)
-        if req_obj.status not in ['NEW', 'REVIEWED']:
+        serializer = AIDraftUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        draft_text = serializer.validated_data["draft_text"]
+        allowed_statuses = ['NEW', 'REVIEWED']
+
+        with transaction.atomic():
+            updated = LicenseRequest.objects.filter(
+                pk=pk,
+                status__in=allowed_statuses
+            ).filter(
+                Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact="")
+            ).update(ai_draft_response=draft_text)
+
+        if updated == 1:
+            return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
+
+        req_obj = LicenseRequest.objects.filter(pk=pk).only('status', 'ai_draft_response').first()
+        if not req_obj:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if req_obj.status not in allowed_statuses:
             return Response(
                 {"error": "Draft updates are not allowed for this status."},
                 status=status.HTTP_409_CONFLICT
             )
-
-        if req_obj.ai_draft_response and req_obj.ai_draft_response.strip():
-            return Response(
-                {"error": "Draft already exists for this request."},
-                status=status.HTTP_409_CONFLICT
-            )
-
-        serializer = AIDraftUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        draft_text = serializer.validated_data["draft_text"]
-
-        req_obj.ai_draft_response = draft_text
-        req_obj.save(update_fields=['ai_draft_response'])
-        return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
+        return Response(
+            {"error": "Draft already exists for this request."},
+            status=status.HTTP_409_CONFLICT
+        )
 
 class ProductDetailView(generics.RetrieveAPIView):
     queryset = ProductVariant.objects.filter(photo__is_active=True)
