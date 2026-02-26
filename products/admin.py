@@ -170,6 +170,27 @@ class ProductVariantAdminForm(forms.ModelForm):
             existing_help = self.fields['price'].help_text or ''
             self.fields['price'].help_text = existing_help + get_price_autofill_script()
 
+
+class LicenseRequestAdminForm(forms.ModelForm):
+    class Meta:
+        model = LicenseRequest
+        fields = '__all__'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if not self.instance or not self.instance.pk:
+            return cleaned_data
+
+        quoted_price_changed = 'quoted_price' in self.changed_data
+        link_present = bool(self.instance.stripe_payment_link)
+        link_still_present = bool(cleaned_data.get('stripe_payment_link'))
+
+        if quoted_price_changed and link_present and link_still_present:
+            raise forms.ValidationError(
+                "Quoted price changed but a Stripe payment link already exists. "
+                "Clear the Stripe link field to regenerate it."
+            )
+        return cleaned_data
 # 1. Create an Inline for Variants
 class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
@@ -230,6 +251,7 @@ class VideoAdmin(admin.ModelAdmin):
     )
 
 class LicenseRequestAdmin(admin.ModelAdmin):
+    form = LicenseRequestAdminForm
     list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
     list_filter = ('status', 'project_type', 'created_at')
     search_fields = ('client_name', 'email', 'company')
@@ -343,7 +365,12 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         # If the client wants to regenerate the link for a new price, 
         # they just delete the old link, change the price, and click Save again!
         elif 'quoted_price' in form.changed_data and obj.stripe_payment_link:
-             messages.warning(request, "Price changed, but a Stripe link already exists. Clear the Stripe Link field and save to generate a new one.")
+            messages.error(
+                request,
+                "Quoted price changed but a Stripe link already exists. "
+                "Clear the Stripe Link field to regenerate it."
+            )
+            return
 
         # Finally, save the object to the database
         super().save_model(request, obj, form, change)
