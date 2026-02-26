@@ -310,6 +310,10 @@ AI_WORKER_IP_ALLOWLIST = [
     ip.strip() for ip in os.getenv('AI_WORKER_IP_ALLOWLIST', '').split(',')
     if ip.strip()
 ]
+AI_WORKER_TRUSTED_PROXY_IPS = [
+    ip.strip() for ip in os.getenv('AI_WORKER_TRUSTED_PROXY_IPS', '').split(',')
+    if ip.strip()
+]
 AI_WORKER_MAX_BATCH = int(os.getenv('AI_WORKER_MAX_BATCH', '25'))
 AI_WORKER_MAX_BATCH_HARD = int(os.getenv('AI_WORKER_MAX_BATCH_HARD', '100'))
 AI_DRAFT_MAX_CHARS = int(os.getenv('AI_DRAFT_MAX_CHARS', '8000'))

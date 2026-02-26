@@ -54,11 +54,12 @@ class IsAIWorkerAuthorized(permissions.BasePermission):
 
         allowlist = getattr(settings, 'AI_WORKER_IP_ALLOWLIST', None)
         if allowlist:
-            forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
-            if forwarded_for:
-                client_ip = forwarded_for.split(',')[0].strip()
-            else:
-                client_ip = request.META.get('REMOTE_ADDR', '')
+            client_ip = request.META.get('REMOTE_ADDR', '')
+            trusted_proxies = getattr(settings, 'AI_WORKER_TRUSTED_PROXY_IPS', None)
+            if trusted_proxies and client_ip in trusted_proxies:
+                forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+                if forwarded_for:
+                    client_ip = forwarded_for.split(',')[0].strip()
             if client_ip not in allowlist:
                 return False
 
