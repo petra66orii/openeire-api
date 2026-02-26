@@ -2,6 +2,7 @@ import os
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404
+from django.db import transaction
 from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
@@ -23,8 +24,9 @@ from .serializers import (
     ProductDetailSerializer,
     ProductReviewSerializer,
     LicenseRequestSerializer,
+    AIDraftUpdateSerializer,
 )
-from .permissions import IsDigitalGalleryAuthorized
+from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 
 class RequestGalleryAccessView(APIView):
@@ -200,6 +202,73 @@ class LicenseRequestCreateView(generics.CreateAPIView):
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'license_request'
+
+class AILicenseDraftQueueView(APIView):
+    """Secure endpoint for the local AI worker to fetch pending requests."""
+    authentication_classes = [] 
+    permission_classes = [IsAIWorkerAuthorized]
+
+    def get(self, request):
+        # Find requests that don't have an AI draft yet
+        base_qs = LicenseRequest.objects.filter(
+            Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact=""),
+            status__in=['NEW', 'REVIEWED']
+        ).order_by('created_at')
+
+        default_limit = getattr(settings, 'AI_WORKER_MAX_BATCH', 25)
+        hard_max = getattr(settings, 'AI_WORKER_MAX_BATCH_HARD', 100)
+        try:
+            limit = int(request.query_params.get('limit', default_limit))
+        except (TypeError, ValueError):
+            limit = default_limit
+        limit = max(1, min(limit, hard_max))
+
+        pending = base_qs[:limit]
+        data = [{
+            "id": req.id,
+            "client_name": req.client_name,
+            "company": req.company or "N/A",
+            "project_type": req.get_project_type_display(),
+            "duration": req.get_duration_display(),
+            "message": req.message or "No additional details provided.",
+            "asset_name": str(req.asset)
+        } for req in pending]
+        return Response(data, status=status.HTTP_200_OK)
+
+class AILicenseDraftUpdateView(APIView):
+    """Secure endpoint for the local AI worker to post the finished draft."""
+    authentication_classes = [] 
+    permission_classes = [IsAIWorkerAuthorized]
+
+    def post(self, request, pk):
+        serializer = AIDraftUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        draft_text = serializer.validated_data["draft_text"]
+        allowed_statuses = ['NEW', 'REVIEWED']
+
+        with transaction.atomic():
+            updated = LicenseRequest.objects.filter(
+                pk=pk,
+                status__in=allowed_statuses
+            ).filter(
+                Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact="")
+            ).update(ai_draft_response=draft_text)
+
+        if updated == 1:
+            return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
+
+        req_obj = LicenseRequest.objects.filter(pk=pk).only('status', 'ai_draft_response').first()
+        if not req_obj:
+            return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if req_obj.status not in allowed_statuses:
+            return Response(
+                {"error": "Draft updates are not allowed for this status."},
+                status=status.HTTP_409_CONFLICT
+            )
+        return Response(
+            {"error": "Draft already exists for this request."},
+            status=status.HTTP_409_CONFLICT
+        )
 
 class ProductDetailView(generics.RetrieveAPIView):
     queryset = ProductVariant.objects.filter(photo__is_active=True)

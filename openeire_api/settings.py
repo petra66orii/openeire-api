@@ -304,6 +304,22 @@ EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER')
 
 # Stripe Configuration
+
+AI_WORKER_SECRET = os.getenv('AI_WORKER_SECRET')
+AI_WORKER_IP_ALLOWLIST = [
+    ip.strip() for ip in os.getenv('AI_WORKER_IP_ALLOWLIST', '').split(',')
+    if ip.strip()
+]
+AI_WORKER_TRUSTED_PROXY_IPS = [
+    ip.strip() for ip in os.getenv('AI_WORKER_TRUSTED_PROXY_IPS', '').split(',')
+    if ip.strip()
+]
+AI_WORKER_MAX_BATCH = int(os.getenv('AI_WORKER_MAX_BATCH', '25'))
+AI_WORKER_MAX_BATCH_HARD = int(os.getenv('AI_WORKER_MAX_BATCH_HARD', '100'))
+AI_DRAFT_MAX_CHARS = int(os.getenv('AI_DRAFT_MAX_CHARS', '8000'))
+STRIPE_TIMEOUT_SECONDS = int(os.getenv('STRIPE_TIMEOUT_SECONDS', '10'))
+STRIPE_MAX_NETWORK_RETRIES = int(os.getenv('STRIPE_MAX_NETWORK_RETRIES', '2'))
+
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
