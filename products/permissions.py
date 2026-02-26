@@ -1,5 +1,10 @@
+import logging
+import secrets
+from django.conf import settings
 from rest_framework import permissions
 from .models import GalleryAccess
+
+logger = logging.getLogger(__name__)
 
 class IsDigitalGalleryAuthorized(permissions.BasePermission):
     """
@@ -21,3 +26,40 @@ class IsDigitalGalleryAuthorized(permissions.BasePermission):
             return access_record.is_valid
         except GalleryAccess.DoesNotExist:
             return False
+
+
+class IsAIWorkerAuthorized(permissions.BasePermission):
+    """
+    Allows access only if a valid AI worker token is provided.
+    Optionally enforces an IP allowlist via settings.AI_WORKER_IP_ALLOWLIST.
+    """
+    message = "Unauthorized"
+
+    def has_permission(self, request, view):
+        expected_secret = getattr(settings, 'AI_WORKER_SECRET', None)
+        if not expected_secret or expected_secret == 'secret':
+            logger.error("AI_WORKER_SECRET missing or insecure; denying access.")
+            return False
+
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return False
+
+        token = auth_header[len('Bearer '):].strip()
+        if not token:
+            return False
+
+        if not secrets.compare_digest(token, expected_secret):
+            return False
+
+        allowlist = getattr(settings, 'AI_WORKER_IP_ALLOWLIST', None)
+        if allowlist:
+            forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+            if forwarded_for:
+                client_ip = forwarded_for.split(',')[0].strip()
+            else:
+                client_ip = request.META.get('REMOTE_ADDR', '')
+            if client_ip not in allowlist:
+                return False
+
+        return True
