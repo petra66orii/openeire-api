@@ -1,13 +1,20 @@
 import json
+from decimal import Decimal, ROUND_HALF_UP
+import stripe
 from django import forms
+from django.conf import settings
+from django.contrib import admin, messages
 from django.utils.safestring import mark_safe
-from django.contrib import admin
 
 from checkout.models import ProductShipping
 from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate, LicenseRequest
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
+
+stripe.api_key = settings.STRIPE_SECRET_KEY
+stripe.max_network_retries = getattr(settings, 'STRIPE_MAX_NETWORK_RETRIES', 2)
+STRIPE_TIMEOUT_SECONDS = getattr(settings, 'STRIPE_TIMEOUT_SECONDS', 10)
 
 def get_price_autofill_script():
     """Generates the JS needed to auto-fill prices, SKUs, and filter Size dropdowns."""
@@ -171,7 +178,7 @@ class ProductVariantInline(admin.TabularInline):
 
 # @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
-    form = PhotoAdminForm # 👇 Added the custom form here!
+    form = PhotoAdminForm
     
     list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
     list_filter = ('collection',)
@@ -237,7 +244,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         }),
         ('Admin / Fulfillment', {
             'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
-            'description': 'These fields will be utilized in Stage 3 for AI quoting.'
+            'description': 'Enter a quoted price and click Save to generate a Stripe payment link.'
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -264,6 +271,82 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     def asset_link(self, obj):
         return self.get_asset_link(obj)
     asset_link.short_description = 'Requested Asset'
+
+    def save_model(self, request, obj, form, change):
+        # If the client entered a price, but there is no Stripe link yet
+        if obj.pk is None:
+            super().save_model(request, obj, form, change)
+            return
+
+        if obj.quoted_price and not obj.stripe_payment_link:
+            try:
+                if obj.quoted_price <= 0:
+                    messages.error(request, "Quoted price must be greater than zero.")
+                    super().save_model(request, obj, form, change)
+                    return
+
+                # 1. Create a custom Product in Stripe for this specific license
+                product_name = f"Commercial License: {obj.asset} ({obj.get_project_type_display()})"
+                amount_in_cents = int(
+                    (obj.quoted_price * Decimal('100')).quantize(
+                        Decimal('1'),
+                        rounding=ROUND_HALF_UP
+                    )
+                )
+                idempotency_base = f"license-request-{obj.pk}-quote-{amount_in_cents}"
+                request_opts = {"timeout": STRIPE_TIMEOUT_SECONDS}
+
+                stripe_product = stripe.Product.create(
+                    name=product_name,
+                    idempotency_key=f"{idempotency_base}-product",
+                    **request_opts
+                )
+
+                # 2. Create a Price for that Product (Stripe uses cents, so multiply by 100)
+                stripe_price = stripe.Price.create(
+                    product=stripe_product.id,
+                    unit_amount=amount_in_cents,
+                    currency="eur",
+                    idempotency_key=f"{idempotency_base}-price",
+                    **request_opts
+                )
+
+                # 3. Generate the reusable Payment Link (Restricted to ONE payment)
+                payment_link = stripe.PaymentLink.create(
+                    line_items=[{"price": stripe_price.id, "quantity": 1}],
+                    restrictions={
+                        "completed_sessions": {
+                            "limit": 1, # The link automatically expires after 1 successful payment!
+                        },
+                    },
+                    idempotency_key=f"{idempotency_base}-link",
+                    **request_opts
+                )
+
+                # 4. Save the link to the object
+                obj.stripe_payment_link = payment_link.url
+                
+                # Automatically move the status to QUOTED
+                if obj.status in ['NEW', 'REVIEWED']:
+                    obj.status = 'QUOTED'
+                    
+                messages.success(
+                    request,
+                    f"Stripe Payment Link successfully generated for EUR {obj.quoted_price}."
+                )
+
+            except stripe.error.StripeError as e:
+                messages.error(request, f"Failed to generate Stripe link: {e.user_message or str(e)}")
+            except Exception as e:
+                messages.error(request, f"Failed to generate Stripe link: {e}")
+                
+        # If the client wants to regenerate the link for a new price, 
+        # they just delete the old link, change the price, and click Save again!
+        elif 'quoted_price' in form.changed_data and obj.stripe_payment_link:
+             messages.warning(request, "Price changed, but a Stripe link already exists. Clear the Stripe Link field and save to generate a new one.")
+
+        # Finally, save the object to the database
+        super().save_model(request, obj, form, change)
 
 class ProductShippingInline(admin.TabularInline):
     """
@@ -363,3 +446,4 @@ custom_admin_site.register(ProductVariant, ProductVariantAdmin)
 custom_admin_site.register(ProductReview, ProductReviewAdmin)
 custom_admin_site.register(PrintTemplate, PrintTemplateAdmin)
 custom_admin_site.register(LicenseRequest, LicenseRequestAdmin)
+
