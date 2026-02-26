@@ -23,8 +23,9 @@ from .serializers import (
     ProductDetailSerializer,
     ProductReviewSerializer,
     LicenseRequestSerializer,
+    AIDraftUpdateSerializer,
 )
-from .permissions import IsDigitalGalleryAuthorized
+from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 
 class RequestGalleryAccessView(APIView):
@@ -200,6 +201,65 @@ class LicenseRequestCreateView(generics.CreateAPIView):
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'license_request'
+
+class AILicenseDraftQueueView(APIView):
+    """Secure endpoint for the local AI worker to fetch pending requests."""
+    authentication_classes = [] 
+    permission_classes = [IsAIWorkerAuthorized]
+
+    def get(self, request):
+        # Find requests that don't have an AI draft yet
+        base_qs = LicenseRequest.objects.filter(
+            Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact=""),
+            status__in=['NEW', 'REVIEWED']
+        ).order_by('created_at')
+
+        default_limit = getattr(settings, 'AI_WORKER_MAX_BATCH', 25)
+        hard_max = getattr(settings, 'AI_WORKER_MAX_BATCH_HARD', 100)
+        try:
+            limit = int(request.query_params.get('limit', default_limit))
+        except (TypeError, ValueError):
+            limit = default_limit
+        limit = max(1, min(limit, hard_max))
+
+        pending = base_qs[:limit]
+        data = [{
+            "id": req.id,
+            "client_name": req.client_name,
+            "company": req.company or "N/A",
+            "project_type": req.get_project_type_display(),
+            "duration": req.get_duration_display(),
+            "message": req.message or "No additional details provided.",
+            "asset_name": str(req.asset)
+        } for req in pending]
+        return Response(data, status=status.HTTP_200_OK)
+
+class AILicenseDraftUpdateView(APIView):
+    """Secure endpoint for the local AI worker to post the finished draft."""
+    authentication_classes = [] 
+    permission_classes = [IsAIWorkerAuthorized]
+
+    def post(self, request, pk):
+        req_obj = get_object_or_404(LicenseRequest, pk=pk)
+        if req_obj.status not in ['NEW', 'REVIEWED']:
+            return Response(
+                {"error": "Draft updates are not allowed for this status."},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        if req_obj.ai_draft_response and req_obj.ai_draft_response.strip():
+            return Response(
+                {"error": "Draft already exists for this request."},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        serializer = AIDraftUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        draft_text = serializer.validated_data["draft_text"]
+
+        req_obj.ai_draft_response = draft_text
+        req_obj.save(update_fields=['ai_draft_response'])
+        return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
 
 class ProductDetailView(generics.RetrieveAPIView):
     queryset = ProductVariant.objects.filter(photo__is_active=True)

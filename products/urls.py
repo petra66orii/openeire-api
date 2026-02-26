@@ -1,5 +1,7 @@
 from django.urls import path
 from .views import (
+    AILicenseDraftUpdateView,
+    AILicenseDraftQueueView,
     GalleryListView,
     DigitalPhotoDetailView,
     PhysicalPhotoDetailView,
@@ -25,4 +27,6 @@ urlpatterns = [
     path('variants/<int:pk>/', ProductDetailView.as_view(), name='variant_detail'),
     path('<str:product_type>/<int:pk>/reviews/', ProductReviewListCreateView.as_view(), name='review_list_create'),
     path('license-requests/', LicenseRequestCreateView.as_view(), name='license-request-create'),
+    path('internal/draft-queue/', AILicenseDraftQueueView.as_view(), name='ai-draft-queue'),
+    path('internal/draft-update/<int:pk>/', AILicenseDraftUpdateView.as_view(), name='ai-draft-update'),
 ]

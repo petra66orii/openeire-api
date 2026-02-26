@@ -1,5 +1,12 @@
 from rest_framework import serializers
-from .models import Photo, Video, ProductVariant, ProductReview, LicenseRequest
+from .models import (
+    Photo,
+    Video,
+    ProductVariant,
+    ProductReview,
+    LicenseRequest,
+    AI_DRAFT_MAX_CHARS,
+)
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Avg
 
@@ -80,6 +87,20 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"asset_type": "Invalid asset type."})
 
         return data
+
+
+class AIDraftUpdateSerializer(serializers.Serializer):
+    draft_text = serializers.CharField(
+        max_length=AI_DRAFT_MAX_CHARS,
+        allow_blank=False,
+        trim_whitespace=True
+    )
+
+    def validate_draft_text(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("draft_text cannot be empty.")
+        return value
 
 class ProductListSerializer(serializers.ModelSerializer):
     """
