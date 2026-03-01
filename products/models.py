@@ -9,15 +9,8 @@ from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.conf import settings
-from django.core.files.storage import FileSystemStorage
 
-from .storage import PrivateR2Storage
-
-if settings.DEBUG or getattr(settings, "RUNNING_TESTS", False):
-    private_storage = FileSystemStorage(location=getattr(settings, "MEDIA_ROOT", None))
-else:
-    private_storage = PrivateR2Storage()
+from .storage import PrivateAssetStorage
 
 AI_DRAFT_MAX_CHARS = 8000
 
@@ -58,7 +51,7 @@ class Photo(models.Model):
     # PRIVATE: Uploads exclusively to the Private Vault!
     high_res_file = models.FileField(
         upload_to="digital_products/photos/", 
-        storage=private_storage
+        storage=PrivateAssetStorage()
     )
     
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
@@ -82,7 +75,7 @@ class Video(models.Model):
     # PRIVATE: Uploads exclusively to the Private Vault!
     video_file = models.FileField(
         upload_to="digital_products/videos/", 
-        storage=private_storage
+        storage=PrivateAssetStorage()
     )
     
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
