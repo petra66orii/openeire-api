@@ -10,6 +10,8 @@ from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 
+from .storage import PrivateAssetStorage
+
 AI_DRAFT_MAX_CHARS = 8000
 
 class GalleryAccess(models.Model):
@@ -39,19 +41,21 @@ class GalleryAccess(models.Model):
         return f"{self.email} ({self.access_code})"
     
 class Photo(models.Model):
-    """Model for the main design/photo asset."""
     title = models.CharField(max_length=254)
     description = models.TextField()
     collection = models.CharField(max_length=100)
     
-    # Images
+    # PUBLIC: Stays in the default public bucket
     preview_image = models.ImageField(upload_to="previews/photos/")
-    high_res_file = models.FileField(upload_to="digital_products/photos/")
     
-    # Digital Pricing (Legacy/Download options)
+    # PRIVATE: Uploads exclusively to the Private Vault!
+    high_res_file = models.FileField(
+        upload_to="digital_products/photos/", 
+        storage=PrivateAssetStorage()
+    )
+    
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
     price_4k = models.DecimalField(max_digits=6, decimal_places=2)
-    
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
@@ -61,27 +65,24 @@ class Photo(models.Model):
 
 
 class Video(models.Model):
-    """Model for digital video products"""
     title = models.CharField(max_length=254)
     description = models.TextField()
     collection = models.CharField(max_length=100)
+    
+    # PUBLIC: Stays in the default public bucket
     thumbnail_image = models.ImageField(upload_to="previews/videos/")
-    video_file = models.FileField(upload_to="digital_products/videos/")
+    
+    # PRIVATE: Uploads exclusively to the Private Vault!
+    video_file = models.FileField(
+        upload_to="digital_products/videos/", 
+        storage=PrivateAssetStorage()
+    )
+    
     price_hd = models.DecimalField(max_digits=6, decimal_places=2)
     price_4k = models.DecimalField(max_digits=6, decimal_places=2)
     duration = models.PositiveIntegerField(help_text="Duration in seconds", null=True, blank=True)
-    resolution = models.CharField(
-        max_length=50, 
-        help_text="e.g. 3840x2160 (4K)", 
-        null=True, 
-        blank=True
-    )
-    frame_rate = models.CharField(
-        max_length=20, 
-        help_text="e.g. 24fps, 60fps", 
-        null=True, 
-        blank=True
-    )
+    resolution = models.CharField(max_length=50, help_text="e.g. 3840x2160 (4K)", null=True, blank=True)
+    frame_rate = models.CharField(max_length=20, help_text="e.g. 24fps, 60fps", null=True, blank=True)
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
@@ -137,7 +138,6 @@ class LicenseRequest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # 👇 Future-proofing for Stage 3 (AI & Stripe)
     ai_draft_response = models.TextField(
         blank=True,
         null=True,
@@ -152,6 +152,7 @@ class LicenseRequest(models.Model):
         validators=[MinValueValidator(Decimal('0.01'))]
     )
     stripe_payment_link = models.URLField(blank=True, null=True)
+    stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
     def __str__(self):
         return f"Request by {self.client_name} for {self.asset}"

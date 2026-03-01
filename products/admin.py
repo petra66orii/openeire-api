@@ -255,7 +255,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
     list_filter = ('status', 'project_type', 'created_at')
     search_fields = ('client_name', 'email', 'company')
-    readonly_fields = ('asset_link', 'content_type', 'object_id', 'created_at', 'updated_at')
+    readonly_fields = ('asset_link', 'content_type', 'object_id', 'created_at', 'updated_at', 'stripe_payment_link_id')
     
     fieldsets = (
         ('Client Info', {
@@ -265,7 +265,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             'fields': ('asset_link', 'project_type', 'duration', 'message')
         }),
         ('Admin / Fulfillment', {
-            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
+            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'stripe_payment_link_id', 'ai_draft_response'),
             'description': 'Enter a quoted price and click Save to generate a Stripe payment link.'
         }),
         ('Timestamps', {
@@ -295,6 +295,9 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     asset_link.short_description = 'Requested Asset'
 
     def save_model(self, request, obj, form, change):
+        if not obj.stripe_payment_link:
+            obj.stripe_payment_link_id = None
+
         # If the client entered a price, but there is no Stripe link yet
         if obj.pk is None:
             super().save_model(request, obj, form, change)
@@ -347,6 +350,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
 
                 # 4. Save the link to the object
                 obj.stripe_payment_link = payment_link.url
+                obj.stripe_payment_link_id = payment_link.id
                 
                 # Automatically move the status to QUOTED
                 if obj.status in ['NEW', 'REVIEWED']:

@@ -16,6 +16,17 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG') == 'True'
 
+# --- R2 CONFIG (Shared Across Environments) ---
+R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
+R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
+R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
+R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
+R2_CUSTOM_DOMAIN = os.getenv('R2_CUSTOM_DOMAIN')
+
+R2_PRIVATE_BUCKET_NAME = os.getenv('R2_PRIVATE_BUCKET_NAME')
+R2_PRIVATE_ACCESS_KEY_ID = os.getenv('R2_PRIVATE_ACCESS_KEY_ID', R2_ACCESS_KEY_ID)
+R2_PRIVATE_SECRET_ACCESS_KEY = os.getenv('R2_PRIVATE_SECRET_ACCESS_KEY', R2_SECRET_ACCESS_KEY)
+
 ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
@@ -150,13 +161,6 @@ WSGI_APPLICATION = 'openeire_api.wsgi.application'
 
 RUNNING_TESTS = "test" in sys.argv
 
-if RUNNING_TESTS:
-    STORAGES = {
-        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
-    }
-    MEDIA_ROOT = BASE_DIR / "test_media"
-
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
@@ -214,41 +218,41 @@ STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # 2. MEDIA FILES (Uploads)
-# These go to Cloudflare R2 because they are large and permanent.
-if not DEBUG:
-    # R2 / AWS S3 CONFIGURATION
-    AWS_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
-    AWS_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
-    AWS_STORAGE_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
+if RUNNING_TESTS:
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / "test_media"
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+elif not DEBUG:
+    # --- PUBLIC BUCKET CONFIGURATION ---
+    AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY
+    AWS_STORAGE_BUCKET_NAME = R2_BUCKET_NAME
+    AWS_S3_ENDPOINT_URL = R2_ENDPOINT_URL
     
-    # R2 Endpoint URL must be: https://<accountid>.r2.cloudflarestorage.com
-    AWS_S3_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
-    
-    # R2 handles regions automatically, but boto3 requires this param
     AWS_S3_REGION_NAME = 'auto' 
     AWS_S3_SIGNATURE_VERSION = 's3v4'
-    AWS_S3_FILE_OVERWRITE = False  # Don't delete files with same name
-    
-    # Define Storages
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_CUSTOM_DOMAIN = R2_CUSTOM_DOMAIN
+
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
+    else:
+        MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
+
+    # --- DEFINE STORAGES ---
     STORAGES = {
         "default": {
-            "BACKEND": "storages.backends.s3.S3Storage",
+            "BACKEND": "storages.backends.s3.S3Storage", # Public bucket for standard uploads
         },
         "staticfiles": {
             "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
         },
+        # We don't define the private bucket in the STORAGES dict because 
+        # we are injecting it directly via the PrivateR2Storage class in your models!
     }
-
-    # Public Media URL
-    # If you have a custom domain in Cloudflare (e.g. media.openeire.com)
-    AWS_S3_CUSTOM_DOMAIN = os.getenv('R2_CUSTOM_DOMAIN') 
-    
-    if AWS_S3_CUSTOM_DOMAIN:
-        MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
-    else:
-        # Fallback to the R2 dev URL (e.g. pub-xxxx.r2.dev)
-        MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
-
 else:
     # Local Development settings
     MEDIA_URL = '/media/'
@@ -285,10 +289,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://openeire.ie",
     "https://openeire.online",
 ]
-
-# Media files (user-uploaded content)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Email Configuration
 if not DEBUG:
