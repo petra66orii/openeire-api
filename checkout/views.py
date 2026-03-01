@@ -295,10 +295,6 @@ class StripeWebhookView(APIView):
                         print(f"ℹ️ License Request {license_request.id} already approved. Skipping.")
                         return Response(status=status.HTTP_200_OK)
                     
-                    # Mark it as paid!
-                    license_request.status = 'APPROVED'
-                    license_request.save(update_fields=['status', 'updated_at'])
-                    
                     print(f"💰 LICENSING DESK SUCCESS! License Request {license_request.id} paid by {license_request.client_name}!")
                     
                     # 👇 1. Get the exact file name/key from the requested asset
@@ -314,43 +310,47 @@ class StripeWebhookView(APIView):
                         
                     if not file_key:
                         print(f"⚠️ No high-res file found attached to asset {asset}")
-                        return Response(status=status.HTTP_200_OK)
+                        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
                     # 👇 2. Generate the secure 48-hour download link
                     secure_download_url = generate_r2_presigned_url(file_key)
+                    if not secure_download_url:
+                        print(f"❌ Failed to generate R2 link for {file_key}")
+                        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                     
                     # 👇 3. Email the link to the client
-                    if secure_download_url:
-                        subject = f"Your Commercial License & Download Link: {asset}"
-                        
-                        # You can create a nice HTML template for this later, but plain text works to start!
-                        body = f"""
-                        Hi {license_request.client_name},
-                        
-                        Thank you for your payment. Your commercial license for "{asset}" is now active.
-                        
-                        You can download your high-resolution, unwatermarked file here:
-                        {secure_download_url}
-                        
-                        IMPORTANT: This secure link will automatically expire in 48 hours. Please download your file immediately.
-                        
-                        License Details:
-                        - Project: {license_request.get_project_type_display()}
-                        - Duration: {license_request.get_duration_display()}
-                        
-                        Thank you for choosing OpenÉire Studios!
-                        """
-                        
-                        send_mail(
-                            subject,
-                            body,
-                            settings.DEFAULT_FROM_EMAIL,
-                            [license_request.email],
-                            fail_silently=False,
-                        )
-                        print(f"📧 Secure download link sent to {license_request.email}!")
-                    else:
-                        print(f"❌ Failed to generate R2 link for {file_key}")
+                    subject = f"Your Commercial License & Download Link: {asset}"
+                    
+                    # You can create a nice HTML template for this later, but plain text works to start!
+                    body = f"""
+                    Hi {license_request.client_name},
+                    
+                    Thank you for your payment. Your commercial license for "{asset}" is now active.
+                    
+                    You can download your high-resolution, unwatermarked file here:
+                    {secure_download_url}
+                    
+                    IMPORTANT: This secure link will automatically expire in 48 hours. Please download your file immediately.
+                    
+                    License Details:
+                    - Project: {license_request.get_project_type_display()}
+                    - Duration: {license_request.get_duration_display()}
+                    
+                    Thank you for choosing OpenÉire Studios!
+                    """
+                    
+                    send_mail(
+                        subject,
+                        body,
+                        settings.DEFAULT_FROM_EMAIL,
+                        [license_request.email],
+                        fail_silently=False,
+                    )
+                    print(f"📧 Secure download link sent to {license_request.email}!")
+
+                    # Mark it as paid only after delivery link is created and email succeeds
+                    license_request.status = 'APPROVED'
+                    license_request.save(update_fields=['status', 'updated_at'])
 
                 except Exception as e:
                     print(f"❌ Error processing license request for link {payment_link_id}: {e}")
