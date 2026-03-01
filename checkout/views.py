@@ -8,7 +8,8 @@ from rest_framework.response import Response
 from rest_framework import status, generics
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from products.models import Photo, Video, ProductVariant, PrintTemplate
+from products.models import Photo, Video, ProductVariant, PrintTemplate, LicenseRequest
+from products.utils import generate_r2_presigned_url
 from userprofiles.models import UserProfile
 from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
@@ -148,7 +149,7 @@ class StripeWebhookView(APIView):
         payload = request.body
         sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
 
-        print("🚨 WEBHOOK RECEIVED! 🚨") # 👇 ADD THIS TRIPWIRE
+        print("🚨 WEBHOOK RECEIVED! 🚨")
 
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
@@ -166,7 +167,6 @@ class StripeWebhookView(APIView):
             address_details = shipping_details.get('address') or {}
 
             shipping_cost = float(metadata.get('shipping_cost', 0.00))
-            # NEW: Retrieve shipping_method from metadata
             shipping_method = metadata.get('shipping_method', 'budget') 
 
             # 2. Determine the email
@@ -249,6 +249,111 @@ class StripeWebhookView(APIView):
                 print(f"❌ Error creating order: {serializer.errors}")
                 # Return the errors so we can see them more clearly if needed
                 return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+            
+        elif event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            payment_link_id = session.get('payment_link')
+            payment_status = session.get('payment_status')
+            
+            # If this checkout session came from a Payment Link
+            if payment_link_id:
+                if payment_status != 'paid':
+                    print(f"⚠️ Payment link session not paid yet (status={payment_status}). Skipping approval.")
+                    return Response(status=status.HTTP_200_OK)
+
+                try:
+                    # Find the specific license request attached to this link (exact ID match)
+                    matching_requests = LicenseRequest.objects.filter(
+                        stripe_payment_link_id=payment_link_id
+                    )
+
+                    if matching_requests.count() != 1:
+                        # Fallback for legacy rows that only store the URL
+                        try:
+                            payment_link = stripe.PaymentLink.retrieve(payment_link_id)
+                            link_url = getattr(payment_link, "url", None)
+                        except Exception as e:
+                            print(f"⚠️ Could not retrieve payment link {payment_link_id}: {e}")
+                            link_url = None
+
+                        if link_url:
+                            matching_requests = LicenseRequest.objects.filter(
+                                stripe_payment_link=link_url
+                            )
+
+                        if matching_requests.count() != 1:
+                            print(f"⚠️ Expected 1 LicenseRequest for link {payment_link_id}, found {matching_requests.count()}.")
+                            return Response(status=status.HTTP_200_OK)
+
+                    license_request = matching_requests.first()
+
+                    if not license_request.stripe_payment_link_id:
+                        license_request.stripe_payment_link_id = payment_link_id
+                        license_request.save(update_fields=['stripe_payment_link_id', 'updated_at'])
+
+                    if license_request.status == 'APPROVED':
+                        print(f"ℹ️ License Request {license_request.id} already approved. Skipping.")
+                        return Response(status=status.HTTP_200_OK)
+                    
+                    # Mark it as paid!
+                    license_request.status = 'APPROVED'
+                    license_request.save(update_fields=['status', 'updated_at'])
+                    
+                    print(f"💰 LICENSING DESK SUCCESS! License Request {license_request.id} paid by {license_request.client_name}!")
+                    
+                    # 👇 1. Get the exact file name/key from the requested asset
+                    asset = license_request.asset
+                    file_key = None
+                    
+                    if hasattr(asset, 'high_res_file') and asset.high_res_file:
+                        file_key = asset.high_res_file.name 
+                    # Check if it's a Video (has video_file)
+                    elif hasattr(asset, 'video_file') and asset.video_file:
+                        file_key = asset.video_file.name
+          
+                        
+                    if not file_key:
+                        print(f"⚠️ No high-res file found attached to asset {asset}")
+                        return Response(status=status.HTTP_200_OK)
+
+                    # 👇 2. Generate the secure 48-hour download link
+                    secure_download_url = generate_r2_presigned_url(file_key)
+                    
+                    # 👇 3. Email the link to the client
+                    if secure_download_url:
+                        subject = f"Your Commercial License & Download Link: {asset}"
+                        
+                        # You can create a nice HTML template for this later, but plain text works to start!
+                        body = f"""
+                        Hi {license_request.client_name},
+                        
+                        Thank you for your payment. Your commercial license for "{asset}" is now active.
+                        
+                        You can download your high-resolution, unwatermarked file here:
+                        {secure_download_url}
+                        
+                        IMPORTANT: This secure link will automatically expire in 48 hours. Please download your file immediately.
+                        
+                        License Details:
+                        - Project: {license_request.get_project_type_display()}
+                        - Duration: {license_request.get_duration_display()}
+                        
+                        Thank you for choosing OpenÉire Studios!
+                        """
+                        
+                        send_mail(
+                            subject,
+                            body,
+                            settings.DEFAULT_FROM_EMAIL,
+                            [license_request.email],
+                            fail_silently=False,
+                        )
+                        print(f"📧 Secure download link sent to {license_request.email}!")
+                    else:
+                        print(f"❌ Failed to generate R2 link for {file_key}")
+
+                except Exception as e:
+                    print(f"❌ Error processing license request for link {payment_link_id}: {e}")
         
         return Response(status=status.HTTP_200_OK)
 
