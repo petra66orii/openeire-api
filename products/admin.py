@@ -15,6 +15,7 @@ from openeire_api.admin import custom_admin_site
 stripe.api_key = settings.STRIPE_SECRET_KEY
 stripe.max_network_retries = getattr(settings, 'STRIPE_MAX_NETWORK_RETRIES', 2)
 STRIPE_TIMEOUT_SECONDS = getattr(settings, 'STRIPE_TIMEOUT_SECONDS', 10)
+stripe.default_http_client = stripe.RequestsClient(timeout=STRIPE_TIMEOUT_SECONDS)
 
 def get_price_autofill_script():
     """Generates the JS needed to auto-fill prices, SKUs, and filter Size dropdowns."""
@@ -261,19 +262,18 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         ('Client Info', {
             'fields': ('client_name', 'company', 'email')
         }),
-        ('Request Details', {
-            'fields': ('asset_link', 'project_type', 'duration', 'message')
+        ('Licence Scope (Rights-Managed)', {
+            'fields': ('content_type', 'object_id', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
         }),
         ('Admin / Fulfillment', {
-            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'stripe_payment_link_id', 'ai_draft_response'),
-            'description': 'Enter a quoted price and click Save to generate a Stripe payment link.'
+            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
+            'description': 'Enter a Quoted Price and click Save to automatically generate a Stripe Payment Link.'
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
-
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related('content_type')
@@ -319,12 +319,9 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     )
                 )
                 idempotency_base = f"license-request-{obj.pk}-quote-{amount_in_cents}"
-                request_opts = {"timeout": STRIPE_TIMEOUT_SECONDS}
-
                 stripe_product = stripe.Product.create(
                     name=product_name,
-                    idempotency_key=f"{idempotency_base}-product",
-                    **request_opts
+                    idempotency_key=f"{idempotency_base}-product"
                 )
 
                 # 2. Create a Price for that Product (Stripe uses cents, so multiply by 100)
@@ -332,8 +329,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     product=stripe_product.id,
                     unit_amount=amount_in_cents,
                     currency="eur",
-                    idempotency_key=f"{idempotency_base}-price",
-                    **request_opts
+                    idempotency_key=f"{idempotency_base}-price"
                 )
 
                 # 3. Generate the reusable Payment Link (Restricted to ONE payment)
@@ -344,8 +340,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                             "limit": 1, # The link automatically expires after 1 successful payment!
                         },
                     },
-                    idempotency_key=f"{idempotency_base}-link",
-                    **request_opts
+                    idempotency_key=f"{idempotency_base}-link"
                 )
 
                 # 4. Save the link to the object

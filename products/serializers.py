@@ -8,6 +8,7 @@ from .models import (
     AI_DRAFT_MAX_CHARS,
 )
 from django.contrib.contenttypes.models import ContentType
+from django.db import IntegrityError
 from django.db.models import Avg
 
 # 1. Helper Serializer for Variants (Nested inside Photo)
@@ -59,7 +60,7 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
         model = LicenseRequest
         fields = [
             'id', 'client_name', 'company', 'email', 'project_type', 
-            'duration', 'message', 'asset_type', 'asset_id', 'status', 'created_at'
+            'duration', 'territory', 'permitted_media', 'exclusivity', 'reach_caps', 'message', 'asset_type', 'asset_id', 'status', 'created_at'
         ]
         # 👇 Prevents users from injecting status, prices, or AI drafts via POST
         read_only_fields = ['id', 'status', 'created_at']
@@ -82,11 +83,36 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
             # Attach the resolved content type and ID to the validated data
             data['content_type'] = content_type
             data['object_id'] = asset_id
+
+            email = (data.get('email') or '').strip()
+            if email:
+                existing_qs = LicenseRequest.objects.filter(
+                    content_type=content_type,
+                    object_id=asset_id,
+                    email__iexact=email,
+                )
+                if existing_qs.exclude(status='REJECTED').exists():
+                    raise serializers.ValidationError(
+                        {"email": "A request for this asset already exists for this email."}
+                    )
+                rejected_count = existing_qs.filter(status='REJECTED').count()
+                if rejected_count >= 3:
+                    raise serializers.ValidationError(
+                        {"email": "This email has reached the maximum number of rejected requests for this asset."}
+                    )
             
         except ContentType.DoesNotExist:
             raise serializers.ValidationError({"asset_type": "Invalid asset type."})
 
         return data
+
+    def create(self, validated_data):
+        try:
+            return super().create(validated_data)
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"email": "A request for this asset already exists for this email."}
+            )
 
 
 class AIDraftUpdateSerializer(serializers.Serializer):
