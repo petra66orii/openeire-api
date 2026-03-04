@@ -1,4 +1,5 @@
 import re
+import re
 import uuid
 from decimal import Decimal
 from django.utils import timezone
@@ -21,7 +22,10 @@ CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
 
 def sanitize_free_text(value, max_len):
     if value is None:
-        text = CONTROL_CHARS_RE.sub('', text).strip()
+        return None
+    text = strip_tags(str(value))
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = CONTROL_CHARS_RE.sub('', text).strip()
     if max_len and len(text) > max_len:
         text = text[:max_len].rstrip()
     return text
