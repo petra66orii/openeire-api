@@ -1,18 +1,32 @@
+import re
 import uuid
 from decimal import Decimal
 from django.utils import timezone
 from django.core.validators import MinValueValidator
 from datetime import timedelta
 from django.db import models
+from django.db.models import Q
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.utils.html import strip_tags
 
 from .storage import PrivateAssetStorage
 
 AI_DRAFT_MAX_CHARS = 8000
+CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+
+def sanitize_free_text(value, max_len):
+    if value is None:
+        return None
+    text = strip_tags(str(value))
+    text = text.replace('\r', '\n')
+    text = CONTROL_CHARS_RE.sub('', text).strip()
+    if max_len and len(text) > max_len:
+        text = text[:max_len].rstrip()
+    return text
 
 class GalleryAccess(models.Model):
     """
