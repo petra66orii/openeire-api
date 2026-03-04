@@ -21,10 +21,7 @@ CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
 
 def sanitize_free_text(value, max_len):
     if value is None:
-        return None
-    text = strip_tags(str(value))
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
-    text = CONTROL_CHARS_RE.sub('', text).strip()
+        text = CONTROL_CHARS_RE.sub('', text).strip()
     if max_len and len(text) > max_len:
         text = text[:max_len].rstrip()
     return text
@@ -231,7 +228,9 @@ class LicenseRequest(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                expressions=[Lower('email'), F('content_type'), F('object_id')],
+                Lower('email'),
+                F('content_type'),
+                F('object_id'),
                 condition=~Q(status='REJECTED'),
                 name='uniq_license_request_active_ci',
             ),

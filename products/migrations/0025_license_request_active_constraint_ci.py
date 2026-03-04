@@ -52,7 +52,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='licenserequest',
             constraint=models.UniqueConstraint(
-                expressions=[Lower('email'), F('content_type'), F('object_id')],
+                Lower('email'),
+                F('content_type'),
+                F('object_id'),
                 condition=~Q(status='REJECTED'),
                 name='uniq_license_request_active_ci',
             ),
