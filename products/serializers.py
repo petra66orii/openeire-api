@@ -84,12 +84,14 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
             data['content_type'] = content_type
             data['object_id'] = asset_id
 
-            email = (data.get('email') or '').strip()
+            email = (data.get('email') or '').strip().lower()
+            if email:
+                data['email'] = email
             if email:
                 existing_qs = LicenseRequest.objects.filter(
                     content_type=content_type,
                     object_id=asset_id,
-                    email__iexact=email,
+                    email=email,
                 )
                 if existing_qs.exclude(status='REJECTED').exists():
                     raise serializers.ValidationError(

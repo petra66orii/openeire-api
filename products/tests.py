@@ -103,6 +103,14 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(second.status_code, 400)
         self.assertIn("email", second.data)
 
+    def test_license_request_email_normalized(self):
+        payload = self._payload()
+        payload["email"] = "Test@Example.com "
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        obj = LicenseRequest.objects.latest("id")
+        self.assertEqual(obj.email, "test@example.com")
+
     def test_license_request_rejected_allows_resubmit_until_limit(self):
         for _ in range(3):
             LicenseRequest.objects.create(

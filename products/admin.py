@@ -256,14 +256,14 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
     list_filter = ('status', 'project_type', 'created_at')
     search_fields = ('client_name', 'email', 'company')
-    readonly_fields = ('asset_link', 'content_type', 'object_id', 'created_at', 'updated_at', 'stripe_payment_link_id')
+    readonly_fields = ('asset_link', 'created_at', 'updated_at', 'stripe_payment_link_id')
     
     fieldsets = (
         ('Client Info', {
             'fields': ('client_name', 'company', 'email')
         }),
         ('Licence Scope (Rights-Managed)', {
-            'fields': ('content_type', 'object_id', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
+            'fields': ('asset_link', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
         }),
         ('Admin / Fulfillment', {
             'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
@@ -277,6 +277,32 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related('content_type')
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(super().get_readonly_fields(request, obj))
+        if obj:
+            readonly.extend(['content_type', 'object_id'])
+        return tuple(readonly)
+
+    def get_fieldsets(self, request, obj=None):
+        if obj is None:
+            return (
+                ('Client Info', {
+                    'fields': ('client_name', 'company', 'email')
+                }),
+                ('Licence Scope (Rights-Managed)', {
+                    'fields': ('content_type', 'object_id', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
+                }),
+                ('Admin / Fulfillment', {
+                    'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
+                    'description': 'Enter a Quoted Price and click Save to automatically generate a Stripe Payment Link.'
+                }),
+                ('Timestamps', {
+                    'fields': ('created_at', 'updated_at'),
+                    'classes': ('collapse',)
+                }),
+            )
+        return super().get_fieldsets(request, obj)
 
     def get_asset_link(self, obj):
         asset = obj.asset
