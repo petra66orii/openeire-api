@@ -1,18 +1,41 @@
+import re
+import re
 import uuid
 from decimal import Decimal
 from django.utils import timezone
 from django.core.validators import MinValueValidator
 from datetime import timedelta
 from django.db import models
+from django.db.models import F, Q
+from django.db.models.functions import Lower
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.utils.html import strip_tags
 
 from .storage import PrivateAssetStorage
 
 AI_DRAFT_MAX_CHARS = 8000
+CONTROL_CHARS_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]')
+
+def sanitize_free_text(value, max_len):
+    if value is None:
+        return None
+    text = strip_tags(str(value))
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = CONTROL_CHARS_RE.sub('', text).strip()
+    if max_len and len(text) > max_len:
+        text = text[:max_len].rstrip()
+    return text
+
+
+def normalize_email(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text
 
 class GalleryAccess(models.Model):
     """
@@ -101,16 +124,46 @@ class LicenseRequest(models.Model):
     
     PROJECT_TYPE_CHOICES = [
         ('REAL_ESTATE', 'Real Estate / Property'),
+        ('CORPORATE', 'Corporate / B2B'),
         ('EDITORIAL', 'Editorial / Documentary'),
         ('COMMERCIAL', 'Commercial / Advertising'),
         ('OTHER', 'Other'),
     ]
     
     DURATION_CHOICES = [
+        ('1_MONTH', '1 Month'),
+        ('3_MONTHS', '3 Months'),
+        ('6_MONTHS', '6 Months'),
         ('1_YEAR', '1 Year'),
         ('2_YEARS', '2 Years'),
+        ('5_YEARS', '5 Years'),
         ('PERPETUAL', 'Perpetual / Lifetime'),
         ('OTHER', 'Other'),
+    ]
+
+    TERRITORY_CHOICES = [
+        ('IRELAND', 'Ireland Only'),
+        ('EU', 'EU / UK'),
+        ('US_NA', 'US / North America'),
+        ('SOUTH_AMERICA', 'South America'),
+        ('ASIA', 'Asia'),
+        ('AFRICA', 'Africa'),
+        ('OCEANIA', 'Oceania'),
+        ('WORLDWIDE', 'Worldwide'),
+    ]
+
+    MEDIA_CHOICES = [
+        ('WEB_SOCIAL', 'Web & Organic Social Only'),
+        ('PAID_DIGITAL', 'Paid Digital Ads'),
+        ('PRINT_BROCHURE', 'Print & Brochure'),
+        ('BROADCAST', 'TV / Broadcast / Cinema'),
+        ('ALL_MEDIA', 'All Media'),
+    ]
+
+    EXCLUSIVITY_CHOICES = [
+        ('NON_EXCLUSIVE', 'Non-Exclusive'),
+        ('CATEGORY', 'Category Exclusive'),
+        ('FULL', 'Fully Exclusive'),
     ]
 
     # 👇 Generic Foreign Key to link to either Photo or Video
@@ -132,6 +185,10 @@ class LicenseRequest(models.Model):
     project_type = models.CharField(max_length=50, choices=PROJECT_TYPE_CHOICES)
     duration = models.CharField(max_length=50, choices=DURATION_CHOICES)
     message = models.TextField(blank=True, null=True, max_length=2000)
+    territory = models.CharField(max_length=20, choices=TERRITORY_CHOICES, default='IRELAND', null=True, blank=True)
+    permitted_media = models.CharField(max_length=20, choices=MEDIA_CHOICES, default='WEB_SOCIAL', null=True, blank=True)
+    exclusivity = models.CharField(max_length=20, choices=EXCLUSIVITY_CHOICES, default='NON_EXCLUSIVE', null=True, blank=True)
+    reach_caps = models.CharField(max_length=255, default='NONE', null=True, blank=True)
     
     # Tracking
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='NEW')
@@ -154,16 +211,33 @@ class LicenseRequest(models.Model):
     stripe_payment_link = models.URLField(blank=True, null=True)
     stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
+    def save(self, *args, **kwargs):
+        if self.email is not None:
+            self.email = normalize_email(self.email)
+        if self.message is not None:
+            self.message = sanitize_free_text(self.message, 2000)
+        if self.reach_caps is not None:
+            self.reach_caps = sanitize_free_text(self.reach_caps, 255)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"Request by {self.client_name} for {self.asset}"
     
     class Meta:
         ordering = ['-created_at']
-        unique_together = ('content_type', 'object_id', 'email')  # Prevent duplicate requests for same asset by same email
         verbose_name = "License Request"
         verbose_name_plural = "License Requests"
         indexes = [
             models.Index(fields=['content_type', 'object_id'], name='license_asset_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                Lower('email'),
+                F('content_type'),
+                F('object_id'),
+                condition=~Q(status='REJECTED'),
+                name='uniq_license_request_active_ci',
+            ),
         ]
 
 class ProductVariant(models.Model):

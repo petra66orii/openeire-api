@@ -224,15 +224,21 @@ class AILicenseDraftQueueView(APIView):
         limit = max(1, min(limit, hard_max))
 
         pending = base_qs[:limit]
-        data = [{
-            "id": req.id,
-            "client_name": req.client_name,
-            "company": req.company or "N/A",
-            "project_type": req.get_project_type_display(),
-            "duration": req.get_duration_display(),
-            "message": req.message or "No additional details provided.",
-            "asset_name": str(req.asset)
-        } for req in pending]
+        data = []
+        for req in pending:
+            data.append({
+                "id": req.id,
+                "client_name": req.client_name,
+                "company": req.company or "N/A",
+                "project_type": req.get_project_type_display(),
+                "duration": req.get_duration_display(),
+                "territory": req.get_territory_display() if req.territory else "Not Specified",
+                "permitted_media": req.get_permitted_media_display() if req.permitted_media else "Not Specified",
+                "exclusivity": req.get_exclusivity_display() if req.exclusivity else "Not Specified",
+                "reach_caps": req.reach_caps or "None",
+                "message": req.message or "No additional details provided.",
+                "asset_name": str(req.asset)
+            })
         return Response(data, status=status.HTTP_200_OK)
 
 class AILicenseDraftUpdateView(APIView):

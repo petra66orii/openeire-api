@@ -9,7 +9,8 @@ from django.db.models.signals import post_save
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
-from .models import Photo, generate_variants_for_photo
+from django.contrib.contenttypes.models import ContentType
+from .models import LicenseRequest, Photo, generate_variants_for_photo
 
 
 class LicenseRequestTests(APITestCase):
@@ -43,7 +44,7 @@ class LicenseRequestTests(APITestCase):
             is_active=is_active,
         )
 
-    def _payload(self, asset_id=None, message=None):
+    def _payload(self, asset_id=None, message=None, reach_caps=None):
         return {
             "client_name": "Test Client",
             "company": "Test Co",
@@ -51,6 +52,7 @@ class LicenseRequestTests(APITestCase):
             "project_type": "COMMERCIAL",
             "duration": "1_YEAR",
             "message": message if message is not None else "Test message",
+            "reach_caps": reach_caps if reach_caps is not None else "NONE",
             "asset_type": "photo",
             "asset_id": asset_id if asset_id is not None else self.photo.id,
         }
@@ -78,3 +80,96 @@ class LicenseRequestTests(APITestCase):
         payload = self._payload(asset_id=hidden_photo.id)
         response = self.client.post(self.url, payload, format="json")
         self.assertIn(response.status_code, (400, 404))
+
+    def test_license_request_sanitizes_free_text(self):
+        payload = self._payload(
+            message="<b>Hello</b><script>alert(1)</script>",
+            reach_caps="<img src=x onerror=alert(1)>Worldwide",
+        )
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        obj = LicenseRequest.objects.latest("id")
+        self.assertNotIn("<", obj.message or "")
+        self.assertNotIn(">", obj.message or "")
+        self.assertNotIn("<", obj.reach_caps or "")
+        self.assertNotIn(">", obj.reach_caps or "")
+
+    def test_license_request_duplicate_rejected(self):
+        payload = self._payload()
+        first = self.client.post(self.url, payload, format="json")
+        self.assertEqual(first.status_code, 201)
+
+        second = self.client.post(self.url, payload, format="json")
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("email", second.data)
+
+    def test_license_request_email_normalized(self):
+        payload = self._payload()
+        payload["email"] = "Test@Example.com "
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        obj = LicenseRequest.objects.latest("id")
+        self.assertEqual(obj.email, "test@example.com")
+
+    def test_license_request_rejected_allows_resubmit_until_limit(self):
+        for _ in range(3):
+            LicenseRequest.objects.create(
+                content_type=ContentType.objects.get_for_model(self.photo),
+                object_id=self.photo.id,
+                client_name="Test Client",
+                company="Test Co",
+                email="test+rejects@example.com",
+                project_type="COMMERCIAL",
+                duration="1_YEAR",
+                message="Rejected request",
+                status="REJECTED",
+            )
+
+        payload = self._payload()
+        payload["email"] = "test+rejects@example.com"
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("email", response.data)
+
+    def test_license_request_rejected_allows_new_if_under_limit(self):
+        for _ in range(2):
+            LicenseRequest.objects.create(
+                content_type=ContentType.objects.get_for_model(self.photo),
+                object_id=self.photo.id,
+                client_name="Test Client",
+                company="Test Co",
+                email="test+rejects2@example.com",
+                project_type="COMMERCIAL",
+                duration="1_YEAR",
+                message="Rejected request",
+                status="REJECTED",
+            )
+
+        payload = self._payload()
+        payload["email"] = "test+rejects2@example.com"
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+
+    def test_ai_worker_queue_requires_auth(self):
+        url = reverse("ai-draft-queue")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_ai_worker_queue_allows_valid_token(self):
+        url = reverse("ai-draft-queue")
+        content_type = ContentType.objects.get_for_model(self.photo)
+        LicenseRequest.objects.create(
+            content_type=content_type,
+            object_id=self.photo.id,
+            client_name="Test Client",
+            company="Test Co",
+            email="test+ai@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Test message",
+            status="NEW",
+        )
+        with self.settings(AI_WORKER_SECRET="testsecret"):
+            response = self.client.get(url, HTTP_AUTHORIZATION="Bearer testsecret")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
