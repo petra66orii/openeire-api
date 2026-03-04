@@ -5,7 +5,8 @@ from django.utils import timezone
 from django.core.validators import MinValueValidator
 from datetime import timedelta
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.functions import Lower
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.auth.models import User
@@ -22,10 +23,17 @@ def sanitize_free_text(value, max_len):
     if value is None:
         return None
     text = strip_tags(str(value))
-    text = text.replace('\r', '\n')
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = CONTROL_CHARS_RE.sub('', text).strip()
     if max_len and len(text) > max_len:
         text = text[:max_len].rstrip()
+    return text
+
+
+def normalize_email(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower()
     return text
 
 class GalleryAccess(models.Model):
@@ -203,6 +211,8 @@ class LicenseRequest(models.Model):
     stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
     def save(self, *args, **kwargs):
+        if self.email is not None:
+            self.email = normalize_email(self.email)
         if self.message is not None:
             self.message = sanitize_free_text(self.message, 2000)
         if self.reach_caps is not None:
@@ -221,9 +231,9 @@ class LicenseRequest(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=['content_type', 'object_id', 'email'],
+                expressions=[Lower('email'), F('content_type'), F('object_id')],
                 condition=~Q(status='REJECTED'),
-                name='uniq_license_request_active',
+                name='uniq_license_request_active_ci',
             ),
         ]
 
