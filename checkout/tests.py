@@ -1,5 +1,6 @@
 import shutil
 import uuid
+import json
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -21,6 +22,7 @@ from products.models import (
     LicenseRequestAuditLog,
     generate_variants_for_photo,
 )
+from .models import Order
 
 
 @override_settings(
@@ -200,3 +202,103 @@ class StripeWebhookLicenseTests(TestCase):
         self.assertEqual(self.license_request.status, "DELIVERED")
         event.refresh_from_db()
         self.assertEqual(event.status, "SUCCESS")
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    DEFAULT_FROM_EMAIL='orders@example.com',
+    STRIPE_WEBHOOK_SECRET='whsec_test',
+)
+class ConsumerDigitalOrderLicenceTests(TestCase):
+    def setUp(self):
+        base_media_root = Path(__file__).resolve().parent.parent / ".test_media"
+        self.media_root = base_media_root / uuid.uuid4().hex
+        self.media_root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.media_root, ignore_errors=True)
+        self._media_settings = self.settings(MEDIA_ROOT=self.media_root)
+        self._media_settings.enable()
+        self.addCleanup(self._media_settings.disable)
+
+        post_save.disconnect(generate_variants_for_photo, sender=Photo)
+        self.addCleanup(post_save.connect, generate_variants_for_photo, sender=Photo)
+
+        preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
+        high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
+        self.photo = Photo.objects.create(
+            title="Order Photo",
+            description="Test description",
+            collection="Test Collection",
+            preview_image=preview,
+            high_res_file=high_res,
+            price_hd=Decimal("15.00"),
+            price_4k=Decimal("25.00"),
+            is_active=True,
+        )
+        self.url = reverse("webhook")
+
+    def _payment_intent_event(self):
+        cart = [
+            {
+                "product_id": self.photo.id,
+                "product_type": "photo",
+                "quantity": 1,
+                "options": {"license": "hd"},
+            }
+        ]
+        return {
+            "id": "evt_consumer_1",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_consumer_1",
+                    "receipt_email": "buyer@example.com",
+                    "metadata": {
+                        "cart": json.dumps(cart),
+                        "username": "Guest",
+                        "save_info": "false",
+                        "shipping_cost": "0",
+                        "shipping_method": "budget",
+                    },
+                    "shipping": {
+                        "name": "Buyer",
+                        "phone": "+3530000000",
+                        "address": {
+                            "country": "IE",
+                            "city": "Dublin",
+                            "line1": "1 Test Street",
+                            "line2": "",
+                            "postal_code": "D01",
+                            "state": "Dublin",
+                        },
+                    },
+                }
+            },
+        }
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_digital_order_stores_personal_terms_and_includes_it_in_email(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event()
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+
+        order = Order.objects.first()
+        self.assertEqual(order.personal_terms_version, "PERSONAL v1.1 - March 2026")
+
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertIn("PERSONAL USE LICENCE", body)
+        self.assertIn(order.personal_terms_version, body)
+        self.assertIn("http://testserver/api/licence/personal-use/", body)
+
+        body_lower = body.lower()
+        self.assertNotIn("rights-managed", body_lower)
+        self.assertNotIn("indemnity", body_lower)
+        self.assertNotIn("audit", body_lower)
