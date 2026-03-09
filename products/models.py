@@ -1,5 +1,4 @@
 import re
-import re
 import uuid
 from decimal import Decimal
 from django.utils import timezone
@@ -115,10 +114,15 @@ class Video(models.Model):
     
 class LicenseRequest(models.Model):
     STATUS_CHOICES = [
-        ('NEW', 'New'),
-        ('REVIEWED', 'Reviewed'),
-        ('QUOTED', 'Quoted'),
+        ('DRAFT', 'Draft'),
+        ('SUBMITTED', 'Submitted'),
+        ('NEEDS_INFO', 'Needs Info'),
         ('APPROVED', 'Approved'),
+        ('PAYMENT_PENDING', 'Payment Pending'),
+        ('PAID', 'Paid'),
+        ('DELIVERED', 'Delivered'),
+        ('EXPIRED', 'Expired'),
+        ('REVOKED', 'Revoked'),
         ('REJECTED', 'Rejected'),
     ]
     
@@ -191,9 +195,13 @@ class LicenseRequest(models.Model):
     reach_caps = models.CharField(max_length=255, default='NONE', null=True, blank=True)
     
     # Tracking
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='NEW')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='SUBMITTED')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    stripe_checkout_session_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    stripe_payment_intent_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
     ai_draft_response = models.TextField(
         blank=True,
@@ -211,7 +219,43 @@ class LicenseRequest(models.Model):
     stripe_payment_link = models.URLField(blank=True, null=True)
     stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
+    _status_change_actor = None
+    _status_change_note = ""
+    _status_change_metadata = None
+
+    def set_status_change_context(self, *, actor=None, note="", metadata=None):
+        self._status_change_actor = actor
+        self._status_change_note = note or ""
+        self._status_change_metadata = metadata or {}
+
+    def transition_to(self, to_status, *, actor=None, note="", metadata=None):
+        if self.status == to_status:
+            return False
+        self.set_status_change_context(actor=actor, note=note, metadata=metadata)
+        self.status = to_status
+        self.save(update_fields=['status', 'updated_at'])
+        return True
+
+    def add_audit_note(self, note, *, actor=None, metadata=None):
+        if not note:
+            return
+        LicenseRequestAuditLog.objects.create(
+            license_request=self,
+            from_status=self.status,
+            to_status=self.status,
+            changed_by=actor,
+            note=note,
+            metadata=metadata or {},
+        )
+
     def save(self, *args, **kwargs):
+        old_status = None
+        if self.pk:
+            old_status = (
+                LicenseRequest.objects.filter(pk=self.pk)
+                .values_list('status', flat=True)
+                .first()
+            )
         if self.email is not None:
             self.email = normalize_email(self.email)
         if self.message is not None:
@@ -219,6 +263,18 @@ class LicenseRequest(models.Model):
         if self.reach_caps is not None:
             self.reach_caps = sanitize_free_text(self.reach_caps, 255)
         super().save(*args, **kwargs)
+        if old_status != self.status:
+            LicenseRequestAuditLog.objects.create(
+                license_request=self,
+                from_status=old_status,
+                to_status=self.status,
+                changed_by=self._status_change_actor,
+                note=self._status_change_note or "",
+                metadata=self._status_change_metadata or {},
+            )
+            self._status_change_actor = None
+            self._status_change_note = ""
+            self._status_change_metadata = None
 
     def __str__(self):
         return f"Request by {self.client_name} for {self.asset}"
@@ -235,10 +291,157 @@ class LicenseRequest(models.Model):
                 Lower('email'),
                 F('content_type'),
                 F('object_id'),
-                condition=~Q(status='REJECTED'),
+                condition=~Q(status__in=['REJECTED', 'REVOKED', 'EXPIRED']),
                 name='uniq_license_request_active_ci',
             ),
         ]
+
+
+class StripeWebhookEvent(models.Model):
+    STATUS_CHOICES = [
+        ('PROCESSING', 'Processing'),
+        ('SUCCESS', 'Success'),
+        ('FAILED', 'Failed'),
+    ]
+
+    stripe_event_id = models.CharField(max_length=255, unique=True)
+    event_type = models.CharField(max_length=255)
+    received_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    error_message = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-received_at']
+        verbose_name = "Stripe Webhook Event"
+        verbose_name_plural = "Stripe Webhook Events"
+
+    def __str__(self):
+        return f"{self.event_type} ({self.stripe_event_id})"
+
+
+class LicenceOffer(models.Model):
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('SUPERSEDED', 'Superseded'),
+        ('PAID', 'Paid'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    license_request = models.ForeignKey(
+        LicenseRequest,
+        on_delete=models.CASCADE,
+        related_name='offers',
+    )
+    version = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+    scope_snapshot = models.JSONField(default=dict, blank=True)
+    quoted_price = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='EUR')
+    terms_version = models.CharField(max_length=50)
+    master_agreement_version = models.CharField(max_length=100, blank=True, null=True)
+    stripe_product_id = models.CharField(max_length=255, blank=True, null=True)
+    stripe_price_id = models.CharField(max_length=255, blank=True, null=True)
+    stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, unique=True)
+    stripe_payment_link_url = models.URLField(blank=True, null=True)
+    stripe_checkout_session_id = models.CharField(max_length=255, blank=True, null=True)
+    stripe_payment_intent_id = models.CharField(max_length=255, blank=True, null=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    superseded_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['license_request', 'version'],
+                name='uniq_licence_offer_version',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Offer v{self.version} for LicenseRequest {self.license_request_id}"
+
+
+class LicenseRequestAuditLog(models.Model):
+    license_request = models.ForeignKey(
+        LicenseRequest,
+        on_delete=models.CASCADE,
+        related_name='audit_logs',
+    )
+    from_status = models.CharField(max_length=20, blank=True, null=True)
+    to_status = models.CharField(max_length=20, blank=True, null=True)
+    changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True)
+    note = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+        verbose_name = "License Request Audit Log"
+        verbose_name_plural = "License Request Audit Logs"
+
+    def __str__(self):
+        return (
+            f"LicenseRequest {self.license_request_id}: "
+            f"{self.from_status or '-'} -> {self.to_status or '-'}"
+        )
+
+
+class LicenceDocument(models.Model):
+    DOC_TYPE_CHOICES = [
+        ('SCHEDULE', 'Appendix A - Licence Schedule'),
+        ('CERTIFICATE', 'Appendix B - Licence Certificate'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    license_request = models.ForeignKey(
+        LicenseRequest,
+        on_delete=models.CASCADE,
+        related_name='licence_documents'
+    )
+    doc_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES)
+    file = models.FileField(
+        upload_to="licences/documents/",
+        storage=PrivateAssetStorage()
+    )
+    sha256 = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Licence Document"
+        verbose_name_plural = "Licence Documents"
+
+    def __str__(self):
+        return f"{self.get_doc_type_display()} for {self.license_request_id}"
+
+
+class LicenceDeliveryToken(models.Model):
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    license_request = models.ForeignKey(
+        LicenseRequest,
+        on_delete=models.CASCADE,
+        related_name='delivery_tokens'
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Licence Delivery Token"
+        verbose_name_plural = "Licence Delivery Tokens"
+
+    @property
+    def is_valid(self):
+        now = timezone.now()
+        return self.used_at is None and now < self.expires_at
+
+    def __str__(self):
+        return f"Token for LicenseRequest {self.license_request_id}"
 
 class ProductVariant(models.Model):
     """

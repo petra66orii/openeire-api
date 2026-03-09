@@ -6,10 +6,15 @@ from products.models import LicenseRequest
 
 
 STATUS_PRIORITY = {
-    "APPROVED": 5,
-    "QUOTED": 4,
-    "REVIEWED": 3,
-    "NEW": 2,
+    "DELIVERED": 9,
+    "PAID": 8,
+    "PAYMENT_PENDING": 7,
+    "APPROVED": 6,
+    "NEEDS_INFO": 5,
+    "SUBMITTED": 4,
+    "DRAFT": 3,
+    "EXPIRED": 2,
+    "REVOKED": 2,
     "REJECTED": 1,
 }
 
