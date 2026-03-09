@@ -393,7 +393,7 @@ class StripeWebhookView(APIView):
                     return Response(status=status.HTTP_200_OK)
 
                 # 2. Determine the email
-                order_email = getattr(payment_intent, 'receipt_email', None) or payment_intent.get('receipt_email')
+                order_email = payment_intent.get('receipt_email')
                 if not order_email or '@' not in order_email:
                     order_email = metadata.get('username')
                     if not order_email or '@' not in order_email:
@@ -401,7 +401,7 @@ class StripeWebhookView(APIView):
 
                 # 3. Create the order_data dictionary
                 order_data = {
-                    'stripe_pid': getattr(payment_intent, 'id', None) or payment_intent.get('id', ''),
+                    'stripe_pid': payment_intent.get('id', ''),
                     'first_name': shipping_details.get('name', ''),
                     'email': order_email,
                     'phone_number': shipping_details.get('phone', ''),
