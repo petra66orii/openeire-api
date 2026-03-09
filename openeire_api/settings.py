@@ -164,10 +164,17 @@ RUNNING_TESTS = "test" in sys.argv
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+SQLITE_TIMEOUT_SECONDS = int(os.getenv('SQLITE_TIMEOUT_SECONDS', '30'))
+SQLITE_SAVE_RETRY_ATTEMPTS = int(os.getenv('SQLITE_SAVE_RETRY_ATTEMPTS', '6'))
+SQLITE_SAVE_RETRY_DELAY_SECONDS = float(os.getenv('SQLITE_SAVE_RETRY_DELAY_SECONDS', '0.3'))
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            'timeout': SQLITE_TIMEOUT_SECONDS,
+        },
     }
 }
 
