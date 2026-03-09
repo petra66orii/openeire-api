@@ -1,3 +1,4 @@
+import re
 from rest_framework import serializers
 from .models import (
     Photo,
@@ -10,6 +11,31 @@ from .models import (
 from django.contrib.contenttypes.models import ContentType
 from django.db import IntegrityError
 from django.db.models import Avg
+
+
+REACH_CAP_PATTERNS = [
+    re.compile(r"(?im)\breach(?:\s*cap)?\s*[:=-]\s*([^\n\r]{1,120})"),
+    re.compile(r"(?im)\breach(?:\s*cap)?\s+(?:of\s+)?([0-9][0-9,\.\s]*(?:k|m|million|billion)?)\b"),
+]
+
+
+def extract_reach_caps_from_message(message):
+    if not message:
+        return None
+    text = str(message)
+    for pattern in REACH_CAP_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = " ".join(match.group(1).strip().split())
+        value = value.strip(" .;,")
+        if not value:
+            continue
+        normalized = value.lower()
+        if normalized in {"none", "n/a", "na", "no cap", "unlimited"}:
+            return "NONE"
+        return value
+    return None
 
 # 1. Helper Serializer for Variants (Nested inside Photo)
 class ProductVariantSerializer(serializers.ModelSerializer):
@@ -93,7 +119,7 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
                     object_id=asset_id,
                     email=email,
                 )
-                if existing_qs.exclude(status='REJECTED').exists():
+                if existing_qs.exclude(status__in=['REJECTED', 'REVOKED', 'EXPIRED']).exists():
                     raise serializers.ValidationError(
                         {"email": "A request for this asset already exists for this email."}
                     )
@@ -102,6 +128,14 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError(
                         {"email": "This email has reached the maximum number of rejected requests for this asset."}
                     )
+
+            reach_caps = (data.get('reach_caps') or '').strip()
+            if not reach_caps or reach_caps.upper() in {'NONE', 'N/A', 'NA'}:
+                inferred_reach_caps = extract_reach_caps_from_message(data.get('message'))
+                if inferred_reach_caps:
+                    data['reach_caps'] = inferred_reach_caps
+                else:
+                    data['reach_caps'] = 'NONE'
             
         except ContentType.DoesNotExist:
             raise serializers.ValidationError({"asset_type": "Invalid asset type."})

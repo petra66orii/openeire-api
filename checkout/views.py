@@ -1,15 +1,33 @@
 import stripe
 import json
+from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.template.loader import render_to_string
+from django.urls import reverse
+from urllib.parse import urljoin
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from products.models import Photo, Video, ProductVariant, PrintTemplate, LicenseRequest
-from products.utils import generate_r2_presigned_url
+from products.models import (
+    Photo,
+    Video,
+    ProductVariant,
+    PrintTemplate,
+    LicenseRequest,
+    LicenceOffer,
+    StripeWebhookEvent,
+)
+from products.licensing import (
+    ensure_licence_documents,
+    ensure_delivery_token,
+    send_licence_delivery_email,
+    get_asset_file_field,
+)
 from userprofiles.models import UserProfile
 from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
@@ -123,6 +141,10 @@ class CreatePaymentIntentView(APIView):
 class StripeWebhookView(APIView):
     authentication_classes = [] 
     permission_classes = [AllowAny]
+    SUPPORTED_EVENT_TYPES = {'payment_intent.succeeded', 'checkout.session.completed'}
+
+    def _stale_processing_seconds(self):
+        return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
 
     def _send_confirmation_email(self, order):
         """Send the user a confirmation email"""
@@ -143,13 +165,142 @@ class StripeWebhookView(APIView):
             [cust_email]
         )
 
+    def _extract_payment_link_id(self, session):
+        return session.get('payment_link') or session.get('metadata', {}).get('payment_link_id')
+
+    def _build_license_download_url(self, request, token_obj):
+        path = reverse('license-asset-download', args=[str(token_obj.token)])
+        base_url = getattr(settings, "LICENCE_DOWNLOAD_BASE_URL", None)
+        if base_url:
+            return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        return request.build_absolute_uri(path)
+
+    def _handle_license_payment(self, request, session):
+        payment_link_id = self._extract_payment_link_id(session)
+        payment_status = session.get('payment_status')
+        checkout_session_id = session.get('id')
+        payment_intent_id = session.get('payment_intent')
+
+        if not payment_link_id:
+            return
+
+        if payment_status != 'paid':
+            print(f"WARN: Payment link session not paid yet (status={payment_status}). Skipping approval.")
+            return
+
+        offer = (
+            LicenceOffer.objects
+            .filter(stripe_payment_link_id=payment_link_id)
+            .select_related('license_request')
+            .order_by('-version')
+            .first()
+        )
+
+        if offer:
+            license_request = offer.license_request
+        else:
+            matching_requests = LicenseRequest.objects.filter(
+                stripe_payment_link_id=payment_link_id
+            )
+
+            if matching_requests.count() != 1:
+                # Fallback for legacy rows that only store the URL
+                try:
+                    payment_link = stripe.PaymentLink.retrieve(payment_link_id)
+                    link_url = getattr(payment_link, "url", None)
+                except Exception as e:
+                    print(f"WARN: Could not retrieve payment link {payment_link_id}: {e}")
+                    link_url = None
+
+                if link_url:
+                    matching_requests = LicenseRequest.objects.filter(
+                        stripe_payment_link=link_url
+                    )
+
+                if matching_requests.count() != 1:
+                    print(f"WARN: Expected 1 LicenseRequest for link {payment_link_id}, found {matching_requests.count()}.")
+                    return
+            license_request = matching_requests.first()
+
+        if not license_request.stripe_payment_link_id:
+            license_request.stripe_payment_link_id = payment_link_id
+            license_request.save(update_fields=['stripe_payment_link_id', 'updated_at'])
+
+        if license_request.status == 'DELIVERED':
+            print(f"INFO: License Request {license_request.id} already delivered. Skipping.")
+            return
+
+        asset = license_request.asset
+        file_field = get_asset_file_field(asset)
+        if not file_field:
+            raise RuntimeError(f"No high-res file found attached to asset {asset}")
+
+        issued_at = timezone.now()
+
+        if offer and offer.status != 'PAID':
+            offer.status = 'PAID'
+            offer.paid_at = issued_at
+            offer.stripe_checkout_session_id = checkout_session_id
+            offer.stripe_payment_intent_id = payment_intent_id
+            offer.save(
+                update_fields=[
+                    'status',
+                    'paid_at',
+                    'stripe_checkout_session_id',
+                    'stripe_payment_intent_id',
+                ]
+            )
+
+        license_request.stripe_checkout_session_id = checkout_session_id
+        license_request.stripe_payment_intent_id = payment_intent_id
+        if not license_request.paid_at:
+            license_request.paid_at = issued_at
+        license_request.save(
+            update_fields=[
+                'stripe_checkout_session_id',
+                'stripe_payment_intent_id',
+                'paid_at',
+                'updated_at',
+            ]
+        )
+
+        if license_request.status != 'PAID':
+            license_request.transition_to(
+                'PAID',
+                note="Stripe checkout.session.completed received.",
+                metadata={
+                    "checkout_session_id": checkout_session_id,
+                    "payment_intent_id": payment_intent_id,
+                    "payment_link_id": payment_link_id,
+                },
+            )
+
+        terms_version = offer.terms_version if offer else None
+        documents = ensure_licence_documents(
+            license_request,
+            issued_at=issued_at,
+            terms_version=terms_version,
+        )
+        token_obj = ensure_delivery_token(license_request)
+        download_url = self._build_license_download_url(request, token_obj)
+
+        send_licence_delivery_email(license_request, documents, download_url, token_obj)
+
+        license_request.delivered_at = timezone.now()
+        license_request.save(update_fields=['delivered_at', 'updated_at'])
+        license_request.transition_to(
+            'DELIVERED',
+            note="Licence documents generated and delivery email sent.",
+            metadata={"checkout_session_id": checkout_session_id},
+        )
+
+        print(f"OK: Rights-Managed license delivered for request {license_request.id}.")
+
     def post(self, request):
         stripe.api_key = settings.STRIPE_SECRET_KEY
         webhook_secret = settings.STRIPE_WEBHOOK_SECRET
         payload = request.body
         sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
-
-        print("🚨 WEBHOOK RECEIVED! 🚨")
 
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
@@ -157,203 +308,178 @@ class StripeWebhookView(APIView):
             print(f"Webhook signature verification failed: {e}")
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        if event['type'] == 'payment_intent.succeeded':
-            payment_intent = event['data']['object']
-            
-            # 1. Get all data from Stripe
-            metadata = payment_intent.get('metadata', {})
-            cart_items_str = metadata.get('cart', '[]')
-            shipping_details = payment_intent.get('shipping') or {}
-            address_details = shipping_details.get('address') or {}
+        event_id = event.get('id')
+        event_type = event.get('type')
+        print(f"WEBHOOK RECEIVED: type={event_type}, id={event_id}")
+        if event_type not in self.SUPPORTED_EVENT_TYPES:
+            return Response(status=status.HTTP_200_OK)
 
-            shipping_cost = float(metadata.get('shipping_cost', 0.00))
-            shipping_method = metadata.get('shipping_method', 'budget') 
-
-            # 2. Determine the email
-            order_email = payment_intent.receipt_email
-            if not order_email or '@' not in order_email:
-                order_email = metadata.get('username')
-                if not order_email or '@' not in order_email:
-                    order_email = "guest@example.com"
-
-            # 3. Create the order_data dictionary
-            order_data = {
-                'stripe_pid': payment_intent.id,
-                'first_name': shipping_details.get('name', ''),
-                'email': order_email,
-                'phone_number': shipping_details.get('phone', ''),
-                'country': address_details.get('country', ''),
-                'town': address_details.get('city', ''),
-                'street_address1': address_details.get('line1', ''),
-                'street_address2': address_details.get('line2', ''),
-                'postcode': address_details.get('postal_code', ''),
-                'county': address_details.get('state', ''),
-                'items': json.loads(cart_items_str),
-                'delivery_cost': shipping_cost,
-                'shipping_method': shipping_method, # NEW: Pass this to the serializer
-            }
-
-            # 4. Check for User Profile
-            username = metadata.get('username')
-            save_info = metadata.get('save_info') == 'true'
-
-            if username and username != 'Guest':
-                try:
-                    profile = UserProfile.objects.get(user__username=username)
-                    order_data['user_profile'] = profile.id
-                    
-                    if save_info:
-                        profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
-                        profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
-                        profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
-                        profile.default_town = address_details.get('city', profile.default_town)
-                        profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
-                        profile.default_county = address_details.get('state', profile.default_county)
-                        profile.default_country = address_details.get('country', profile.default_country)
-                        profile.save()
-                except UserProfile.DoesNotExist:
-                    pass
-
-            # 5. Validate and Save
-            serializer = OrderSerializer(data=order_data)
-            if serializer.is_valid():
-                order = serializer.save()
-                print(f"✅ Order {order.order_number} created successfully. Email: {order.email}")
-
-                try:
-                    self._send_confirmation_email(order)
-                    print(f"📧 Confirmation email sent to {order.email}")
-                except Exception as e:
-                    print(f"❌ EMAIL ERROR: Could not send email to {order.email}: {e}")
-                
-                try:
-                    has_physical_items = False
-                    for item in order.items.all():
-                        if item.content_type.model == 'productvariant':
-                            has_physical_items = True
-                            break
-                    
-                    if has_physical_items:
-                        # Only contact Prodigi if we actually have prints
-                        print(f"🏭 Sending Order {order.order_number} to Prodigi...")
-                        create_prodigi_order(order)
-                        print(f"🚀 Sent to Prodigi successfully!")
+        should_process_event = True
+        event_record = None
+        if not event_id:
+            print("WARN: Stripe event missing id; skipping idempotency tracking.")
+        else:
+            with transaction.atomic():
+                event_record, created = StripeWebhookEvent.objects.get_or_create(
+                    stripe_event_id=event_id,
+                    defaults={
+                        'event_type': event_type or 'unknown',
+                        'status': 'PROCESSING',
+                    }
+                )
+                event_record = StripeWebhookEvent.objects.select_for_update().get(pk=event_record.pk)
+                if not created:
+                    if event_record.status == 'SUCCESS':
+                        print(f"INFO: Stripe event {event_id} already processed; skipping.")
+                        should_process_event = False
+                    elif event_record.status == 'PROCESSING':
+                        stale_before = timezone.now() - timedelta(
+                            seconds=self._stale_processing_seconds()
+                        )
+                        is_stale = (
+                            event_record.processed_at is None
+                            and event_record.received_at is not None
+                            and event_record.received_at <= stale_before
+                        )
+                        if is_stale:
+                            print(f"WARN: Stripe event {event_id} had stale PROCESSING state; retrying.")
+                            event_record.error_message = "Recovered from stale PROCESSING state."
+                            event_record.event_type = event_type or event_record.event_type or 'unknown'
+                            event_record.save(update_fields=['error_message', 'event_type'])
+                        else:
+                            print(f"INFO: Stripe event {event_id} is already being processed; skipping.")
+                            should_process_event = False
                     else:
-                        # Digital-only order: Stay silent
-                        print(f"💾 Digital Order {order.order_number} detected. Skipping Prodigi fulfillment.")
+                        print(f"INFO: Retrying failed Stripe event {event_id}.")
+                        event_record.status = 'PROCESSING'
+                        event_record.error_message = None
+                        event_record.processed_at = None
+                        event_record.event_type = event_type or event_record.event_type or 'unknown'
+                        event_record.save(update_fields=['status', 'error_message', 'processed_at', 'event_type'])
+        if not should_process_event:
+            return Response(status=status.HTTP_200_OK)
 
-                except Exception as e:
-                    print(f"❌ PRODIGI ERROR: Failed to fulfill order {order.order_number}: {e}")
+        processing_error = None
 
-            else:
-                print(f"❌ Error creating order: {serializer.errors}")
-                # Return the errors so we can see them more clearly if needed
-                return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-            
-        elif event['type'] == 'checkout.session.completed':
-            session = event['data']['object']
-            payment_link_id = session.get('payment_link')
-            payment_status = session.get('payment_status')
-            
-            # If this checkout session came from a Payment Link
-            if payment_link_id:
-                if payment_status != 'paid':
-                    print(f"⚠️ Payment link session not paid yet (status={payment_status}). Skipping approval.")
+        try:
+            if event_type == 'payment_intent.succeeded':
+                payment_intent = event['data']['object']
+
+                # 1. Get all data from Stripe
+                metadata = payment_intent.get('metadata', {})
+                cart_items_str = metadata.get('cart', '[]')
+                shipping_details = payment_intent.get('shipping') or {}
+                address_details = shipping_details.get('address') or {}
+
+                shipping_cost = float(metadata.get('shipping_cost', 0.00))
+                shipping_method = metadata.get('shipping_method', 'budget')
+
+                # Skip order creation for non-cart flows (e.g., Payment Links)
+                try:
+                    cart_items = json.loads(cart_items_str)
+                except (TypeError, ValueError):
+                    cart_items = []
+
+                if not cart_items:
+                    print("INFO: No cart items found for payment_intent; skipping order creation.")
                     return Response(status=status.HTTP_200_OK)
 
-                try:
-                    # Find the specific license request attached to this link (exact ID match)
-                    matching_requests = LicenseRequest.objects.filter(
-                        stripe_payment_link_id=payment_link_id
-                    )
+                # 2. Determine the email
+                order_email = payment_intent.receipt_email
+                if not order_email or '@' not in order_email:
+                    order_email = metadata.get('username')
+                    if not order_email or '@' not in order_email:
+                        order_email = "guest@example.com"
 
-                    if matching_requests.count() != 1:
-                        # Fallback for legacy rows that only store the URL
-                        try:
-                            payment_link = stripe.PaymentLink.retrieve(payment_link_id)
-                            link_url = getattr(payment_link, "url", None)
-                        except Exception as e:
-                            print(f"⚠️ Could not retrieve payment link {payment_link_id}: {e}")
-                            link_url = None
+                # 3. Create the order_data dictionary
+                order_data = {
+                    'stripe_pid': payment_intent.id,
+                    'first_name': shipping_details.get('name', ''),
+                    'email': order_email,
+                    'phone_number': shipping_details.get('phone', ''),
+                    'country': address_details.get('country', ''),
+                    'town': address_details.get('city', ''),
+                    'street_address1': address_details.get('line1', ''),
+                    'street_address2': address_details.get('line2', ''),
+                    'postcode': address_details.get('postal_code', ''),
+                    'county': address_details.get('state', ''),
+                    'items': cart_items,
+                    'delivery_cost': shipping_cost,
+                    'shipping_method': shipping_method, # NEW: Pass this to the serializer
+                }
 
-                        if link_url:
-                            matching_requests = LicenseRequest.objects.filter(
-                                stripe_payment_link=link_url
-                            )
+                # 4. Check for User Profile
+                username = metadata.get('username')
+                save_info = metadata.get('save_info') == 'true'
 
-                        if matching_requests.count() != 1:
-                            print(f"⚠️ Expected 1 LicenseRequest for link {payment_link_id}, found {matching_requests.count()}.")
-                            return Response(status=status.HTTP_200_OK)
+                if username and username != 'Guest':
+                    try:
+                        profile = UserProfile.objects.get(user__username=username)
+                        order_data['user_profile'] = profile.id
 
-                    license_request = matching_requests.first()
+                        if save_info:
+                            profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
+                            profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
+                            profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
+                            profile.default_town = address_details.get('city', profile.default_town)
+                            profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
+                            profile.default_county = address_details.get('state', profile.default_county)
+                            profile.default_country = address_details.get('country', profile.default_country)
+                            profile.save()
+                    except UserProfile.DoesNotExist:
+                        pass
 
-                    if not license_request.stripe_payment_link_id:
-                        license_request.stripe_payment_link_id = payment_link_id
-                        license_request.save(update_fields=['stripe_payment_link_id', 'updated_at'])
+                # 5. Validate and Save
+                serializer = OrderSerializer(data=order_data)
+                if serializer.is_valid():
+                    order = serializer.save()
+                    print(f"OK: Order {order.order_number} created successfully. Email: {order.email}")
 
-                    if license_request.status == 'APPROVED':
-                        print(f"ℹ️ License Request {license_request.id} already approved. Skipping.")
-                        return Response(status=status.HTTP_200_OK)
+                    try:
+                        self._send_confirmation_email(order)
+                        print(f"OK: Confirmation email sent to {order.email}")
+                    except Exception as e:
+                        print(f"ERROR: Could not send email to {order.email}: {e}")
                     
-                    print(f"💰 LICENSING DESK SUCCESS! License Request {license_request.id} paid by {license_request.client_name}!")
-                    
-                    # 👇 1. Get the exact file name/key from the requested asset
-                    asset = license_request.asset
-                    file_key = None
-                    
-                    if hasattr(asset, 'high_res_file') and asset.high_res_file:
-                        file_key = asset.high_res_file.name 
-                    # Check if it's a Video (has video_file)
-                    elif hasattr(asset, 'video_file') and asset.video_file:
-                        file_key = asset.video_file.name
-          
+                    try:
+                        has_physical_items = False
+                        for item in order.items.all():
+                            if item.content_type.model == 'productvariant':
+                                has_physical_items = True
+                                break
                         
-                    if not file_key:
-                        print(f"⚠️ No high-res file found attached to asset {asset}")
-                        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                        if has_physical_items:
+                            # Only contact Prodigi if we actually have prints
+                            print(f"INFO: Sending Order {order.order_number} to Prodigi...")
+                            create_prodigi_order(order)
+                            print("OK: Sent to Prodigi successfully.")
+                        else:
+                            # Digital-only order: Stay silent
+                            print(f"INFO: Digital Order {order.order_number} detected. Skipping Prodigi fulfillment.")
 
-                    # 👇 2. Generate the secure 48-hour download link
-                    secure_download_url = generate_r2_presigned_url(file_key)
-                    if not secure_download_url:
-                        print(f"❌ Failed to generate R2 link for {file_key}")
-                        return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                    
-                    # 👇 3. Email the link to the client
-                    subject = f"Your Commercial License & Download Link: {asset}"
-                    
-                    # You can create a nice HTML template for this later, but plain text works to start!
-                    body = f"""
-                    Hi {license_request.client_name},
-                    
-                    Thank you for your payment. Your commercial license for "{asset}" is now active.
-                    
-                    You can download your high-resolution, unwatermarked file here:
-                    {secure_download_url}
-                    
-                    IMPORTANT: This secure link will automatically expire in 48 hours. Please download your file immediately.
-                    
-                    License Details:
-                    - Project: {license_request.get_project_type_display()}
-                    - Duration: {license_request.get_duration_display()}
-                    
-                    Thank you for choosing OpenÉire Studios!
-                    """
-                    
-                    send_mail(
-                        subject,
-                        body,
-                        settings.DEFAULT_FROM_EMAIL,
-                        [license_request.email],
-                        fail_silently=False,
-                    )
-                    print(f"📧 Secure download link sent to {license_request.email}!")
+                    except Exception as e:
+                        print(f"ERROR: Failed to fulfill order {order.order_number}: {e}")
 
-                    # Mark it as paid only after delivery link is created and email succeeds
-                    license_request.status = 'APPROVED'
-                    license_request.save(update_fields=['status', 'updated_at'])
+                else:
+                    print(f"ERROR: Error creating order: {serializer.errors}")
+                    # Return the errors so we can see them more clearly if needed
+                    processing_error = f"Order validation failed: {serializer.errors}"
+                    return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-                except Exception as e:
-                    print(f"❌ Error processing license request for link {payment_link_id}: {e}")
+            elif event_type == 'checkout.session.completed':
+                session = event['data']['object']
+                self._handle_license_payment(request, session)
+        except Exception as e:
+            processing_error = str(e)
+            print(f"ERROR: Error processing Stripe event {event_id}: {processing_error}")
+        finally:
+            if event_record and should_process_event:
+                StripeWebhookEvent.objects.filter(pk=event_record.pk).update(
+                    status='FAILED' if processing_error else 'SUCCESS',
+                    processed_at=timezone.now(),
+                    error_message=processing_error,
+                    event_type=event_type or 'unknown',
+                )
         
         return Response(status=status.HTTP_200_OK)
 

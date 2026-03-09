@@ -1,13 +1,32 @@
 import json
+import time
 from decimal import Decimal, ROUND_HALF_UP
 import stripe
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
+from django.core.mail import send_mail
+from django.db import OperationalError, transaction
+from django.db.models import Max
+from django.db.transaction import TransactionManagementError
+from django.utils import timezone
 from django.utils.safestring import mark_safe
 
 from checkout.models import ProductShipping
-from .models import Photo, Video, ProductVariant, ProductReview, PrintTemplate, LicenseRequest
+from .licensing import send_licence_quote_email
+from .models import (
+    Photo,
+    Video,
+    ProductVariant,
+    ProductReview,
+    PrintTemplate,
+    LicenseRequest,
+    StripeWebhookEvent,
+    LicenceOffer,
+    LicenseRequestAuditLog,
+    LicenceDocument,
+    LicenceDeliveryToken,
+)
 from django.utils.html import format_html
 from django.urls import reverse
 from openeire_api.admin import custom_admin_site
@@ -173,6 +192,12 @@ class ProductVariantAdminForm(forms.ModelForm):
 
 
 class LicenseRequestAdminForm(forms.ModelForm):
+    internal_note = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        help_text="Optional internal note recorded in the audit log.",
+    )
+
     class Meta:
         model = LicenseRequest
         fields = '__all__'
@@ -182,14 +207,23 @@ class LicenseRequestAdminForm(forms.ModelForm):
         if not self.instance or not self.instance.pk:
             return cleaned_data
 
-        quoted_price_changed = 'quoted_price' in self.changed_data
-        link_present = bool(self.instance.stripe_payment_link)
-        link_still_present = bool(cleaned_data.get('stripe_payment_link'))
+        immutable_statuses = {'PAID', 'DELIVERED', 'EXPIRED', 'REVOKED'}
+        scope_fields = {
+            'project_type',
+            'permitted_media',
+            'territory',
+            'duration',
+            'reach_caps',
+            'exclusivity',
+            'message',
+            'quoted_price',
+        }
+        scope_changed = bool(scope_fields.intersection(set(self.changed_data)))
 
-        if quoted_price_changed and link_present and link_still_present:
+        if self.instance.status in immutable_statuses and scope_changed:
             raise forms.ValidationError(
-                "Quoted price changed but a Stripe payment link already exists. "
-                "Clear the Stripe link field to regenerate it."
+                "Scope and pricing are immutable after payment/delivery/expiry/revocation. "
+                "Create a new licence request or offer version instead."
             )
         return cleaned_data
 # 1. Create an Inline for Variants
@@ -251,12 +285,51 @@ class VideoAdmin(admin.ModelAdmin):
         }),
     )
 
+
+class LicenceOfferInline(admin.TabularInline):
+    model = LicenceOffer
+    extra = 0
+    can_delete = False
+    fields = (
+        'version',
+        'status',
+        'quoted_price',
+        'currency',
+        'stripe_payment_link_id',
+        'stripe_checkout_session_id',
+        'paid_at',
+        'created_at',
+    )
+    readonly_fields = fields
+    ordering = ('-version',)
+
+
+class LicenseRequestAuditLogInline(admin.TabularInline):
+    model = LicenseRequestAuditLog
+    extra = 0
+    can_delete = False
+    fields = ('changed_at', 'from_status', 'to_status', 'changed_by', 'note')
+    readonly_fields = fields
+    ordering = ('-changed_at',)
+
 class LicenseRequestAdmin(admin.ModelAdmin):
     form = LicenseRequestAdminForm
     list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
     list_filter = ('status', 'project_type', 'created_at')
     search_fields = ('client_name', 'email', 'company')
-    readonly_fields = ('asset_link', 'created_at', 'updated_at', 'stripe_payment_link_id')
+    readonly_fields = (
+        'asset_link',
+        'created_at',
+        'updated_at',
+        'paid_at',
+        'delivered_at',
+        'stripe_payment_link_id',
+        'stripe_checkout_session_id',
+        'stripe_payment_intent_id',
+        'licence_documents_links',
+    )
+    inlines = [LicenceOfferInline, LicenseRequestAuditLogInline]
+    actions = ['mark_needs_info', 'approve_requests', 'reject_requests']
     
     fieldsets = (
         ('Client Info', {
@@ -266,8 +339,23 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             'fields': ('asset_link', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
         }),
         ('Admin / Fulfillment', {
-            'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
-            'description': 'Enter a Quoted Price and click Save to automatically generate a Stripe Payment Link.'
+            'fields': (
+                'status',
+                'quoted_price',
+                'stripe_payment_link',
+                'stripe_payment_link_id',
+                'stripe_checkout_session_id',
+                'stripe_payment_intent_id',
+                'paid_at',
+                'delivered_at',
+                'ai_draft_response',
+                'licence_documents_links',
+                'internal_note',
+            ),
+            'description': (
+                'Set quote/scope and save to issue a versioned Licence Offer + Stripe Payment Link. '
+                'Any post-approval scope change creates a new offer version.'
+            )
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -294,8 +382,22 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     'fields': ('content_type', 'object_id', 'project_type', 'permitted_media', 'territory', 'duration', 'reach_caps', 'exclusivity', 'message')
                 }),
                 ('Admin / Fulfillment', {
-                    'fields': ('status', 'quoted_price', 'stripe_payment_link', 'ai_draft_response'),
-                    'description': 'Enter a Quoted Price and click Save to automatically generate a Stripe Payment Link.'
+                    'fields': (
+                        'status',
+                        'quoted_price',
+                        'stripe_payment_link',
+                        'stripe_payment_link_id',
+                        'stripe_checkout_session_id',
+                        'stripe_payment_intent_id',
+                        'paid_at',
+                        'delivered_at',
+                        'ai_draft_response',
+                        'internal_note',
+                    ),
+                    'description': (
+                        'Set quote/scope and save to issue a versioned Licence Offer + Stripe Payment Link. '
+                        'Any post-approval scope change creates a new offer version.'
+                    )
                 }),
                 ('Timestamps', {
                     'fields': ('created_at', 'updated_at'),
@@ -320,85 +422,283 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         return self.get_asset_link(obj)
     asset_link.short_description = 'Requested Asset'
 
-    def save_model(self, request, obj, form, change):
-        if not obj.stripe_payment_link:
-            obj.stripe_payment_link_id = None
+    def licence_documents_links(self, obj):
+        docs = obj.licence_documents.order_by("doc_type", "-created_at")
+        if not docs:
+            return "-"
+        links = []
+        for doc in docs:
+            if not doc.file:
+                continue
+            links.append(
+                f'<a href="{doc.file.url}" target="_blank">{doc.get_doc_type_display()}</a>'
+            )
+        return mark_safe("<br>".join(links) if links else "-")
+    licence_documents_links.short_description = "Generated Documents"
 
-        # If the client entered a price, but there is no Stripe link yet
-        if obj.pk is None:
-            super().save_model(request, obj, form, change)
+    def _build_scope_snapshot(self, obj):
+        return {
+            "project_type": obj.project_type,
+            "project_type_display": obj.get_project_type_display(),
+            "permitted_media": obj.permitted_media,
+            "permitted_media_display": (
+                obj.get_permitted_media_display() if obj.permitted_media else None
+            ),
+            "territory": obj.territory,
+            "territory_display": obj.get_territory_display() if obj.territory else None,
+            "duration": obj.duration,
+            "duration_display": obj.get_duration_display() if obj.duration else None,
+            "exclusivity": obj.exclusivity,
+            "exclusivity_display": (
+                obj.get_exclusivity_display() if obj.exclusivity else None
+            ),
+            "reach_caps": obj.reach_caps,
+            "message": obj.message,
+            "asset": str(obj.asset) if obj.asset else None,
+            "asset_id": obj.object_id,
+            "asset_type": obj.content_type.model if obj.content_type_id else None,
+            "client_name": obj.client_name,
+            "company": obj.company,
+            "email": obj.email,
+            "terms_version": getattr(settings, "LICENCE_TERMS_VERSION", "RM-1.0"),
+            "master_agreement_version": getattr(settings, "LICENCE_MASTER_AGREEMENT", ""),
+        }
+
+    def _notify_status(self, obj, status_label):
+        try:
+            send_mail(
+                subject=f"Licence request update: {obj.asset}",
+                message=(
+                    f"Hi {obj.client_name},\n\n"
+                    f"Your licence request status is now: {status_label}.\n\n"
+                    "If you have questions, reply to this email.\n\n"
+                    "Kind regards,\n"
+                    "OpenEire Studios\n"
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[obj.email],
+                fail_silently=False,
+            )
+        except Exception:
+            # Do not block admin status updates if email transport fails.
+            pass
+
+    def _issue_new_offer(self, request, obj):
+        if obj.quoted_price is None or obj.quoted_price <= 0:
+            raise ValueError("Quoted price must be greater than zero.")
+
+        amount_in_cents = int(
+            (obj.quoted_price * Decimal('100')).quantize(
+                Decimal('1'),
+                rounding=ROUND_HALF_UP
+            )
+        )
+
+        if amount_in_cents > 99_999_999:
+            raise ValueError("Quoted price exceeds Stripe limit for EUR (max EUR 999,999.99).")
+
+        existing_active = (
+            LicenceOffer.objects
+            .filter(license_request=obj, status='ACTIVE')
+            .order_by('-version')
+            .first()
+        )
+        next_version = (
+            (LicenceOffer.objects.filter(license_request=obj).aggregate(max_v=Max("version"))["max_v"] or 0)
+            + 1
+        )
+        idempotency_base = f"license-request-{obj.pk}-offer-v{next_version}-{amount_in_cents}"
+        product_name = f"Commercial License Offer v{next_version}: {obj.asset} ({obj.get_project_type_display()})"
+
+        stripe_product = stripe.Product.create(
+            name=product_name,
+            idempotency_key=f"{idempotency_base}-product"
+        )
+        stripe_price = stripe.Price.create(
+            product=stripe_product.id,
+            unit_amount=amount_in_cents,
+            currency="eur",
+            idempotency_key=f"{idempotency_base}-price"
+        )
+        payment_link = stripe.PaymentLink.create(
+            line_items=[{"price": stripe_price.id, "quantity": 1}],
+            restrictions={"completed_sessions": {"limit": 1}},
+            metadata={
+                "license_request_id": str(obj.pk),
+                "offer_version": str(next_version),
+            },
+            idempotency_key=f"{idempotency_base}-link"
+        )
+
+        if existing_active:
+            existing_active.status = "SUPERSEDED"
+            existing_active.superseded_at = timezone.now()
+            existing_active.save(update_fields=["status", "superseded_at"])
+
+        offer = LicenceOffer.objects.create(
+            license_request=obj,
+            version=next_version,
+            status='ACTIVE',
+            scope_snapshot=self._build_scope_snapshot(obj),
+            quoted_price=obj.quoted_price,
+            currency="EUR",
+            terms_version=getattr(settings, "LICENCE_TERMS_VERSION", "RM-1.0"),
+            master_agreement_version=getattr(settings, "LICENCE_MASTER_AGREEMENT", ""),
+            stripe_product_id=stripe_product.id,
+            stripe_price_id=stripe_price.id,
+            stripe_payment_link_id=payment_link.id,
+            stripe_payment_link_url=payment_link.url,
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        obj.stripe_payment_link = payment_link.url
+        obj.stripe_payment_link_id = payment_link.id
+        return offer
+
+    def _save_model_with_retry(self, request, obj, form, change):
+        attempts = int(getattr(settings, 'SQLITE_SAVE_RETRY_ATTEMPTS', 6))
+        base_delay = float(getattr(settings, 'SQLITE_SAVE_RETRY_DELAY_SECONDS', 0.3))
+        for attempt in range(1, attempts + 1):
+            sid = transaction.savepoint()
+            try:
+                super().save_model(request, obj, form, change)
+                transaction.savepoint_commit(sid)
+                return True
+            except OperationalError as exc:
+                transaction.savepoint_rollback(sid)
+                # Clear rollback state so retries can proceed inside admin's outer atomic block.
+                transaction.set_rollback(False)
+                message = str(exc).lower()
+                if 'database is locked' not in message:
+                    raise
+                if attempt == attempts:
+                    messages.error(
+                        request,
+                        "Database is busy (SQLite lock). Please try saving this request again in a few seconds."
+                    )
+                    return False
+                time.sleep(base_delay * attempt)
+            except TransactionManagementError as exc:
+                # If a prior DB error marked the outer transaction as broken, clear and retry.
+                transaction.savepoint_rollback(sid)
+                transaction.set_rollback(False)
+                if attempt == attempts:
+                    messages.error(
+                        request,
+                        "Database transaction was interrupted. Please save again."
+                    )
+                    return False
+                time.sleep(base_delay * attempt)
+        return False
+
+    def save_model(self, request, obj, form, change):
+        note = (form.cleaned_data.get("internal_note") or "").strip()
+
+        # Preserve actor/note only when status changes; non-status notes are
+        # written explicitly below via add_audit_note.
+        if 'status' in form.changed_data:
+            obj.set_status_change_context(
+                actor=request.user if request.user.is_authenticated else None,
+                note=note,
+            )
+
+        if not self._save_model_with_retry(request, obj, form, change):
             return
 
-        if obj.quoted_price and not obj.stripe_payment_link:
+        if note and 'status' not in form.changed_data:
+            obj.add_audit_note(
+                note,
+                actor=request.user if request.user.is_authenticated else None,
+            )
+
+        scope_fields = {
+            'project_type',
+            'permitted_media',
+            'territory',
+            'duration',
+            'reach_caps',
+            'exclusivity',
+            'message',
+            'quoted_price',
+        }
+        scope_changed = bool(scope_fields.intersection(set(form.changed_data)))
+        has_active_offer = LicenceOffer.objects.filter(
+            license_request=obj,
+            status='ACTIVE',
+        ).exists()
+        should_issue_offer = bool(obj.quoted_price) and (
+            not has_active_offer or scope_changed
+        )
+
+        if should_issue_offer:
             try:
-                if obj.quoted_price <= 0:
-                    messages.error(request, "Quoted price must be greater than zero.")
-                    super().save_model(request, obj, form, change)
-                    return
-
-                # 1. Create a custom Product in Stripe for this specific license
-                product_name = f"Commercial License: {obj.asset} ({obj.get_project_type_display()})"
-                amount_in_cents = int(
-                    (obj.quoted_price * Decimal('100')).quantize(
-                        Decimal('1'),
-                        rounding=ROUND_HALF_UP
+                offer = self._issue_new_offer(request, obj)
+                obj.set_status_change_context(
+                    actor=request.user if request.user.is_authenticated else None,
+                    note=f"Issued licence offer v{offer.version}.",
+                    metadata={"offer_version": offer.version},
+                )
+                if obj.status in {'DRAFT', 'SUBMITTED', 'NEEDS_INFO'}:
+                    obj.status = 'APPROVED'
+                    obj.save(update_fields=['status', 'updated_at'])
+                if obj.status != 'PAYMENT_PENDING':
+                    obj.transition_to(
+                        'PAYMENT_PENDING',
+                        actor=request.user if request.user.is_authenticated else None,
+                        note=f"Awaiting payment for offer v{offer.version}.",
+                        metadata={"offer_version": offer.version},
                     )
-                )
-                idempotency_base = f"license-request-{obj.pk}-quote-{amount_in_cents}"
-                stripe_product = stripe.Product.create(
-                    name=product_name,
-                    idempotency_key=f"{idempotency_base}-product"
-                )
-
-                # 2. Create a Price for that Product (Stripe uses cents, so multiply by 100)
-                stripe_price = stripe.Price.create(
-                    product=stripe_product.id,
-                    unit_amount=amount_in_cents,
-                    currency="eur",
-                    idempotency_key=f"{idempotency_base}-price"
-                )
-
-                # 3. Generate the reusable Payment Link (Restricted to ONE payment)
-                payment_link = stripe.PaymentLink.create(
-                    line_items=[{"price": stripe_price.id, "quantity": 1}],
-                    restrictions={
-                        "completed_sessions": {
-                            "limit": 1, # The link automatically expires after 1 successful payment!
-                        },
-                    },
-                    idempotency_key=f"{idempotency_base}-link"
-                )
-
-                # 4. Save the link to the object
-                obj.stripe_payment_link = payment_link.url
-                obj.stripe_payment_link_id = payment_link.id
-                
-                # Automatically move the status to QUOTED
-                if obj.status in ['NEW', 'REVIEWED']:
-                    obj.status = 'QUOTED'
-                    
+                obj.save(update_fields=['stripe_payment_link', 'stripe_payment_link_id', 'updated_at'])
+                send_licence_quote_email(obj)
                 messages.success(
                     request,
-                    f"Stripe Payment Link successfully generated for EUR {obj.quoted_price}."
+                    f"Offer v{offer.version} issued and quote email sent to {obj.email}."
                 )
-
             except stripe.error.StripeError as e:
-                messages.error(request, f"Failed to generate Stripe link: {e.user_message or str(e)}")
+                messages.error(request, f"Failed to issue Stripe offer: {e.user_message or str(e)}")
             except Exception as e:
-                messages.error(request, f"Failed to generate Stripe link: {e}")
-                
-        # If the client wants to regenerate the link for a new price, 
-        # they just delete the old link, change the price, and click Save again!
-        elif 'quoted_price' in form.changed_data and obj.stripe_payment_link:
-            messages.error(
-                request,
-                "Quoted price changed but a Stripe link already exists. "
-                "Clear the Stripe Link field to regenerate it."
-            )
-            return
+                messages.error(request, f"Failed to issue Stripe offer: {e}")
 
-        # Finally, save the object to the database
-        super().save_model(request, obj, form, change)
+    @admin.action(description="Request More Info")
+    def mark_needs_info(self, request, queryset):
+        changed = 0
+        for obj in queryset:
+            did_change = obj.transition_to(
+                'NEEDS_INFO',
+                actor=request.user if request.user.is_authenticated else None,
+                note="Admin requested additional scope information.",
+            )
+            if did_change:
+                changed += 1
+                self._notify_status(obj, "Needs Info")
+        self.message_user(request, f"{changed} request(s) moved to Needs Info.")
+
+    @admin.action(description="Approve Request")
+    def approve_requests(self, request, queryset):
+        changed = 0
+        for obj in queryset:
+            did_change = obj.transition_to(
+                'APPROVED',
+                actor=request.user if request.user.is_authenticated else None,
+                note="Admin approved request.",
+            )
+            if did_change:
+                changed += 1
+                self._notify_status(obj, "Approved")
+        self.message_user(request, f"{changed} request(s) approved.")
+
+    @admin.action(description="Reject Request")
+    def reject_requests(self, request, queryset):
+        changed = 0
+        for obj in queryset:
+            did_change = obj.transition_to(
+                'REJECTED',
+                actor=request.user if request.user.is_authenticated else None,
+                note="Admin rejected request.",
+            )
+            if did_change:
+                changed += 1
+                self._notify_status(obj, "Rejected")
+        self.message_user(request, f"{changed} request(s) rejected.")
 
 class ProductShippingInline(admin.TabularInline):
     """
@@ -498,4 +798,81 @@ custom_admin_site.register(ProductVariant, ProductVariantAdmin)
 custom_admin_site.register(ProductReview, ProductReviewAdmin)
 custom_admin_site.register(PrintTemplate, PrintTemplateAdmin)
 custom_admin_site.register(LicenseRequest, LicenseRequestAdmin)
+
+
+class StripeWebhookEventAdmin(admin.ModelAdmin):
+    list_display = ('event_type', 'stripe_event_id', 'status', 'received_at', 'processed_at')
+    list_filter = ('status', 'event_type', 'received_at')
+    search_fields = ('stripe_event_id',)
+    readonly_fields = ('stripe_event_id', 'event_type', 'received_at', 'processed_at', 'status', 'error_message')
+    ordering = ('-received_at',)
+
+
+class LicenceDocumentAdmin(admin.ModelAdmin):
+    list_display = ('license_request', 'doc_type', 'created_at', 'file_link')
+    list_filter = ('doc_type', 'created_at')
+    search_fields = ('license_request__id',)
+    readonly_fields = ('license_request', 'doc_type', 'file', 'sha256', 'created_at')
+
+    def file_link(self, obj):
+        if not obj.file:
+            return "-"
+        return format_html('<a href="{}" target="_blank">Download</a>', obj.file.url)
+    file_link.short_description = 'File'
+
+
+class LicenceDeliveryTokenAdmin(admin.ModelAdmin):
+    list_display = ('license_request', 'token', 'expires_at', 'used_at', 'created_at')
+    list_filter = ('expires_at', 'used_at')
+    search_fields = ('license_request__id', 'token')
+    readonly_fields = ('token', 'license_request', 'expires_at', 'used_at', 'created_at')
+
+
+class LicenceOfferAdmin(admin.ModelAdmin):
+    list_display = (
+        'license_request',
+        'version',
+        'status',
+        'quoted_price',
+        'currency',
+        'stripe_payment_link_id',
+        'paid_at',
+        'created_at',
+    )
+    list_filter = ('status', 'created_at', 'paid_at')
+    search_fields = ('license_request__id', 'stripe_payment_link_id', 'stripe_checkout_session_id')
+    readonly_fields = (
+        'license_request',
+        'version',
+        'status',
+        'scope_snapshot',
+        'quoted_price',
+        'currency',
+        'terms_version',
+        'master_agreement_version',
+        'stripe_product_id',
+        'stripe_price_id',
+        'stripe_payment_link_id',
+        'stripe_payment_link_url',
+        'stripe_checkout_session_id',
+        'stripe_payment_intent_id',
+        'created_by',
+        'created_at',
+        'paid_at',
+        'superseded_at',
+    )
+
+
+class LicenseRequestAuditLogAdmin(admin.ModelAdmin):
+    list_display = ('license_request', 'changed_at', 'from_status', 'to_status', 'changed_by')
+    list_filter = ('to_status', 'changed_at')
+    search_fields = ('license_request__id', 'note')
+    readonly_fields = ('license_request', 'from_status', 'to_status', 'changed_by', 'note', 'metadata', 'changed_at')
+
+
+custom_admin_site.register(StripeWebhookEvent, StripeWebhookEventAdmin)
+custom_admin_site.register(LicenceOffer, LicenceOfferAdmin)
+custom_admin_site.register(LicenseRequestAuditLog, LicenseRequestAuditLogAdmin)
+custom_admin_site.register(LicenceDocument, LicenceDocumentAdmin)
+custom_admin_site.register(LicenceDeliveryToken, LicenceDeliveryTokenAdmin)
 

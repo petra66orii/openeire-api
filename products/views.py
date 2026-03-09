@@ -8,13 +8,24 @@ from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.throttling import ScopedRateThrottle
-from .models import Photo, Video, ProductVariant, ProductReview, GalleryAccess, LicenseRequest
+from .models import (
+    Photo,
+    Video,
+    ProductVariant,
+    ProductReview,
+    GalleryAccess,
+    LicenseRequest,
+    LicenceDeliveryToken,
+)
+from .licensing import get_asset_file_field
+from .licensing import send_licence_initial_draft_email
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
@@ -203,6 +214,57 @@ class LicenseRequestCreateView(generics.CreateAPIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'license_request'
 
+    def create(self, request, *args, **kwargs):
+        asset_ids = request.data.get('asset_ids')
+        if asset_ids is None:
+            return super().create(request, *args, **kwargs)
+        if not isinstance(asset_ids, list):
+            return Response(
+                {"asset_ids": "asset_ids must be a list when provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(asset_ids) == 0:
+            return Response(
+                {"asset_ids": "Provide at least one asset id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(asset_ids) == 1:
+            payload = dict(request.data)
+            payload.pop('asset_ids', None)
+            payload['asset_id'] = asset_ids[0]
+            serializer = self.get_serializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+        created_items = []
+        errors = {}
+        for asset_id in asset_ids:
+            payload = dict(request.data)
+            payload.pop('asset_ids', None)
+            payload['asset_id'] = asset_id
+            serializer = self.get_serializer(data=payload)
+            if serializer.is_valid():
+                created = serializer.save()
+                created_items.append(
+                    {
+                        "id": created.id,
+                        "asset_id": created.object_id,
+                        "status": created.status,
+                        "created_at": created.created_at,
+                    }
+                )
+            else:
+                errors[str(asset_id)] = serializer.errors
+
+        if errors:
+            return Response(
+                {"created": created_items, "errors": errors},
+                status=207 if created_items else status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"created": created_items}, status=status.HTTP_201_CREATED)
+
 class AILicenseDraftQueueView(APIView):
     """Secure endpoint for the local AI worker to fetch pending requests."""
     authentication_classes = [] 
@@ -212,7 +274,7 @@ class AILicenseDraftQueueView(APIView):
         # Find requests that don't have an AI draft yet
         base_qs = LicenseRequest.objects.filter(
             Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact=""),
-            status__in=['NEW', 'REVIEWED']
+            status__in=['SUBMITTED', 'NEEDS_INFO']
         ).order_by('created_at')
 
         default_limit = getattr(settings, 'AI_WORKER_MAX_BATCH', 25)
@@ -250,7 +312,7 @@ class AILicenseDraftUpdateView(APIView):
         serializer = AIDraftUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         draft_text = serializer.validated_data["draft_text"]
-        allowed_statuses = ['NEW', 'REVIEWED']
+        allowed_statuses = ['SUBMITTED', 'NEEDS_INFO']
 
         with transaction.atomic():
             updated = LicenseRequest.objects.filter(
@@ -261,6 +323,26 @@ class AILicenseDraftUpdateView(APIView):
             ).update(ai_draft_response=draft_text)
 
         if updated == 1:
+            if getattr(settings, "LICENCE_SEND_INITIAL_DRAFT_EMAIL", False):
+                req_obj = LicenseRequest.objects.filter(pk=pk).only(
+                    "id",
+                    "client_name",
+                    "email",
+                    "ai_draft_response",
+                    "content_type_id",
+                    "object_id",
+                ).first()
+                if req_obj:
+                    try:
+                        send_licence_initial_draft_email(req_obj)
+                    except Exception as e:
+                        return Response(
+                            {
+                                "status": "Draft saved, but initial draft email failed.",
+                                "email_error": str(e),
+                            },
+                            status=status.HTTP_200_OK,
+                        )
             return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
 
         req_obj = LicenseRequest.objects.filter(pk=pk).only('status', 'ai_draft_response').first()
@@ -418,3 +500,33 @@ class ProtectedDownloadView(APIView):
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         
         return response
+
+
+class LicenceAssetDownloadView(APIView):
+    """
+    Serves licensed assets via a one-time, expiring token link.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        with transaction.atomic():
+            token_obj = LicenceDeliveryToken.objects.select_for_update().filter(token=token).first()
+            if not token_obj or not token_obj.is_valid:
+                raise Http404("Download link has expired or was already used.")
+
+            license_request = token_obj.license_request
+            asset = license_request.asset
+            file_field = get_asset_file_field(asset)
+            if not file_field:
+                raise Http404("File not attached to asset")
+
+            try:
+                file_field.open("rb")
+            except Exception:
+                raise Http404("File not available")
+
+            token_obj.used_at = timezone.now()
+            token_obj.save(update_fields=["used_at"])
+
+        filename = file_field.name.rsplit("/", 1)[-1]
+        return FileResponse(file_field, as_attachment=True, filename=filename)
