@@ -1,10 +1,19 @@
-Thank you for your order, {{ order.first_name }}!
+Thank you for your order, {{ order.first_name|default:"Customer" }}!
 
 This is a confirmation that your transaction was successful.
 
 Order Number: {{ order.order_number }}
 Order Date: {{ order.date }}
-Total: €{{ order.order_total }}
+Total: EUR {{ order.total_price }}
+
+{% if order.personal_terms_version %}
+PERSONAL USE LICENCE ({{ order.personal_terms_version }})
+This digital download order is licensed for personal use only.
+{% for line in personal_terms_summary %}
+- {{ line }}
+{% endfor %}
+Read the full Personal Use Licence: {{ personal_terms_url }}
+{% endif %}
 
 You can view your order history and download any digital items by logging into your profile:
 https://openeire.online/profile

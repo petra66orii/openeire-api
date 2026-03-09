@@ -1,8 +1,10 @@
 from rest_framework import serializers
 from .models import Order, OrderItem, ProductShipping
 from products.models import Photo, Video, ProductVariant, PrintTemplate
+from products.personal_licence import get_personal_licence_url, get_personal_terms_version
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
+from django.urls import reverse
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
 from userprofiles.models import UserProfile
 
@@ -45,9 +47,9 @@ class OrderSerializer(serializers.ModelSerializer):
             'street_address1', 'street_address2', 
             'town', 'county', 'postcode', 'country', 
             'delivery_cost', 'order_total', 'total_price', 
-            'stripe_pid', 'items', 'shipping_method'
+            'stripe_pid', 'items', 'shipping_method', 'personal_terms_version'
         )
-        read_only_fields = ('order_number', 'delivery_cost', 'order_total', 'total_price')
+        read_only_fields = ('order_number', 'delivery_cost', 'order_total', 'total_price', 'personal_terms_version')
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
@@ -67,6 +69,7 @@ class OrderSerializer(serializers.ModelSerializer):
         
         order_total = 0
         calculated_delivery_cost = 0  # Start at 0
+        has_consumer_digital_item = False
 
         for item_data in items_data:
             product_id = item_data['product_id']
@@ -110,6 +113,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 
                 elif product_type_str in ['photo', 'video']:
                     # Digital items have NO shipping cost
+                    has_consumer_digital_item = True
                     license_type = options.get('license', 'hd')
                     if license_type == '4k':
                         price = product_instance.price_4k
@@ -134,6 +138,8 @@ class OrderSerializer(serializers.ModelSerializer):
         order.order_total = order_total
         order.delivery_cost = calculated_delivery_cost # Update the field
         order.total_price = order.order_total + order.delivery_cost
+        if has_consumer_digital_item:
+            order.personal_terms_version = get_personal_terms_version()
         order.save()
 
         return order
@@ -165,10 +171,25 @@ class OrderSerializer(serializers.ModelSerializer):
 
 class OrderHistoryItemSerializer(serializers.ModelSerializer):
     product = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
+    personal_terms_version = serializers.SerializerMethodField()
+    personal_terms_url = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ('id', 'product', 'quantity', 'item_total', 'details')
+        fields = (
+            'id',
+            'product',
+            'quantity',
+            'item_total',
+            'details',
+            'download_url',
+            'personal_terms_version',
+            'personal_terms_url',
+        )
+
+    def _is_digital_item(self, obj):
+        return isinstance(obj.product, (Photo, Video))
 
     def get_product(self, obj):
         if isinstance(obj.product, Photo):
@@ -179,6 +200,25 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
             return ProductListSerializer(obj.product, context=self.context).data
         return None
 
+    def get_download_url(self, obj):
+        if not self._is_digital_item(obj):
+            return None
+        request = self.context.get('request')
+        if not request:
+            return None
+        path = reverse('secure-download', args=[obj.content_type.model, obj.object_id])
+        return request.build_absolute_uri(path)
+
+    def get_personal_terms_version(self, obj):
+        if not self._is_digital_item(obj):
+            return None
+        return obj.order.personal_terms_version or get_personal_terms_version()
+
+    def get_personal_terms_url(self, obj):
+        if not self._is_digital_item(obj):
+            return None
+        return get_personal_licence_url(request=self.context.get('request'))
+
 class OrderHistoryListSerializer(serializers.ModelSerializer):
     items = OrderHistoryItemSerializer(many=True, read_only=True)
     country = CountryField(name_only=True) 
@@ -187,5 +227,6 @@ class OrderHistoryListSerializer(serializers.ModelSerializer):
         model = Order
         fields = (
             'order_number', 'date', 'order_total', 'total_price', 
-            'street_address1', 'town', 'country', 'items', 'shipping_method', 'delivery_cost'
+            'street_address1', 'town', 'country', 'items', 'shipping_method', 'delivery_cost',
+            'personal_terms_version',
         )

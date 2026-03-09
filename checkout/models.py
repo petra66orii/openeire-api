@@ -31,6 +31,12 @@ class Order(models.Model):
     postcode = models.CharField(max_length=20, null=True, blank=True)
     country = CountryField(null=True, blank=True)    
     date = models.DateTimeField(auto_now_add=True)
+    personal_terms_version = models.CharField(
+        max_length=80,
+        null=True,
+        blank=True,
+        help_text="Personal terms version captured for consumer digital downloads.",
+    )
     shipping_method = models.CharField(
         max_length=20, 
         choices=SHIPPING_METHOD_CHOICES, 

@@ -23,10 +23,11 @@ class OrderAdmin(admin.ModelAdmin):
     readonly_fields = ('order_number', 'user_profile', 'date', 'delivery_cost',
                        'order_total', 'total_price', 'stripe_pid', 'first_name',
                        'email', 'phone_number', 'country', 'postcode', 'town',
-                       'street_address1', 'street_address2', 'county')
+                       'street_address1', 'street_address2', 'county',
+                       'personal_terms_version')
 
     # Configure the list view
-    list_display = ('order_number', 'first_name', 'email', 'order_total', 'date')
+    list_display = ('order_number', 'first_name', 'email', 'order_total', 'date', 'personal_terms_version')
     list_filter = ('date',)
     search_fields = ('order_number', 'email', 'first_name')
     ordering = ('-date',)

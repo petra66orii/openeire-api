@@ -8,12 +8,14 @@ from django.core.cache import cache
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
+from django.contrib.auth.models import User
 from django.urls import reverse
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from django.contrib.contenttypes.models import ContentType
+from checkout.models import Order, OrderItem
 from .models import (
     LicenseRequest,
     LicenceDeliveryToken,
@@ -323,3 +325,42 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 404)
         token.refresh_from_db()
         self.assertIsNone(token.used_at)
+
+    def test_personal_licence_text_endpoint_public(self):
+        url = reverse("personal-licence-text")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode("utf-8")
+        self.assertIn("Personal Terms Version: PERSONAL v1.1 - March 2026", body)
+        self.assertIn("PERSONAL USE LICENSE CERTIFICATE", body)
+
+    def test_secure_download_preview_returns_personal_terms_context(self):
+        user = User.objects.create_user(
+            username="digitalbuyer",
+            email="digitalbuyer@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_preview_test",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+
+        self.client.force_authenticate(user=user)
+        url = reverse("secure-download", args=["photo", self.photo.id])
+        response = self.client.get(url, {"preview": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["personal_terms_version"], "PERSONAL v1.1 - March 2026")
+        self.assertTrue(response.data["personal_terms_url"].endswith("/api/licence/personal-use/"))
+        self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
+        self.assertGreater(len(response.data["personal_terms_summary"]), 0)
