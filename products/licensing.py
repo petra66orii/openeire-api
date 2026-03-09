@@ -46,26 +46,29 @@ def ensure_licence_documents(license_request, issued_at=None, terms_version=None
         for doc in LicenceDocument.objects.filter(license_request=license_request)
     }
     documents = []
+    pending = {}
 
     if "SCHEDULE" not in existing:
-        schedule_pdf = generate_licence_schedule_pdf(
+        pending["SCHEDULE"] = generate_licence_schedule_pdf(
             license_request,
             issued_at=issued_at,
             terms_version=terms_version,
         )
-        documents.append(_save_document(license_request, "SCHEDULE", schedule_pdf, issued_at))
     else:
         documents.append(existing["SCHEDULE"])
 
     if "CERTIFICATE" not in existing:
-        certificate_pdf = generate_licence_certificate_pdf(
+        pending["CERTIFICATE"] = generate_licence_certificate_pdf(
             license_request,
             issued_at=issued_at,
             terms_version=terms_version,
         )
-        documents.append(_save_document(license_request, "CERTIFICATE", certificate_pdf, issued_at))
     else:
         documents.append(existing["CERTIFICATE"])
+
+    for doc_type in ("SCHEDULE", "CERTIFICATE"):
+        if doc_type in pending:
+            documents.append(_save_document(license_request, doc_type, pending[doc_type], issued_at))
 
     return documents
 
