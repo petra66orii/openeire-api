@@ -134,7 +134,7 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
                 inferred_reach_caps = extract_reach_caps_from_message(data.get('message'))
                 if inferred_reach_caps:
                     data['reach_caps'] = inferred_reach_caps
-                elif not reach_caps:
+                else:
                     data['reach_caps'] = 'NONE'
             
         except ContentType.DoesNotExist:

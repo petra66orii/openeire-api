@@ -593,11 +593,13 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         note = (form.cleaned_data.get("internal_note") or "").strip()
 
-        # Preserve status actor/note in audit trail.
-        obj.set_status_change_context(
-            actor=request.user if request.user.is_authenticated else None,
-            note=note,
-        )
+        # Preserve actor/note only when status changes; non-status notes are
+        # written explicitly below via add_audit_note.
+        if 'status' in form.changed_data:
+            obj.set_status_change_context(
+                actor=request.user if request.user.is_authenticated else None,
+                note=note,
+            )
 
         if not self._save_model_with_retry(request, obj, form, change):
             return

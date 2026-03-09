@@ -1,5 +1,6 @@
 import stripe
 import json
+from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
@@ -141,6 +142,9 @@ class StripeWebhookView(APIView):
     authentication_classes = [] 
     permission_classes = [AllowAny]
     SUPPORTED_EVENT_TYPES = {'payment_intent.succeeded', 'checkout.session.completed'}
+
+    def _stale_processing_seconds(self):
+        return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
 
     def _send_confirmation_email(self, order):
         """Send the user a confirmation email"""
@@ -329,8 +333,22 @@ class StripeWebhookView(APIView):
                         print(f"INFO: Stripe event {event_id} already processed; skipping.")
                         should_process_event = False
                     elif event_record.status == 'PROCESSING':
-                        print(f"INFO: Stripe event {event_id} is already being processed; skipping.")
-                        should_process_event = False
+                        stale_before = timezone.now() - timedelta(
+                            seconds=self._stale_processing_seconds()
+                        )
+                        is_stale = (
+                            event_record.processed_at is None
+                            and event_record.received_at is not None
+                            and event_record.received_at <= stale_before
+                        )
+                        if is_stale:
+                            print(f"WARN: Stripe event {event_id} had stale PROCESSING state; retrying.")
+                            event_record.error_message = "Recovered from stale PROCESSING state."
+                            event_record.event_type = event_type or event_record.event_type or 'unknown'
+                            event_record.save(update_fields=['error_message', 'event_type'])
+                        else:
+                            print(f"INFO: Stripe event {event_id} is already being processed; skipping.")
+                            should_process_event = False
                     else:
                         print(f"INFO: Retrying failed Stripe event {event_id}.")
                         event_record.status = 'PROCESSING'

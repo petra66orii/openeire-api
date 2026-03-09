@@ -1,5 +1,6 @@
 import shutil
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from products.models import (
     LicenseRequest,
@@ -171,3 +173,30 @@ class StripeWebhookLicenseTests(TestCase):
         self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
         self.assertEqual(LicenceDocument.objects.filter(license_request=self.license_request).count(), 0)
         self.assertEqual(len(mail.outbox), 0)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    @override_settings(STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS=1)
+    def test_stale_processing_event_is_retried(self, mock_construct):
+        event = StripeWebhookEvent.objects.create(
+            stripe_event_id="evt_stale_processing",
+            event_type="checkout.session.completed",
+            status="PROCESSING",
+            processed_at=None,
+        )
+        StripeWebhookEvent.objects.filter(pk=event.pk).update(
+            received_at=timezone.now() - timedelta(minutes=5)
+        )
+        mock_construct.return_value = self._event_payload(event_id="evt_stale_processing")
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.license_request.refresh_from_db()
+        self.assertEqual(self.license_request.status, "DELIVERED")
+        event.refresh_from_db()
+        self.assertEqual(event.status, "SUCCESS")

@@ -216,8 +216,27 @@ class LicenseRequestCreateView(generics.CreateAPIView):
 
     def create(self, request, *args, **kwargs):
         asset_ids = request.data.get('asset_ids')
-        if not isinstance(asset_ids, list) or len(asset_ids) <= 1:
+        if asset_ids is None:
             return super().create(request, *args, **kwargs)
+        if not isinstance(asset_ids, list):
+            return Response(
+                {"asset_ids": "asset_ids must be a list when provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(asset_ids) == 0:
+            return Response(
+                {"asset_ids": "Provide at least one asset id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(asset_ids) == 1:
+            payload = dict(request.data)
+            payload.pop('asset_ids', None)
+            payload['asset_id'] = asset_ids[0]
+            serializer = self.get_serializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
         created_items = []
         errors = {}
@@ -495,20 +514,19 @@ class LicenceAssetDownloadView(APIView):
             if not token_obj or not token_obj.is_valid:
                 raise Http404("Download link has expired or was already used.")
 
+            license_request = token_obj.license_request
+            asset = license_request.asset
+            file_field = get_asset_file_field(asset)
+            if not file_field:
+                raise Http404("File not attached to asset")
+
+            try:
+                file_field.open("rb")
+            except Exception:
+                raise Http404("File not available")
+
             token_obj.used_at = timezone.now()
             token_obj.save(update_fields=["used_at"])
-
-        license_request = token_obj.license_request
-        asset = license_request.asset
-        file_field = get_asset_file_field(asset)
-
-        if not file_field:
-            raise Http404("File not attached to asset")
-
-        try:
-            file_field.open("rb")
-        except Exception:
-            raise Http404("File not available")
 
         filename = file_field.name.rsplit("/", 1)[-1]
         return FileResponse(file_field, as_attachment=True, filename=filename)

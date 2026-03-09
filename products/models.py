@@ -262,16 +262,20 @@ class LicenseRequest(models.Model):
             self.message = sanitize_free_text(self.message, 2000)
         if self.reach_caps is not None:
             self.reach_caps = sanitize_free_text(self.reach_caps, 255)
-        super().save(*args, **kwargs)
-        if old_status != self.status:
-            LicenseRequestAuditLog.objects.create(
-                license_request=self,
-                from_status=old_status,
-                to_status=self.status,
-                changed_by=self._status_change_actor,
-                note=self._status_change_note or "",
-                metadata=self._status_change_metadata or {},
-            )
+        try:
+            super().save(*args, **kwargs)
+            if old_status != self.status:
+                LicenseRequestAuditLog.objects.create(
+                    license_request=self,
+                    from_status=old_status,
+                    to_status=self.status,
+                    changed_by=self._status_change_actor,
+                    note=self._status_change_note or "",
+                    metadata=self._status_change_metadata or {},
+                )
+        finally:
+            # Always clear per-save transition context to avoid leaking it
+            # into a later, unrelated status change.
             self._status_change_actor = None
             self._status_change_note = ""
             self._status_change_metadata = None

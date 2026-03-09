@@ -1,5 +1,6 @@
 import shutil
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,10 +10,16 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
 from django.urls import reverse
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from django.contrib.contenttypes.models import ContentType
-from .models import LicenseRequest, Photo, generate_variants_for_photo
+from .models import (
+    LicenseRequest,
+    LicenceDeliveryToken,
+    Photo,
+    generate_variants_for_photo,
+)
 from .licensing import send_licence_quote_email
 
 
@@ -107,6 +114,16 @@ class LicenseRequestTests(APITestCase):
         obj = LicenseRequest.objects.latest("id")
         self.assertEqual(obj.reach_caps, "2 million impressions")
 
+    def test_license_request_normalizes_na_reach_caps_to_none(self):
+        payload = self._payload(
+            message="No specific cap provided.",
+            reach_caps="N/A",
+        )
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        obj = LicenseRequest.objects.latest("id")
+        self.assertEqual(obj.reach_caps, "NONE")
+
     def test_license_request_duplicate_rejected(self):
         payload = self._payload()
         first = self.client.post(self.url, payload, format="json")
@@ -125,6 +142,14 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(len(response.data["created"]), 2)
 
+    def test_license_request_single_asset_ids_maps_to_asset_id(self):
+        payload = self._payload(asset_id=None)
+        payload.pop("asset_id", None)
+        payload["asset_ids"] = [self.photo.id]
+        response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["id"], LicenseRequest.objects.latest("id").id)
+
     def test_license_request_email_normalized(self):
         payload = self._payload()
         payload["email"] = "Test@Example.com "
@@ -132,6 +157,26 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         obj = LicenseRequest.objects.latest("id")
         self.assertEqual(obj.email, "test@example.com")
+
+    def test_status_context_does_not_leak_across_non_status_save(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Context Client",
+            company="Context Co",
+            email="context@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Initial",
+            status="SUBMITTED",
+        )
+        req.set_status_change_context(note="should_not_leak")
+        req.message = "Edited text only"
+        req.save(update_fields=["message", "updated_at"])
+        req.transition_to("NEEDS_INFO")
+        latest_log = req.audit_logs.first()
+        self.assertEqual(latest_log.to_status, "NEEDS_INFO")
+        self.assertEqual(latest_log.note, "")
 
     def test_license_request_rejected_allows_resubmit_until_limit(self):
         for _ in range(3):
@@ -255,3 +300,26 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(sent.to, ["quote@example.com"])
         self.assertIn("https://buy.stripe.com/test-link", sent.body)
         self.assertIn("EUR 250.00", sent.body)
+
+    def test_license_download_token_not_burned_if_file_unavailable(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Download Client",
+            company="Download Co",
+            email="download@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="DELIVERED",
+        )
+        token = LicenceDeliveryToken.objects.create(
+            license_request=req,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.photo.high_res_file.storage.delete(self.photo.high_res_file.name)
+        url = reverse("license-asset-download", args=[str(token.token)])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+        token.refresh_from_db()
+        self.assertIsNone(token.used_at)
