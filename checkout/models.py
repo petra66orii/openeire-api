@@ -31,6 +31,12 @@ class Order(models.Model):
     postcode = models.CharField(max_length=20, null=True, blank=True)
     country = CountryField(null=True, blank=True)    
     date = models.DateTimeField(auto_now_add=True)
+    personal_terms_version = models.CharField(
+        max_length=80,
+        null=True,
+        blank=True,
+        help_text="Personal terms version captured for consumer digital downloads.",
+    )
     shipping_method = models.CharField(
         max_length=20, 
         choices=SHIPPING_METHOD_CHOICES, 
@@ -59,6 +65,10 @@ class Order(models.Model):
 
     def __str__(self):
         return self.order_number
+
+    @property
+    def has_consumer_digital_items(self):
+        return self.items.filter(content_type__model__in=("photo", "video")).exists()
 
 
 class OrderItem(models.Model):

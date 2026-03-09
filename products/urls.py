@@ -11,12 +11,14 @@ from .views import (
     RequestGalleryAccessView,
     VerifyGalleryAccessView,
     ShoppingBagRecommendationsView,
+    PersonalUseLicenceTextView,
     ProtectedDownloadView,
     LicenceAssetDownloadView,
     LicenseRequestCreateView
 )
 
 urlpatterns = [
+    path('licence/personal-use/', PersonalUseLicenceTextView.as_view(), name='personal-licence-text'),
     path('products/download/<str:product_type>/<int:product_id>/', ProtectedDownloadView.as_view(), name='secure-download'),
     path('license/download/<uuid:token>/', LicenceAssetDownloadView.as_view(), name='license-asset-download'),
     path('products/recommendations/', ShoppingBagRecommendationsView.as_view(), name='bag-recommendations'),

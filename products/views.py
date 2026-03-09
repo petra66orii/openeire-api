@@ -1,7 +1,7 @@
 import os
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.db import transaction
 from django.db.models import Q, Exists, OuterRef, Min
 from django.db.models.functions import Coalesce
@@ -9,6 +9,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
+from django.urls import reverse
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -26,6 +27,12 @@ from .models import (
 )
 from .licensing import get_asset_file_field
 from .licensing import send_licence_initial_draft_email
+from .personal_licence import (
+    get_personal_licence_summary,
+    get_personal_licence_text,
+    get_personal_licence_url,
+    get_personal_terms_version,
+)
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
@@ -439,11 +446,45 @@ class ShoppingBagRecommendationsView(APIView):
         serializer = PhotoListSerializer(photos, many=True)
         return Response(serializer.data)
 
+
+class PersonalUseLicenceTextView(APIView):
+    """
+    Public endpoint exposing the full Personal Use Licence text.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        licence_text = get_personal_licence_text()
+        if not licence_text:
+            raise Http404("Personal Use Licence text is not available.")
+
+        terms_version = get_personal_terms_version()
+        content = f"Personal Terms Version: {terms_version}\n\n{licence_text}"
+        response = HttpResponse(content, content_type="text/plain; charset=utf-8")
+        response["X-Personal-Terms-Version"] = terms_version
+        return response
+
+
 class ProtectedDownloadView(APIView):
     """
     Securely serves the high-res file ONLY if the user has purchased it.
     """
     permission_classes = [IsAuthenticated]
+
+    def _latest_purchase_for_user(self, user, model_class, product_id):
+        content_type = ContentType.objects.get_for_model(model_class)
+        order_item = (
+            OrderItem.objects
+            .filter(
+                order__user_profile__user=user,
+                content_type=content_type,
+                object_id=product_id,
+            )
+            .select_related("order")
+            .order_by("-order__date")
+            .first()
+        )
+        return order_item
 
     def get(self, request, product_type, product_id):
         user = request.user
@@ -456,28 +497,32 @@ class ProtectedDownloadView(APIView):
         if not model_class:
             raise Http404("Invalid product type")
 
-        # 2. Determine ContentType for the GenericForeignKey lookup 
-        try:
-            content_type = ContentType.objects.get_for_model(model_class)
-        except:
-             raise Http404("Content Type not found")
+        # 2. Verify purchase and load the latest matching order item.
+        order_item = self._latest_purchase_for_user(user, model_class, product_id)
+        if not order_item and not user.is_staff:
+            raise PermissionDenied("You have not purchased this item.")
 
-        # 3. VERIFY PURCHASE
-        has_purchased = OrderItem.objects.filter(
-            order__user_profile__user=user, # Link Order -> Profile -> User
-            content_type=content_type,      # Match the type (Photo vs Video)
-            object_id=product_id            # Match the specific ID
-        ).exists()
+        terms_version = (
+            order_item.order.personal_terms_version
+            if order_item and order_item.order.personal_terms_version
+            else get_personal_terms_version()
+        )
 
-        if not has_purchased:
-            # Allow Admin/Staff to bypass (useful for testing)
-            if not user.is_staff:
-                raise PermissionDenied("You have not purchased this item.")
+        if request.query_params.get("preview") in {"1", "true", "yes"}:
+            download_path = reverse("secure-download", args=[product_type, product_id])
+            return Response(
+                {
+                    "download_url": request.build_absolute_uri(download_path),
+                    "personal_terms_version": terms_version,
+                    "personal_terms_url": get_personal_licence_url(request=request),
+                    "personal_terms_summary": get_personal_licence_summary(),
+                },
+                status=status.HTTP_200_OK,
+            )
 
-        # 4. Fetch the Product to get the file path
+        # 3. Fetch the product and stream the private file.
         product = get_object_or_404(model_class, id=product_id)
         
-        # Logic to get the correct file field
         file_handle = None
         if product_type == 'photo':
             file_handle = product.high_res_file
@@ -492,7 +537,7 @@ class ProtectedDownloadView(APIView):
 
         if not os.path.exists(file_path):
             raise Http404("File on disk not found")
-        # 5. Serve the file as an attachment
+        # 4. Serve the file as an attachment.
         response = FileResponse(open(file_path, 'rb'))
         
         # Set filename so the browser saves it nicely (e.g., "sunset.jpg")

@@ -2,7 +2,7 @@ import stripe
 import json
 from datetime import timedelta
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage
 from django.db import transaction
 from django.template.loader import render_to_string
 from django.urls import reverse
@@ -28,6 +28,7 @@ from products.licensing import (
     send_licence_delivery_email,
     get_asset_file_field,
 )
+from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
 from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
@@ -146,24 +147,31 @@ class StripeWebhookView(APIView):
     def _stale_processing_seconds(self):
         return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
 
-    def _send_confirmation_email(self, order):
+    def _send_confirmation_email(self, order, request=None):
         """Send the user a confirmation email"""
         cust_email = order.email
+        context = {
+            'order': order,
+            'contact_email': settings.DEFAULT_FROM_EMAIL,
+            'personal_terms_url': get_personal_licence_url(request=request),
+            'personal_terms_summary': get_personal_licence_summary(),
+        }
         subject = render_to_string(
             'checkout/confirmation_emails/confirmation_email_subject.txt',
-            {'order': order}
+            context,
         )
         body = render_to_string(
             'checkout/confirmation_emails/confirmation_email_body.txt',
-            {'order': order, 'contact_email': settings.DEFAULT_FROM_EMAIL}
+            context,
         )
         
-        send_mail(
-            subject,
-            body,
-            settings.DEFAULT_FROM_EMAIL,
-            [cust_email]
+        email = EmailMessage(
+            subject=subject.strip(),
+            body=body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[cust_email],
         )
+        email.send(fail_silently=False)
 
     def _extract_payment_link_id(self, session):
         return session.get('payment_link') or session.get('metadata', {}).get('payment_link_id')
@@ -385,7 +393,7 @@ class StripeWebhookView(APIView):
                     return Response(status=status.HTTP_200_OK)
 
                 # 2. Determine the email
-                order_email = payment_intent.receipt_email
+                order_email = getattr(payment_intent, 'receipt_email', None) or payment_intent.get('receipt_email')
                 if not order_email or '@' not in order_email:
                     order_email = metadata.get('username')
                     if not order_email or '@' not in order_email:
@@ -393,7 +401,7 @@ class StripeWebhookView(APIView):
 
                 # 3. Create the order_data dictionary
                 order_data = {
-                    'stripe_pid': payment_intent.id,
+                    'stripe_pid': getattr(payment_intent, 'id', None) or payment_intent.get('id', ''),
                     'first_name': shipping_details.get('name', ''),
                     'email': order_email,
                     'phone_number': shipping_details.get('phone', ''),
@@ -436,7 +444,7 @@ class StripeWebhookView(APIView):
                     print(f"OK: Order {order.order_number} created successfully. Email: {order.email}")
 
                     try:
-                        self._send_confirmation_email(order)
+                        self._send_confirmation_email(order, request=request)
                         print(f"OK: Confirmation email sent to {order.email}")
                     except Exception as e:
                         print(f"ERROR: Could not send email to {order.email}: {e}")
