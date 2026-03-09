@@ -1,0 +1,207 @@
+import hashlib
+from datetime import timedelta
+
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.mail import EmailMessage
+from django.utils import timezone
+
+from .models import LicenceDocument, LicenceDeliveryToken
+from .pdf_generator import generate_licence_schedule_pdf, generate_licence_certificate_pdf
+
+
+DEFAULT_TOKEN_DAYS = int(getattr(settings, "LICENCE_DELIVERY_TOKEN_DAYS", 7))
+
+
+def get_asset_file_field(asset):
+    if hasattr(asset, "high_res_file") and asset.high_res_file:
+        return asset.high_res_file
+    if hasattr(asset, "video_file") and asset.video_file:
+        return asset.video_file
+    return None
+
+
+def _build_doc_filename(license_request_id, doc_type, issued_at):
+    date_stamp = issued_at.strftime("%Y%m%d")
+    safe_type = doc_type.lower()
+    return f"licences/{license_request_id}/{safe_type}-{date_stamp}.pdf"
+
+
+def _save_document(license_request, doc_type, pdf_bytes, issued_at):
+    sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    filename = _build_doc_filename(license_request.id, doc_type, issued_at)
+    document = LicenceDocument(
+        license_request=license_request,
+        doc_type=doc_type,
+        sha256=sha256,
+    )
+    document.file.save(filename, ContentFile(pdf_bytes), save=True)
+    return document
+
+
+def ensure_licence_documents(license_request, issued_at=None, terms_version=None):
+    issued_at = issued_at or timezone.now()
+    existing = {
+        doc.doc_type: doc
+        for doc in LicenceDocument.objects.filter(license_request=license_request)
+    }
+    documents = []
+
+    if "SCHEDULE" not in existing:
+        schedule_pdf = generate_licence_schedule_pdf(
+            license_request,
+            issued_at=issued_at,
+            terms_version=terms_version,
+        )
+        documents.append(_save_document(license_request, "SCHEDULE", schedule_pdf, issued_at))
+    else:
+        documents.append(existing["SCHEDULE"])
+
+    if "CERTIFICATE" not in existing:
+        certificate_pdf = generate_licence_certificate_pdf(
+            license_request,
+            issued_at=issued_at,
+            terms_version=terms_version,
+        )
+        documents.append(_save_document(license_request, "CERTIFICATE", certificate_pdf, issued_at))
+    else:
+        documents.append(existing["CERTIFICATE"])
+
+    return documents
+
+
+def ensure_delivery_token(license_request, days=None):
+    days = days or DEFAULT_TOKEN_DAYS
+    now = timezone.now()
+    existing = LicenceDeliveryToken.objects.filter(
+        license_request=license_request,
+        used_at__isnull=True,
+        expires_at__gt=now,
+    ).order_by("-expires_at").first()
+    if existing:
+        return existing
+
+    expires_at = now + timedelta(days=days)
+    return LicenceDeliveryToken.objects.create(
+        license_request=license_request,
+        expires_at=expires_at,
+    )
+
+
+def send_licence_delivery_email(license_request, documents, download_url, token_obj):
+    asset = license_request.asset
+    subject = f"Your Rights-Managed Licence and Download Link: {asset}"
+    remaining_days = max(1, (token_obj.expires_at - timezone.now()).days)
+
+    body = (
+        f"Hi {license_request.client_name},\n\n"
+        "Thank you for your payment. Your Rights-Managed licence is now active.\n\n"
+        f"Secure download link (expires in {remaining_days} days):\n"
+        f"{download_url}\n\n"
+        "Your signed licence documents are attached:\n"
+        "- Appendix A - Licence Schedule\n"
+        "- Appendix B - Licence Certificate\n\n"
+        "Please retain these documents for your records.\n\n"
+        "If you have any questions, reply to this email.\n\n"
+        "Kind regards,\n"
+        "OpenEire Studios\n"
+    )
+
+    email = EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[license_request.email],
+    )
+
+    for doc in documents:
+        filename = f"{doc.doc_type.lower()}-licence-{license_request.id}.pdf"
+        with doc.file.open("rb") as handle:
+            email.attach(filename, handle.read(), "application/pdf")
+
+    email.send(fail_silently=False)
+
+
+def send_licence_quote_email(license_request):
+    asset = license_request.asset
+    if not license_request.stripe_payment_link:
+        raise ValueError("License request does not have a Stripe payment link.")
+    if not license_request.quoted_price:
+        raise ValueError("License request does not have a quoted price.")
+
+    subject = f"Your Rights-Managed Licence Quote and Payment Link: {asset}"
+    territory = (
+        license_request.get_territory_display()
+        if license_request.territory
+        else "Not specified"
+    )
+    permitted_media = (
+        license_request.get_permitted_media_display()
+        if license_request.permitted_media
+        else "Not specified"
+    )
+    exclusivity = (
+        license_request.get_exclusivity_display()
+        if license_request.exclusivity
+        else "Not specified"
+    )
+    ai_note = ""
+    if license_request.ai_draft_response:
+        ai_note = (
+            "\nLicensing Note (reviewed by our team):\n"
+            f"{license_request.ai_draft_response}\n"
+        )
+
+    body = (
+        f"Hi {license_request.client_name},\n\n"
+        "Your Rights-Managed licence request has been reviewed by our licensing team.\n\n"
+        "Quote Summary:\n"
+        f"- Asset: {asset}\n"
+        f"- Fee: EUR {license_request.quoted_price:.2f}\n"
+        f"- Project Type: {license_request.get_project_type_display()}\n"
+        f"- Permitted Media: {permitted_media}\n"
+        f"- Territory: {territory}\n"
+        f"- Duration: {license_request.get_duration_display()}\n"
+        f"- Exclusivity: {exclusivity}\n"
+        f"- Reach Caps: {license_request.reach_caps or 'None'}\n"
+        f"{ai_note}\n"
+        "To accept and pay, please use this secure payment link:\n"
+        f"{license_request.stripe_payment_link}\n\n"
+        "If you need amendments before payment, reply to this email and we can revise the quote.\n\n"
+        "Kind regards,\n"
+        "OpenEire Studios\n"
+    )
+
+    email = EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[license_request.email],
+    )
+    email.send(fail_silently=False)
+
+
+def send_licence_initial_draft_email(license_request):
+    if not license_request.ai_draft_response:
+        raise ValueError("License request does not have an AI draft response.")
+
+    asset = license_request.asset
+    subject = f"Initial Rights-Managed Licence Draft: {asset}"
+    body = (
+        f"Hi {license_request.client_name},\n\n"
+        "Thank you for your Rights-Managed licence request.\n\n"
+        "Please find our initial draft response below:\n\n"
+        f"{license_request.ai_draft_response}\n\n"
+        "This is an initial draft only. Final quote, scope confirmation, and payment link "
+        "will be issued after internal review.\n\n"
+        "Kind regards,\n"
+        "OpenEire Studios\n"
+    )
+
+    email = EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[license_request.email],
+    )
+    email.send(fail_silently=False)
