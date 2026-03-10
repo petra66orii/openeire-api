@@ -73,9 +73,19 @@ class CreatePaymentIntentView(APIView):
                 
                 # Digital Pricing (HD/4K) vs Physical Pricing
                 if product_type in ['photo', 'video']:
-                    options = item.get('options', {})
-                    license_type = options.get('license', 'hd')
-                    price_str = getattr(product_instance, f'price_{license_type}', '0')
+                    options = item.get('options') or {}
+                    if not isinstance(options, dict):
+                        return Response(
+                            {"error": f"Invalid options payload for digital item {product_id}."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    license_type = str(options.get('license', 'hd')).strip().lower()
+                    if license_type not in {'hd', '4k'}:
+                        return Response(
+                            {"error": f"Invalid digital license option '{license_type}' for item {product_id}."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    price_str = product_instance.price_4k if license_type == '4k' else product_instance.price_hd
                 else:
                     price_str = getattr(product_instance, 'price', '0')
                     

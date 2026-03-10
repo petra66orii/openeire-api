@@ -36,8 +36,10 @@ from .personal_licence import (
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
+    PhysicalPhotoListSerializer,
     VideoListSerializer,
     PhotoDetailSerializer,
+    PhysicalPhotoDetailSerializer,
     VideoDetailSerializer,
     ProductDetailSerializer,
     ProductReviewSerializer,
@@ -181,7 +183,7 @@ class GalleryListView(generics.ListAPIView):
 
             # Serialize
             for photo in physical_photos:
-                queryset.append({'item': photo, 'serializer': PhotoListSerializer(photo)})
+                queryset.append({'item': photo, 'serializer': PhysicalPhotoListSerializer(photo)})
 
         return queryset
 
@@ -206,7 +208,7 @@ class DigitalPhotoDetailView(generics.RetrieveAPIView):
 
 class PhysicalPhotoDetailView(generics.RetrieveAPIView):
     queryset = Photo.objects.filter(is_active=True)
-    serializer_class = PhotoDetailSerializer
+    serializer_class = PhysicalPhotoDetailSerializer
     permission_classes = [AllowAny]
 
 class VideoDetailView(generics.RetrieveAPIView):

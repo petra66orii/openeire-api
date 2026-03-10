@@ -10,13 +10,17 @@ from .models import (
 )
 from django.contrib.contenttypes.models import ContentType
 from django.db import IntegrityError
-from django.db.models import Avg
+from django.db.models import Avg, Min
 
 
 REACH_CAP_PATTERNS = [
     re.compile(r"(?im)\breach(?:\s*cap)?\s*[:=-]\s*([^\n\r]{1,120})"),
     re.compile(r"(?im)\breach(?:\s*cap)?\s+(?:of\s+)?([0-9][0-9,\.\s]*(?:k|m|million|billion)?)\b"),
 ]
+
+PERSONAL_CHECKOUT_FLOW = "PERSONAL_CHECKOUT"
+COMMERCIAL_REQUEST_FLOW = "COMMERCIAL_REQUEST"
+PHYSICAL_PRINT_CHECKOUT_FLOW = "PHYSICAL_PRINT_CHECKOUT"
 
 
 def extract_reach_caps_from_message(message):
@@ -46,6 +50,8 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     material_display = serializers.CharField(source='get_material_display', read_only=True)
     size_display = serializers.CharField(source='get_size_display', read_only=True)
     product_type = serializers.CharField(default='physical', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
 
     class Meta:
         model = ProductVariant
@@ -57,25 +63,111 @@ class ProductVariantSerializer(serializers.ModelSerializer):
             'size_display', 
             'price', 
             'sku',
-            'product_type'
+            'product_type',
+            'purchase_flows',
+            'default_purchase_flow',
         )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
 
 # 2. List Serializers (For catalog pages)
 class PhotoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
     starting_price = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
 
     class Meta:
         model = Photo
-        fields = ('id', 'title', 'description', 'collection', 'preview_image', 'price_hd', 'price_4k', 'product_type', 'starting_price')
+        fields = (
+            'id',
+            'title',
+            'description',
+            'collection',
+            'preview_image',
+            'price_hd',
+            'price_4k',
+            'product_type',
+            'starting_price',
+            'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PERSONAL_CHECKOUT_FLOW, COMMERCIAL_REQUEST_FLOW]
+
+
+class PhysicalPhotoListSerializer(PhotoListSerializer):
+    product_type = serializers.CharField(default='physical', read_only=True)
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
+
+    class Meta(PhotoListSerializer.Meta):
+        fields = (
+            'id',
+            'title',
+            'description',
+            'collection',
+            'preview_image',
+            'starting_price',
+            'product_type',
+            'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
+
+
+class PhysicalPhotoEmbeddedSerializer(serializers.ModelSerializer):
+    product_type = serializers.CharField(default='physical', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
+
+    class Meta:
+        model = Photo
+        fields = (
+            'id',
+            'title',
+            'description',
+            'collection',
+            'preview_image',
+            'tags',
+            'created_at',
+            'product_type',
+            'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
 
 
 class VideoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
     
     class Meta:
         model = Video
-        fields = ('id', 'title', 'description', 'thumbnail_image', 'collection', 'price_hd', 'price_4k', 'product_type', 'video_file', 'duration', 'resolution', 'frame_rate')
+        fields = (
+            'id',
+            'title',
+            'description',
+            'thumbnail_image',
+            'collection',
+            'price_hd',
+            'price_4k',
+            'product_type',
+            'duration',
+            'resolution',
+            'frame_rate',
+            'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PERSONAL_CHECKOUT_FLOW, COMMERCIAL_REQUEST_FLOW]
 
 class LicenseRequestSerializer(serializers.ModelSerializer):
     asset_type = serializers.CharField(write_only=True)
@@ -176,18 +268,26 @@ class ProductListSerializer(serializers.ModelSerializer):
     photo_id = serializers.IntegerField(source='photo.id', read_only=True) 
     material_display = serializers.CharField(source='get_material_display', read_only=True)
     size_display = serializers.CharField(source='get_size_display', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
 
     class Meta:
         model = ProductVariant
         fields = (
             'id', 'title', 'preview_image', 'price', 'product_type', 
-            'material', 'material_display', 'size', 'size_display', 'photo_id'
+            'material', 'material_display', 'size', 'size_display', 'photo_id',
+            'purchase_flows', 'default_purchase_flow',
         )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
 
 
 # 3. Detail Serializers (For single product pages)
 class PhotoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='photo', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
     
     # Existing Fields
     variants = ProductVariantSerializer(many=True, read_only=True)
@@ -200,10 +300,13 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
         model = Photo
         fields = (
             'id', 'title', 'description', 'collection', 'preview_image', 
-            'high_res_file', 'price_hd', 'price_4k', 'tags', 'created_at',
+            'price_hd', 'price_4k', 'tags', 'created_at',
             'product_type', 'variants', 'average_rating', 'review_count',
-            'related_products'
+            'related_products', 'purchase_flows', 'default_purchase_flow',
         )
+
+    def get_purchase_flows(self, obj):
+        return [PERSONAL_CHECKOUT_FLOW, COMMERCIAL_REQUEST_FLOW]
 
     def get_average_rating(self, obj):
         reviews = ProductReview.objects.filter(
@@ -233,6 +336,8 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
 
 class VideoDetailSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
     
@@ -242,11 +347,14 @@ class VideoDetailSerializer(serializers.ModelSerializer):
         model = Video
         fields = (
             'id', 'title', 'description', 'collection', 'thumbnail_image', 
-            'video_file', 'price_hd', 'price_4k', 'tags', 'created_at',
+            'price_hd', 'price_4k', 'tags', 'created_at',
             'product_type', 'average_rating', 'review_count',
             'duration', 'resolution', 'frame_rate',
-            'related_products'
+            'related_products', 'purchase_flows', 'default_purchase_flow',
         )
+
+    def get_purchase_flows(self, obj):
+        return [PERSONAL_CHECKOUT_FLOW, COMMERCIAL_REQUEST_FLOW]
     
     def get_average_rating(self, obj):
         reviews = ProductReview.objects.filter(
@@ -276,20 +384,26 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     """
     Serializer for a specific variant (e.g. A4 Canvas).
     """
-    photo = PhotoDetailSerializer(read_only=True) 
+    photo = PhysicalPhotoEmbeddedSerializer(read_only=True)
     product_type = serializers.CharField(default='physical', read_only=True)
     title = serializers.CharField(source='photo.title', read_only=True)
     description = serializers.CharField(source='photo.description', read_only=True)
     variants = ProductVariantSerializer(source='photo.variants', many=True, read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
 
     class Meta:
         model = ProductVariant
         fields = (
             'id', 'photo', 'title', 'description', 'material', 'size', 'price', 'sku', 
-            'product_type', 'variants', 'average_rating', 'review_count'
+            'product_type', 'variants', 'average_rating', 'review_count',
+            'purchase_flows', 'default_purchase_flow',
         )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
 
     def get_average_rating(self, obj):
         reviews = ProductReview.objects.filter(
@@ -306,6 +420,36 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             object_id=obj.pk,
             approved=True
         ).count()
+
+
+class PhysicalPhotoDetailSerializer(PhotoDetailSerializer):
+    """
+    Physical print page payload for Photo records.
+    Keeps the base shape but exposes a physical purchase contract.
+    """
+    product_type = serializers.CharField(default='physical', read_only=True)
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
+
+    class Meta(PhotoDetailSerializer.Meta):
+        fields = (
+            'id', 'title', 'description', 'collection', 'preview_image',
+            'tags', 'created_at', 'product_type', 'variants', 'average_rating',
+            'review_count', 'related_products', 'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
+
+    def get_related_products(self, obj):
+        qs = Photo.objects.filter(
+            collection=obj.collection,
+            is_active=True,
+            variants__isnull=False,
+        ).exclude(id=obj.id).annotate(
+            starting_price=Min('variants__price')
+        ).distinct().order_by('?')[:4]
+        return PhysicalPhotoListSerializer(qs, many=True, context=self.context).data
 
 class ProductReviewSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='user.username')

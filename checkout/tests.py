@@ -236,13 +236,13 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         )
         self.url = reverse("webhook")
 
-    def _payment_intent_event(self):
+    def _payment_intent_event(self, license_value="hd"):
         cart = [
             {
                 "product_id": self.photo.id,
                 "product_type": "photo",
                 "quantity": 1,
-                "options": {"license": "hd"},
+                "options": {"license": license_value},
             }
         ]
         return {
@@ -302,3 +302,93 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertNotIn("rights-managed", body_lower)
         self.assertNotIn("indemnity", body_lower)
         self.assertNotIn("audit", body_lower)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_invalid_digital_license_option(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(license_value="tampered")
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+@override_settings(STRIPE_SECRET_KEY="sk_test_123")
+class CreatePaymentIntentSecurityTests(TestCase):
+    def setUp(self):
+        base_media_root = Path(__file__).resolve().parent.parent / ".test_media"
+        self.media_root = base_media_root / uuid.uuid4().hex
+        self.media_root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.media_root, ignore_errors=True)
+        self._media_settings = self.settings(MEDIA_ROOT=self.media_root)
+        self._media_settings.enable()
+        self.addCleanup(self._media_settings.disable)
+
+        post_save.disconnect(generate_variants_for_photo, sender=Photo)
+        self.addCleanup(post_save.connect, generate_variants_for_photo, sender=Photo)
+
+        preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
+        high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
+        self.photo = Photo.objects.create(
+            title="Security Photo",
+            description="Test description",
+            collection="Test Collection",
+            preview_image=preview,
+            high_res_file=high_res,
+            price_hd=Decimal("10.00"),
+            price_4k=Decimal("20.00"),
+            is_active=True,
+        )
+        self.url = reverse("create_payment_intent")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_digital_license_option_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "tampered"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid digital license option", response.data["error"])
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_options_payload_shape_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": ["not-an-object"],
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid options payload", response.data["error"])
+        mock_create.assert_not_called()
