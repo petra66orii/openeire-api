@@ -32,6 +32,7 @@ from products.personal_licence import get_personal_licence_summary, get_personal
 from userprofiles.models import UserProfile
 from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
+from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order 
 
 # Set the Stripe secret key
@@ -53,12 +54,57 @@ class CreatePaymentIntentView(APIView):
         total = 0
         shipping_cost = 0.00
         model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
-        
+
         # Safely extract the country from shipping details (default to IE if missing)
         shipping_country = 'IE'
+        address_payload_invalid = False
         if shipping_details and isinstance(shipping_details, dict):
-            address = shipping_details.get('address', {})
-            shipping_country = address.get('country', 'IE')
+            raw_address = shipping_details.get('address')
+            if raw_address is None:
+                address = {}
+            elif isinstance(raw_address, dict):
+                address = raw_address
+                shipping_country = address.get('country', 'IE')
+            else:
+                address = {}
+                address_payload_invalid = True
+        else:
+            address = {}
+
+        has_physical_items = any(
+            isinstance(item, dict) and item.get("product_type") == "physical"
+            for item in cart
+        )
+        if has_physical_items:
+            if address_payload_invalid:
+                return Response(
+                    {"shipping_details": {"address": "Invalid address payload. Expected an object."}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            shipping_errors = validate_physical_shipping_address(
+                country=address.get("country"),
+                line1=address.get("line1"),
+                town=address.get("city"),
+                postcode=address.get("postal_code"),
+                county=address.get("state"),
+            )
+            if shipping_errors:
+                field_map = {
+                    "street_address1": "line1",
+                    "town": "city",
+                    "postcode": "postal_code",
+                    "county": "state",
+                    "country": "country",
+                }
+                shipping_errors = {
+                    field_map.get(field, field): message
+                    for field, message in shipping_errors.items()
+                }
+                return Response(
+                    {"shipping_details": shipping_errors},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            shipping_country = str(address.get("country", "")).strip().upper()
 
         try:
             for item in cart:
@@ -480,9 +526,8 @@ class StripeWebhookView(APIView):
 
                 else:
                     print(f"ERROR: Error creating order: {serializer.errors}")
-                    # Return the errors so we can see them more clearly if needed
                     processing_error = f"Order validation failed: {serializer.errors}"
-                    return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+                    print(f"WARN: Acknowledging webhook event despite validation failure. {processing_error}")
 
             elif event_type == 'checkout.session.completed':
                 session = event['data']['object']
