@@ -19,7 +19,9 @@ from checkout.models import Order, OrderItem
 from .models import (
     LicenseRequest,
     LicenceDeliveryToken,
+    GalleryAccess,
     Photo,
+    ProductVariant,
     generate_variants_for_photo,
 )
 from .licensing import send_licence_quote_email
@@ -364,3 +366,92 @@ class LicenseRequestTests(APITestCase):
         self.assertTrue(response.data["personal_terms_url"].endswith("/api/licence/personal-use/"))
         self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
+
+    def test_physical_product_page_uses_physical_purchase_flow(self):
+        ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        url = reverse("physical_product_page", args=[self.photo.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["product_type"], "physical")
+        self.assertEqual(response.data["default_purchase_flow"], "PHYSICAL_PRINT_CHECKOUT")
+        self.assertEqual(response.data["purchase_flows"], ["PHYSICAL_PRINT_CHECKOUT"])
+        self.assertNotIn("high_res_file", response.data)
+        self.assertNotIn("price_hd", response.data)
+        self.assertNotIn("price_4k", response.data)
+
+    def test_digital_photo_page_exposes_personal_and_commercial_flows(self):
+        access = GalleryAccess.objects.create(email="gated@example.com")
+        url = reverse("photo_detail", args=[self.photo.id])
+        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["product_type"], "photo")
+        self.assertEqual(response.data["default_purchase_flow"], "PERSONAL_CHECKOUT")
+        self.assertEqual(
+            response.data["purchase_flows"],
+            ["PERSONAL_CHECKOUT", "COMMERCIAL_REQUEST"],
+        )
+        self.assertNotIn("high_res_file", response.data)
+
+    def test_physical_gallery_items_are_not_serialized_as_digital_photos(self):
+        ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        url = reverse("gallery_list")
+        response = self.client.get(url, {"type": "physical"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(response.data), 0)
+        self.assertEqual(response.data[0]["product_type"], "physical")
+        self.assertEqual(response.data[0]["default_purchase_flow"], "PHYSICAL_PRINT_CHECKOUT")
+
+    def test_variant_detail_does_not_expose_high_res_in_nested_photo(self):
+        variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        url = reverse("variant_detail", args=[variant.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["product_type"], "physical")
+        self.assertIn("photo", response.data)
+        self.assertNotIn("high_res_file", response.data["photo"])
+        self.assertNotIn("price_hd", response.data["photo"])
+        self.assertNotIn("price_4k", response.data["photo"])
+        self.assertEqual(response.data["photo"]["product_type"], "physical")
+
+    def test_physical_related_products_include_only_printable_items(self):
+        ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        printable_photo = self._create_photo(is_active=True)
+        ProductVariant.objects.create(
+            photo=printable_photo,
+            material="eco_canvas",
+            size="16x24",
+            price=Decimal("120.00"),
+        )
+        non_printable_photo = self._create_photo(is_active=True)
+
+        url = reverse("physical_product_page", args=[self.photo.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        related_ids = [item["id"] for item in response.data["related_products"]]
+        self.assertIn(printable_photo.id, related_ids)
+        self.assertNotIn(non_printable_photo.id, related_ids)

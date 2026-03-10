@@ -114,7 +114,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 elif product_type_str in ['photo', 'video']:
                     # Digital items have NO shipping cost
                     has_consumer_digital_item = True
-                    license_type = options.get('license', 'hd')
+                    license_type = str(options.get('license', 'hd')).strip().lower()
                     if license_type == '4k':
                         price = product_instance.price_4k
                     else:
@@ -165,6 +165,18 @@ class OrderSerializer(serializers.ModelSerializer):
                 if str(country) not in ALLOWED_SHIPPING_COUNTRIES:
                     raise serializers.ValidationError(
                         {"country": f"Physical products can currently only be shipped to Ireland (IE) or the US. You selected {country}."}
+                    )
+            elif p_type in ['photo', 'video']:
+                options = item.get('options', {}) or {}
+                license_type = str(options.get('license', 'hd')).strip().lower()
+                if license_type not in {'hd', '4k'}:
+                    raise serializers.ValidationError(
+                        {
+                            "items": (
+                                f"Invalid digital license option '{license_type}' "
+                                f"for {p_type} item."
+                            )
+                        }
                     )
         
         return data
