@@ -149,7 +149,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """
-        Ensure physical products are only shipped to allowed countries.
+        Validate physical shipping addresses and digital license options.
         """
         country = data.get('country')
         items = data.get('items', [])
@@ -166,9 +166,8 @@ class OrderSerializer(serializers.ModelSerializer):
             if shipping_errors:
                 raise serializers.ValidationError(shipping_errors)
 
-        # Loop through items to check if any are physical
+        # Validate digital item options.
         for item in items:
-            # We assume 'product_type' is passed from the frontend for each item
             p_type = item.get('product_type')
 
             if p_type in ['photo', 'video']:

@@ -2,7 +2,8 @@ import re
 
 
 US_ZIP_RE = re.compile(r"^\d{5}(?:-\d{4})?$")
-IE_EIRCODE_RE = re.compile(r"^[AC-FHKNPRTV-Y]\d{2}[AC-FHKNPRTV-Y0-9]{4}$")
+# Irish routing key is one letter + two digits, except special Dublin key D6W.
+IE_EIRCODE_RE = re.compile(r"^(?:[AC-FHKNPRTV-Y]\d{2}|D6W)[AC-FHKNPRTV-Y0-9]{4}$")
 ALLOWED_PHYSICAL_SHIPPING_COUNTRIES = {"IE", "US"}
 
 

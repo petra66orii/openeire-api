@@ -10,7 +10,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
-from django.test import TestCase, override_settings
+from django.test import TestCase, override_settings, SimpleTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -24,6 +24,79 @@ from products.models import (
     generate_variants_for_photo,
 )
 from .models import Order
+from .address_validation import validate_physical_shipping_address
+
+
+class PhysicalAddressValidationTests(SimpleTestCase):
+    def test_valid_us_zip_five_digit(self):
+        errors = validate_physical_shipping_address(
+            country="US",
+            line1="123 Test St",
+            town="Austin",
+            postcode="73301",
+            county="TX",
+        )
+        self.assertEqual(errors, {})
+
+    def test_valid_us_zip_plus_four(self):
+        errors = validate_physical_shipping_address(
+            country="US",
+            line1="123 Test St",
+            town="Austin",
+            postcode="73301-1234",
+            county="TX",
+        )
+        self.assertEqual(errors, {})
+
+    def test_valid_ie_eircode_standard_and_d6w(self):
+        standard = validate_physical_shipping_address(
+            country="IE",
+            line1="1 Main Street",
+            town="Dublin",
+            postcode="D01 F5P2",
+            county="Dublin",
+        )
+        d6w = validate_physical_shipping_address(
+            country="IE",
+            line1="2 Main Street",
+            town="Dublin",
+            postcode="D6W F8X2",
+            county="Dublin",
+        )
+        self.assertEqual(standard, {})
+        self.assertEqual(d6w, {})
+
+    def test_ie_rejects_us_zip_format(self):
+        errors = validate_physical_shipping_address(
+            country="IE",
+            line1="1 Main Street",
+            town="Galway",
+            postcode="90210",
+            county="Galway",
+        )
+        self.assertIn("postcode", errors)
+
+    def test_missing_required_fields(self):
+        errors = validate_physical_shipping_address(
+            country="IE",
+            line1="",
+            town="",
+            postcode="",
+            county="",
+        )
+        self.assertIn("street_address1", errors)
+        self.assertIn("town", errors)
+        self.assertIn("postcode", errors)
+
+    def test_unsupported_country_rejected(self):
+        errors = validate_physical_shipping_address(
+            country="GB",
+            line1="1 Test St",
+            town="London",
+            postcode="SW1A 1AA",
+            county="London",
+        )
+        self.assertIn("country", errors)
 
 
 @override_settings(
