@@ -7,6 +7,7 @@ from django_countries.serializer_fields import CountryField
 from django.urls import reverse
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
 from userprofiles.models import UserProfile
+from .address_validation import validate_physical_shipping_address
 
 class OrderItemSerializer(serializers.ModelSerializer):
     """
@@ -148,27 +149,28 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """
-        Ensure physical products are only shipped to allowed countries.
+        Validate physical shipping addresses and digital license options.
         """
         country = data.get('country')
         items = data.get('items', [])
         
-        # valid shipping destinations for physical goods
-        ALLOWED_SHIPPING_COUNTRIES = ['IE', 'US']
+        has_physical_items = any(item.get('product_type') == 'physical' for item in items)
+        if has_physical_items:
+            shipping_errors = validate_physical_shipping_address(
+                country=country,
+                line1=data.get('street_address1'),
+                town=data.get('town'),
+                postcode=data.get('postcode'),
+                county=data.get('county'),
+            )
+            if shipping_errors:
+                raise serializers.ValidationError(shipping_errors)
 
-        # Loop through items to check if any are physical
+        # Validate digital item options.
         for item in items:
-            # We assume 'product_type' is passed from the frontend for each item
             p_type = item.get('product_type')
 
-            if p_type == 'physical':
-                # Check if the selected country is in our allowed list
-                # Note: 'country' comes in as a Country object, so we convert to string
-                if str(country) not in ALLOWED_SHIPPING_COUNTRIES:
-                    raise serializers.ValidationError(
-                        {"country": f"Physical products can currently only be shipped to Ireland (IE) or the US. You selected {country}."}
-                    )
-            elif p_type in ['photo', 'video']:
+            if p_type in ['photo', 'video']:
                 options = item.get('options') or {}
                 if not isinstance(options, dict):
                     raise serializers.ValidationError(
