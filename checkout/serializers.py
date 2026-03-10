@@ -153,6 +153,11 @@ class OrderSerializer(serializers.ModelSerializer):
         """
         country = data.get('country')
         items = data.get('items', [])
+        has_digital_items = any(item.get('product_type') in {'photo', 'video'} for item in items)
+        if has_digital_items and not data.get('user_profile'):
+            raise serializers.ValidationError(
+                {"user_profile": "Authentication is required to purchase digital items."}
+            )
         
         has_physical_items = any(item.get('product_type') == 'physical' for item in items)
         if has_physical_items:

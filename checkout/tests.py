@@ -4,15 +4,17 @@ import json
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from django.contrib.contenttypes.models import ContentType
+from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
 from django.test import TestCase, override_settings, SimpleTestCase
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from products.models import (
     LicenseRequest,
@@ -314,9 +316,14 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             size="12x18",
             price=Decimal("99.00"),
         )
+        self.user = get_user_model().objects.create_user(
+            username="consumerbuyer",
+            email="buyer@example.com",
+            password="StrongPass123!",
+        )
         self.url = reverse("webhook")
 
-    def _payment_intent_event(self, license_value="hd"):
+    def _payment_intent_event(self, license_value="hd", username=None, user_id=None):
         cart = [
             {
                 "product_id": self.photo.id,
@@ -325,6 +332,12 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
                 "options": {"license": license_value},
             }
         ]
+        metadata_username = username if username is not None else self.user.username
+        metadata_user_id = (
+            str(user_id)
+            if user_id is not None
+            else (str(self.user.id) if metadata_username != "Guest" else "")
+        )
         return {
             "id": "evt_consumer_1",
             "type": "payment_intent.succeeded",
@@ -334,7 +347,8 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
                     "receipt_email": "buyer@example.com",
                     "metadata": {
                         "cart": json.dumps(cart),
-                        "username": "Guest",
+                        "username": metadata_username,
+                        "user_id": metadata_user_id,
                         "save_info": "false",
                         "shipping_cost": "0",
                         "shipping_method": "budget",
@@ -399,6 +413,85 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_guest_digital_order_creation(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(username="Guest")
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_binds_digital_order_using_user_id_when_username_mismatches(self, mock_construct):
+        other_user = get_user_model().objects.create_user(
+            username="otherbuyer",
+            email="other@example.com",
+            password="StrongPass123!",
+        )
+        mock_construct.return_value = self._payment_intent_event(
+            username=other_user.username,
+            user_id=self.user.id,
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.first()
+        self.assertIsNotNone(order.user_profile)
+        self.assertEqual(order.user_profile.user_id, self.user.id)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_digital_order_when_user_id_missing_even_if_username_exists(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(
+            username=self.user.username,
+            user_id="",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    @override_settings(CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK=True)
+    def test_webhook_allows_legacy_username_fallback_when_enabled(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(
+            username=self.user.username,
+            user_id="",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.first()
+        self.assertIsNotNone(order.user_profile)
+        self.assertEqual(order.user_profile.user_id, self.user.id)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_rejects_invalid_us_address_for_physical_item(self, mock_construct):
         cart = [
             {
@@ -453,6 +546,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
 @override_settings(STRIPE_SECRET_KEY="sk_test_123")
 class CreatePaymentIntentSecurityTests(TestCase):
     def setUp(self):
+        self.client = APIClient()
         base_media_root = Path(__file__).resolve().parent.parent / ".test_media"
         self.media_root = base_media_root / uuid.uuid4().hex
         self.media_root.mkdir(parents=True, exist_ok=True)
@@ -482,10 +576,16 @@ class CreatePaymentIntentSecurityTests(TestCase):
             size="12x18",
             price=Decimal("99.00"),
         )
+        self.user = get_user_model().objects.create_user(
+            username="checkoutuser",
+            email="checkout@example.com",
+            password="StrongPass123!",
+        )
         self.url = reverse("create_payment_intent")
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_digital_license_option_is_rejected(self, mock_create):
+        self.client.force_authenticate(user=self.user)
         payload = {
             "cart": [
                 {
@@ -509,6 +609,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_options_payload_shape_is_rejected(self, mock_create):
+        self.client.force_authenticate(user=self.user)
         payload = {
             "cart": [
                 {
@@ -529,6 +630,126 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Invalid options payload", response.data["error"])
         mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_guest_digital_cart_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "AUTH_REQUIRED_DIGITAL_CHECKOUT")
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_guest_mixed_cart_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                },
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                },
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["code"], "AUTH_REQUIRED_DIGITAL_CHECKOUT")
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_guest_physical_only_cart_is_allowed(self, mock_create):
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("clientSecret", response.data)
+        mock_create.assert_called_once()
+        sent_metadata = mock_create.call_args.kwargs["metadata"]
+        self.assertEqual(sent_metadata["user_id"], "")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_authenticated_digital_cart_is_allowed(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ]
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("clientSecret", response.data)
+        mock_create.assert_called_once()
+        sent_metadata = mock_create.call_args.kwargs["metadata"]
+        self.assertEqual(sent_metadata["user_id"], str(self.user.id))
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_us_address_for_physical_item_is_rejected(self, mock_create):

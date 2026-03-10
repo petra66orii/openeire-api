@@ -75,6 +75,18 @@ class CreatePaymentIntentView(APIView):
             isinstance(item, dict) and item.get("product_type") == "physical"
             for item in cart
         )
+        has_digital_items = any(
+            isinstance(item, dict) and item.get("product_type") in {"photo", "video"}
+            for item in cart
+        )
+        if has_digital_items and not request.user.is_authenticated:
+            return Response(
+                {
+                    "code": "AUTH_REQUIRED_DIGITAL_CHECKOUT",
+                    "error": "Authentication is required to purchase digital items.",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
         if has_physical_items:
             if address_payload_invalid:
                 return Response(
@@ -173,6 +185,7 @@ class CreatePaymentIntentView(APIView):
             metadata = {
                 'cart': json.dumps(cart),
                 'username': request.user.username if request.user.is_authenticated else 'Guest',
+                'user_id': str(request.user.id) if request.user.is_authenticated else '',
                 'save_info': str(request.data.get('save_info', False)).lower(),
                 'shipping_cost': shipping_cost,
                 'shipping_method': shipping_method # Store method in metadata for Webhook
@@ -202,6 +215,15 @@ class StripeWebhookView(APIView):
 
     def _stale_processing_seconds(self):
         return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
+
+    def _allow_legacy_username_fallback(self):
+        return bool(getattr(settings, "CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK", False))
+
+    def _summarize_validation_errors(self, errors):
+        if hasattr(errors, "keys"):
+            fields = sorted(str(field) for field in errors.keys())
+            return ", ".join(fields) if fields else "unknown"
+        return "unknown"
 
     def _send_confirmation_email(self, order, request=None):
         """Send the user a confirmation email"""
@@ -473,25 +495,40 @@ class StripeWebhookView(APIView):
                 }
 
                 # 4. Check for User Profile
-                username = metadata.get('username')
+                user_id = metadata.get('user_id')
                 save_info = metadata.get('save_info') == 'true'
+                profile = None
 
-                if username and username != 'Guest':
+                if user_id:
                     try:
-                        profile = UserProfile.objects.get(user__username=username)
-                        order_data['user_profile'] = profile.id
+                        profile = UserProfile.objects.get(user__id=int(user_id))
+                    except (TypeError, ValueError, UserProfile.DoesNotExist):
+                        profile = None
 
-                        if save_info:
-                            profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
-                            profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
-                            profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
-                            profile.default_town = address_details.get('city', profile.default_town)
-                            profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
-                            profile.default_county = address_details.get('state', profile.default_county)
-                            profile.default_country = address_details.get('country', profile.default_country)
-                            profile.save()
-                    except UserProfile.DoesNotExist:
-                        pass
+                if profile is None and self._allow_legacy_username_fallback():
+                    username = metadata.get('username')
+                    if username and username != 'Guest':
+                        try:
+                            profile = UserProfile.objects.get(user__username=username)
+                            print(
+                                "WARN: Using legacy username fallback for webhook order binding. "
+                                "Disable CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK once old payment intents are drained."
+                            )
+                        except UserProfile.DoesNotExist:
+                            profile = None
+
+                if profile is not None:
+                    order_data['user_profile'] = profile.id
+
+                    if save_info:
+                        profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)
+                        profile.default_street_address1 = address_details.get('line1', profile.default_street_address1)
+                        profile.default_street_address2 = address_details.get('line2', profile.default_street_address2)
+                        profile.default_town = address_details.get('city', profile.default_town)
+                        profile.default_postcode = address_details.get('postal_code', profile.default_postcode)
+                        profile.default_county = address_details.get('state', profile.default_county)
+                        profile.default_country = address_details.get('country', profile.default_country)
+                        profile.save()
 
                 # 5. Validate and Save
                 serializer = OrderSerializer(data=order_data)
@@ -525,8 +562,9 @@ class StripeWebhookView(APIView):
                         print(f"ERROR: Failed to fulfill order {order.order_number}: {e}")
 
                 else:
-                    print(f"ERROR: Error creating order: {serializer.errors}")
-                    processing_error = f"Order validation failed: {serializer.errors}"
+                    error_fields = self._summarize_validation_errors(serializer.errors)
+                    print(f"ERROR: Error creating order. Validation fields: {error_fields}")
+                    processing_error = f"Order validation failed. Fields: {error_fields}"
                     print(f"WARN: Acknowledging webhook event despite validation failure. {processing_error}")
 
             elif event_type == 'checkout.session.completed':
