@@ -471,6 +471,27 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
+    @override_settings(CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK=True)
+    def test_webhook_allows_legacy_username_fallback_when_enabled(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(
+            username=self.user.username,
+            user_id="",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.first()
+        self.assertIsNotNone(order.user_profile)
+        self.assertEqual(order.user_profile.user_id, self.user.id)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_rejects_invalid_us_address_for_physical_item(self, mock_construct):
         cart = [
             {

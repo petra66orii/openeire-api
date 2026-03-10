@@ -216,6 +216,9 @@ class StripeWebhookView(APIView):
     def _stale_processing_seconds(self):
         return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
 
+    def _allow_legacy_username_fallback(self):
+        return bool(getattr(settings, "CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK", False))
+
     def _summarize_validation_errors(self, errors):
         if hasattr(errors, "keys"):
             fields = sorted(str(field) for field in errors.keys())
@@ -498,9 +501,21 @@ class StripeWebhookView(APIView):
 
                 if user_id:
                     try:
-                        profile = UserProfile.objects.get(user__id=int(str(user_id)))
+                        profile = UserProfile.objects.get(user__id=int(user_id))
                     except (TypeError, ValueError, UserProfile.DoesNotExist):
                         profile = None
+
+                if profile is None and self._allow_legacy_username_fallback():
+                    username = metadata.get('username')
+                    if username and username != 'Guest':
+                        try:
+                            profile = UserProfile.objects.get(user__username=username)
+                            print(
+                                "WARN: Using legacy username fallback for webhook order binding. "
+                                "Disable CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK once old payment intents are drained."
+                            )
+                        except UserProfile.DoesNotExist:
+                            profile = None
 
                 if profile is not None:
                     order_data['user_profile'] = profile.id
