@@ -10,7 +10,7 @@ from .models import (
 )
 from django.contrib.contenttypes.models import ContentType
 from django.db import IntegrityError
-from django.db.models import Avg
+from django.db.models import Avg, Min
 
 
 REACH_CAP_PATTERNS = [
@@ -110,6 +110,30 @@ class PhysicalPhotoListSerializer(PhotoListSerializer):
             'collection',
             'preview_image',
             'starting_price',
+            'product_type',
+            'purchase_flows',
+            'default_purchase_flow',
+        )
+
+    def get_purchase_flows(self, obj):
+        return [PHYSICAL_PRINT_CHECKOUT_FLOW]
+
+
+class PhysicalPhotoEmbeddedSerializer(serializers.ModelSerializer):
+    product_type = serializers.CharField(default='physical', read_only=True)
+    purchase_flows = serializers.SerializerMethodField()
+    default_purchase_flow = serializers.CharField(default=PHYSICAL_PRINT_CHECKOUT_FLOW, read_only=True)
+
+    class Meta:
+        model = Photo
+        fields = (
+            'id',
+            'title',
+            'description',
+            'collection',
+            'preview_image',
+            'tags',
+            'created_at',
             'product_type',
             'purchase_flows',
             'default_purchase_flow',
@@ -360,7 +384,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     """
     Serializer for a specific variant (e.g. A4 Canvas).
     """
-    photo = serializers.SerializerMethodField()
+    photo = PhysicalPhotoEmbeddedSerializer(read_only=True)
     product_type = serializers.CharField(default='physical', read_only=True)
     title = serializers.CharField(source='photo.title', read_only=True)
     description = serializers.CharField(source='photo.description', read_only=True)
@@ -380,22 +404,6 @@ class ProductDetailSerializer(serializers.ModelSerializer):
 
     def get_purchase_flows(self, obj):
         return [PHYSICAL_PRINT_CHECKOUT_FLOW]
-
-    def get_photo(self, obj):
-        return {
-            "id": obj.photo.id,
-            "title": obj.photo.title,
-            "description": obj.photo.description,
-            "collection": obj.photo.collection,
-            "preview_image": (
-                obj.photo.preview_image.url if obj.photo.preview_image else None
-            ),
-            "tags": obj.photo.tags,
-            "created_at": obj.photo.created_at,
-            "product_type": "physical",
-            "purchase_flows": [PHYSICAL_PRINT_CHECKOUT_FLOW],
-            "default_purchase_flow": PHYSICAL_PRINT_CHECKOUT_FLOW,
-        }
 
     def get_average_rating(self, obj):
         reviews = ProductReview.objects.filter(
@@ -438,7 +446,9 @@ class PhysicalPhotoDetailSerializer(PhotoDetailSerializer):
             collection=obj.collection,
             is_active=True,
             variants__isnull=False,
-        ).exclude(id=obj.id).distinct().order_by('?')[:4]
+        ).exclude(id=obj.id).annotate(
+            starting_price=Min('variants__price')
+        ).distinct().order_by('?')[:4]
         return PhysicalPhotoListSerializer(qs, many=True, context=self.context).data
 
 class ProductReviewSerializer(serializers.ModelSerializer):

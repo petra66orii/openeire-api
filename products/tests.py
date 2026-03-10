@@ -22,6 +22,7 @@ from .models import (
     GalleryAccess,
     Photo,
     ProductVariant,
+    Video,
     generate_variants_for_photo,
 )
 from .licensing import send_licence_quote_email
@@ -55,6 +56,20 @@ class LicenseRequestTests(APITestCase):
             high_res_file=high_res,
             price_hd=Decimal("10.00"),
             price_4k=Decimal("20.00"),
+            is_active=is_active,
+        )
+
+    def _create_video(self, is_active=True):
+        thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        video = SimpleUploadedFile("video.mp4", b"video-bytes", content_type="video/mp4")
+        return Video.objects.create(
+            title="Test Video",
+            description="Video description",
+            collection="Test Collection",
+            thumbnail_image=thumbnail,
+            video_file=video,
+            price_hd=Decimal("12.00"),
+            price_4k=Decimal("24.00"),
             is_active=is_active,
         )
 
@@ -399,6 +414,17 @@ class LicenseRequestTests(APITestCase):
         )
         self.assertNotIn("high_res_file", response.data)
 
+    def test_video_detail_does_not_expose_video_file(self):
+        video = self._create_video(is_active=True)
+        access = GalleryAccess.objects.create(email="video-gated@example.com")
+        url = reverse("video_detail", args=[video.id])
+        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["product_type"], "video")
+        self.assertNotIn("video_file", response.data)
+        self.assertEqual(response.data["default_purchase_flow"], "PERSONAL_CHECKOUT")
+
     def test_physical_gallery_items_are_not_serialized_as_digital_photos(self):
         ProductVariant.objects.create(
             photo=self.photo,
@@ -455,3 +481,5 @@ class LicenseRequestTests(APITestCase):
         related_ids = [item["id"] for item in response.data["related_products"]]
         self.assertIn(printable_photo.id, related_ids)
         self.assertNotIn(non_printable_photo.id, related_ids)
+        for item in response.data["related_products"]:
+            self.assertIsNotNone(item["starting_price"])

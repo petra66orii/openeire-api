@@ -75,7 +75,9 @@ class OrderSerializer(serializers.ModelSerializer):
             product_id = item_data['product_id']
             product_type_str = item_data['product_type']
             quantity = item_data['quantity']
-            options = item_data.get('options', {})
+            options = item_data.get('options') or {}
+            if not isinstance(options, dict):
+                options = {}
             
             model_class = model_map.get(product_type_str)
             if not model_class:
@@ -167,7 +169,11 @@ class OrderSerializer(serializers.ModelSerializer):
                         {"country": f"Physical products can currently only be shipped to Ireland (IE) or the US. You selected {country}."}
                     )
             elif p_type in ['photo', 'video']:
-                options = item.get('options', {}) or {}
+                options = item.get('options') or {}
+                if not isinstance(options, dict):
+                    raise serializers.ValidationError(
+                        {"items": f"Invalid options payload for {p_type} item."}
+                    )
                 license_type = str(options.get('license', 'hd')).strip().lower()
                 if license_type not in {'hd', '4k'}:
                     raise serializers.ValidationError(

@@ -236,13 +236,13 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         )
         self.url = reverse("webhook")
 
-    def _payment_intent_event(self):
+    def _payment_intent_event(self, license_value="hd"):
         cart = [
             {
                 "product_id": self.photo.id,
                 "product_type": "photo",
                 "quantity": 1,
-                "options": {"license": "hd"},
+                "options": {"license": license_value},
             }
         ]
         return {
@@ -303,6 +303,21 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertNotIn("indemnity", body_lower)
         self.assertNotIn("audit", body_lower)
 
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_invalid_digital_license_option(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event(license_value="tampered")
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_123")
 class CreatePaymentIntentSecurityTests(TestCase):
@@ -353,4 +368,27 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Invalid digital license option", response.data["error"])
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_options_payload_shape_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": ["not-an-object"],
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid options payload", response.data["error"])
         mock_create.assert_not_called()
