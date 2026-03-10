@@ -17,6 +17,7 @@ from django.utils import timezone
 from products.models import (
     LicenseRequest,
     Photo,
+    ProductVariant,
     StripeWebhookEvent,
     LicenceDocument,
     LicenseRequestAuditLog,
@@ -234,6 +235,12 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             price_4k=Decimal("25.00"),
             is_active=True,
         )
+        self.variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
         self.url = reverse("webhook")
 
     def _payment_intent_event(self, license_value="hd"):
@@ -314,7 +321,58 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             HTTP_STRIPE_SIGNATURE="sig",
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_invalid_us_address_for_physical_item(self, mock_construct):
+        cart = [
+            {
+                "product_id": self.variant.id,
+                "product_type": "physical",
+                "quantity": 1,
+                "options": {},
+            }
+        ]
+        mock_construct.return_value = {
+            "id": "evt_consumer_bad_us_address",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_consumer_bad_us_address",
+                    "receipt_email": "buyer@example.com",
+                    "metadata": {
+                        "cart": json.dumps(cart),
+                        "username": "Guest",
+                        "save_info": "false",
+                        "shipping_cost": "0",
+                        "shipping_method": "budget",
+                    },
+                    "shipping": {
+                        "name": "Buyer",
+                        "phone": "+3530000000",
+                        "address": {
+                            "country": "US",
+                            "city": "Loughrea",
+                            "line1": "1 Test Street",
+                            "line2": "",
+                            "postal_code": "H62 X254",
+                            "state": "",
+                        },
+                    },
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(Order.objects.count(), 0)
         self.assertEqual(len(mail.outbox), 0)
 
@@ -344,6 +402,12 @@ class CreatePaymentIntentSecurityTests(TestCase):
             price_hd=Decimal("10.00"),
             price_4k=Decimal("20.00"),
             is_active=True,
+        )
+        self.variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
         )
         self.url = reverse("create_payment_intent")
 
@@ -391,4 +455,63 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Invalid options payload", response.data["error"])
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_us_address_for_physical_item_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Loughrea",
+                    "country": "US",
+                    "postal_code": "H62 X254",
+                    "state": "",
+                },
+            },
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("shipping_details", response.data)
+        self.assertIn("state", response.data["shipping_details"])
+        self.assertIn("postal_code", response.data["shipping_details"])
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_address_payload_shape_is_rejected(self, mock_create):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": "invalid-shape",
+            },
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("shipping_details", response.data)
+        self.assertIn("address", response.data["shipping_details"])
         mock_create.assert_not_called()
