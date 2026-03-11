@@ -79,6 +79,8 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_THROTTLE_RATES': {
         'license_request': '10/hour',
+        'gallery_access_request': '5/hour',
+        'gallery_access_verify': '20/hour',
     },
 }
 

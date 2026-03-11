@@ -51,6 +51,8 @@ from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 class RequestGalleryAccessView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'gallery_access_request'
 
     def post(self, request):
         email = request.data.get('email')
@@ -71,6 +73,8 @@ class RequestGalleryAccessView(APIView):
 
 class VerifyGalleryAccessView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'gallery_access_verify'
 
     def post(self, request):
         code = request.data.get('access_code', '').upper().strip()
@@ -82,10 +86,9 @@ class VerifyGalleryAccessView(APIView):
                     "expires_at": access_record.expires_at,
                     "valid": True
                 })
-            else:
-                return Response({"error": "Code expired"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
         except GalleryAccess.DoesNotExist:
-            return Response({"error": "Invalid code"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
 
 class CustomPagination(PageNumberPagination):
     page_size = 10 # Number of items per page
