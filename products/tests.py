@@ -3,6 +3,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.core.cache import cache
 from django.core import mail
@@ -150,6 +151,44 @@ class LicenseRequestTests(APITestCase):
             invalid_response.json(),
             {"error": "Invalid or expired code"},
         )
+
+    def test_bag_recommendations_returns_up_to_four_active_photos(self):
+        for _ in range(5):
+            self._create_photo(is_active=True)
+        inactive = self._create_photo(is_active=False)
+
+        url = reverse("bag-recommendations")
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(response.data), 0)
+        self.assertLessEqual(len(response.data), 4)
+        returned_ids = {item["id"] for item in response.data}
+        self.assertNotIn(inactive.id, returned_ids)
+
+    def test_bag_recommendations_returns_empty_when_no_active_photos(self):
+        Photo.objects.update(is_active=False)
+        url = reverse("bag-recommendations")
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_bag_recommendations_filters_inactive_ids_from_selected_pool(self):
+        active = self._create_photo(is_active=True)
+        inactive = self._create_photo(is_active=False)
+        url = reverse("bag-recommendations")
+
+        with patch(
+            "products.views.ShoppingBagRecommendationsView._pick_recommendation_ids",
+            return_value=[active.id, inactive.id],
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        returned_ids = {item["id"] for item in response.data}
+        self.assertIn(active.id, returned_ids)
+        self.assertNotIn(inactive.id, returned_ids)
 
     def test_license_request_message_max_length(self):
         payload = self._payload(message="a" * 3000)
