@@ -632,6 +632,131 @@ class CreatePaymentIntentSecurityTests(TestCase):
         mock_create.assert_not_called()
 
     @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_cart_payload_shape_is_rejected(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": "not-a-list",
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "Invalid cart payload. Expected a list of cart items.",
+        )
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_truthy_non_dict_shipping_details_payload_is_rejected(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": "invalid-shape",
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("shipping_details", response.data)
+        self.assertEqual(
+            response.data["shipping_details"]["address"],
+            "Invalid shipping_details payload. Expected an object.",
+        )
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_cart_item_shape_returns_sanitized_400(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                {
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        self.assertEqual(response.data["error"], "Invalid cart data provided.")
+        self.assertNotIn("product_id", json.dumps(response.data))
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_non_object_cart_item_returns_sanitized_400(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                "not-an-object",
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        self.assertEqual(
+            response.data["error"],
+            "Invalid cart item payload. Expected an object.",
+        )
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_stripe_error_returns_sanitized_500_without_internal_message(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        mock_create.side_effect = RuntimeError("Stripe timeout internal details: req_12345")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.data["code"], "PAYMENT_INTENT_CREATION_FAILED")
+        self.assertEqual(
+            response.data["error"],
+            "Unable to initialize checkout right now. Please try again.",
+        )
+        self.assertNotIn("Stripe timeout internal details", json.dumps(response.data))
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
     def test_guest_digital_cart_is_rejected(self, mock_create):
         payload = {
             "cart": [

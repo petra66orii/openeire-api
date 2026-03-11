@@ -1,8 +1,10 @@
 import stripe
 import json
+import logging
 from datetime import timedelta
 from django.conf import settings
 from django.core.mail import EmailMessage
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.template.loader import render_to_string
 from django.urls import reverse
@@ -37,6 +39,7 @@ from .prodigi import create_prodigi_order
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
+logger = logging.getLogger(__name__)
 
 class CreatePaymentIntentView(APIView):
     permission_classes = [AllowAny]
@@ -48,8 +51,24 @@ class CreatePaymentIntentView(APIView):
         # NEW: Get the selected shipping method from the frontend (default to budget)
         shipping_method = request.data.get('shipping_method', 'budget')
         
-        if not cart:
+        if cart is None:
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(cart, list):
+            return Response(
+                {"error": "Invalid cart payload. Expected a list of cart items."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(cart) == 0:
+            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+        if shipping_details is not None and not isinstance(shipping_details, dict):
+            return Response(
+                {
+                    "shipping_details": {
+                        "address": "Invalid shipping_details payload. Expected an object."
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         
         total = 0
         shipping_cost = 0.00
@@ -120,6 +139,14 @@ class CreatePaymentIntentView(APIView):
 
         try:
             for item in cart:
+                if not isinstance(item, dict):
+                    return Response(
+                        {
+                            "code": "INVALID_CART_PAYLOAD",
+                            "error": "Invalid cart item payload. Expected an object.",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 product_id = item['product_id']
                 product_type = item['product_type']
                 quantity = item.get('quantity', 1)
@@ -164,18 +191,38 @@ class CreatePaymentIntentView(APIView):
                         )
                         shipping_cost += float(shipping_rule.cost) * quantity
                     except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
-                        print(f"Warning: No shipping rule for {product_instance.material} {product_instance.size} to {shipping_country}")
+                        logger.warning(
+                            "No shipping rule found for checkout item "
+                            "(material=%s, size=%s, country=%s, method=%s)",
+                            product_instance.material,
+                            product_instance.size,
+                            shipping_country,
+                            shipping_method,
+                        )
                         # You could add a fallback flat rate here if desired
 
-        except (KeyError, model_class.DoesNotExist) as e:
-            return Response({"error": f"Invalid cart data provided: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        except (KeyError, TypeError, ValueError, ObjectDoesNotExist) as e:
+            logger.warning(
+                "CreatePaymentIntentView received invalid cart data "
+                "(user_id=%s, authenticated=%s, error_type=%s)",
+                request.user.id if request.user.is_authenticated else None,
+                bool(request.user.is_authenticated),
+                e.__class__.__name__,
+            )
+            return Response(
+                {
+                    "code": "INVALID_CART_PAYLOAD",
+                    "error": "Invalid cart data provided.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         
         # Add dynamic shipping to total
         grand_total = total + shipping_cost
         amount_in_cents = int(grand_total * 100)
 
         customer_email = None
-        if shipping_details:
+        if isinstance(shipping_details, dict):
             customer_email = shipping_details.get('email')
         
         if not customer_email and request.user.is_authenticated:
@@ -204,8 +251,22 @@ class CreatePaymentIntentView(APIView):
                 'shippingCost': shipping_cost, 
                 'totalPrice': grand_total
             }, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            logger.exception(
+                "CreatePaymentIntentView failed while creating Stripe intent "
+                "(user_id=%s, authenticated=%s, cart_items=%s, has_shipping=%s)",
+                request.user.id if request.user.is_authenticated else None,
+                bool(request.user.is_authenticated),
+                len(cart),
+                bool(shipping_details),
+            )
+            return Response(
+                {
+                    "code": "PAYMENT_INTENT_CREATION_FAILED",
+                    "error": "Unable to initialize checkout right now. Please try again.",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class StripeWebhookView(APIView):
