@@ -1,9 +1,12 @@
 import shutil
 import uuid
 import json
+import os
+import requests
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 from django.contrib.contenttypes.models import ContentType
@@ -27,6 +30,7 @@ from products.models import (
 )
 from .models import Order
 from .address_validation import validate_physical_shipping_address
+from .prodigi import create_prodigi_order
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -99,6 +103,170 @@ class PhysicalAddressValidationTests(SimpleTestCase):
             county="London",
         )
         self.assertIn("country", errors)
+
+
+class ProdigiIntegrationSecurityTests(SimpleTestCase):
+    class _ItemsManager:
+        def __init__(self, items):
+            self._items = items
+
+        def all(self):
+            return self._items
+
+    class _BadFileHandle:
+        @property
+        def url(self):
+            raise RuntimeError("signed-url-token-should-not-leak")
+
+    def _build_order(self, *, bad_asset_url=False):
+        high_res_file = (
+            self._BadFileHandle()
+            if bad_asset_url
+            else SimpleNamespace(url="https://cdn.example.com/high-res.jpg")
+        )
+        product = SimpleNamespace(
+            prodigi_sku="ECO-CAN-12X18",
+            material="eco_canvas",
+            photo=SimpleNamespace(
+                high_res_file=high_res_file
+            ),
+        )
+        item = SimpleNamespace(product=product, quantity=1)
+        return SimpleNamespace(
+            order_number="ORDER123",
+            first_name="Test Buyer",
+            email="buyer@example.com",
+            street_address1="1 Test Street",
+            street_address2="",
+            town="Dublin",
+            county="Dublin",
+            postcode="D01 F5P2",
+            country="IE",
+            shipping_method="budget",
+            items=self._ItemsManager([item]),
+        )
+
+    @override_settings(PRODIGI_CONNECT_TIMEOUT_SECONDS=3, PRODIGI_READ_TIMEOUT_SECONDS=9)
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_uses_timeout_and_sanitizes_upstream_validation_error(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.headers = {}
+        mock_response.text = (
+            '{"outcome":"ValidationFailed","failures":{"recipient.address.postalOrZipCode":'
+            '[{"code":"MustBeAValidUSZipCodeFormat","providedValue":"90210"}]}}'
+        )
+        mock_response.json.return_value = {
+            "outcome": "ValidationFailed",
+            "failures": {
+                "recipient.address.postalOrZipCode": [
+                    {"code": "MustBeAValidUSZipCodeFormat", "providedValue": "90210"},
+                ],
+                "recipient.email": [
+                    {"code": "MustNotBeEmptyOrWhitespace", "providedValue": "pii@example.com"},
+                ],
+            },
+            "traceParent": "00-test-trace",
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order())
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment failed (status=400, outcome=ValidationFailed).",
+        )
+        self.assertNotIn("pii@example.com", str(raised.exception))
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], (3.0, 9.0))
+        self.assertEqual(mock_post.call_args.kwargs["headers"]["X-API-Key"], "test_key")
+        log_output = " ".join(captured_logs.output)
+        self.assertIn("ValidationFailed", log_output)
+        self.assertIn("trace_parent=00-test-trace", log_output)
+        self.assertNotIn("pii@example.com", log_output)
+        self.assertNotIn(mock_response.text, log_output)
+
+    @patch("checkout.prodigi.requests.post", side_effect=requests.Timeout("Read timed out"))
+    def test_prodigi_timeout_raises_sanitized_error(self, mock_post):
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="ERROR") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order())
+
+        self.assertEqual(str(raised.exception), "Prodigi fulfillment timed out.")
+        self.assertNotIn("Read timed out", str(raised.exception))
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn("timed out", " ".join(captured_logs.output).lower())
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_non_json_success_response_is_sanitized(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.text = "<html>unexpected success body with internal details</html>"
+        mock_response.json.side_effect = ValueError("No JSON object could be decoded")
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order())
+
+        self.assertEqual(str(raised.exception), "Prodigi fulfillment returned an invalid response.")
+        self.assertNotIn("unexpected success body", str(raised.exception))
+        self.assertIn("non-JSON success response", " ".join(captured_logs.output))
+        self.assertNotIn("unexpected success body", " ".join(captured_logs.output))
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_asset_url_failure_logs_error_type_only(self, mock_post):
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                result = create_prodigi_order(self._build_order(bad_asset_url=True))
+
+        self.assertIsNone(result)
+        self.assertEqual(mock_post.call_count, 0)
+        logs = " ".join(captured_logs.output)
+        self.assertIn("Failed to prepare Prodigi asset URL", logs)
+        self.assertIn("error_type=RuntimeError", logs)
+        self.assertNotIn("signed-url-token-should-not-leak", logs)
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.headers = {"traceparent": 12345}
+        mock_response.json.return_value = {
+            "outcome": {"unexpected": "dict"},
+            "traceParent": {"not": "string"},
+            "failures": {
+                "recipient.address.postalOrZipCode": [
+                    {"code": {"not": "string"}},
+                    {"code": "MustBeAValidUSZipCodeFormat"},
+                ],
+                99: [
+                    {"code": "ShouldBeIgnored"},
+                ],
+            },
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order())
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment failed (status=400, outcome=unknown).",
+        )
+        log_output = " ".join(captured_logs.output)
+        self.assertIn("failure_codes=recipient.address.postalOrZipCode:MustBeAValidUSZipCodeFormat", log_output)
+        self.assertIn("trace_parent=n/a", log_output)
+        self.assertNotIn("ShouldBeIgnored", log_output)
+        self.assertNotIn("{'unexpected': 'dict'}", log_output)
 
 
 @override_settings(
