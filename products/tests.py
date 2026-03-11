@@ -190,6 +190,28 @@ class LicenseRequestTests(APITestCase):
         self.assertIn(active.id, returned_ids)
         self.assertNotIn(inactive.id, returned_ids)
 
+    def test_bag_recommendations_uses_row_offset_sampling_over_active_rows(self):
+        Photo.objects.update(is_active=False)
+        active_a = self._create_photo(is_active=True)
+        self._create_photo(is_active=False)  # gap
+        active_b = self._create_photo(is_active=True)
+        self._create_photo(is_active=False)  # gap
+        active_c = self._create_photo(is_active=True)
+        active_d = self._create_photo(is_active=True)
+        active_e = self._create_photo(is_active=True)
+        active_ids = [active_a.id, active_b.id, active_c.id, active_d.id, active_e.id]
+
+        with patch("products.views.random.randint", return_value=3) as mocked_randint:
+            response = self.client.get(reverse("bag-recommendations"))
+
+        self.assertEqual(response.status_code, 200)
+        mocked_randint.assert_called_once_with(0, len(active_ids) - 1)
+        # Start at offset 3 => D, E, then wrap to A, B
+        self.assertEqual(
+            [item["id"] for item in response.data],
+            [active_d.id, active_e.id, active_a.id, active_b.id],
+        )
+
     def test_license_request_message_max_length(self):
         payload = self._payload(message="a" * 3000)
         response = self.client.post(self.url, payload, format="json")

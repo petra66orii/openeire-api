@@ -4,7 +4,7 @@ from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse
 from django.db import transaction
-from django.db.models import Q, Exists, OuterRef, Min, Max, Case, When, IntegerField
+from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
@@ -439,34 +439,30 @@ class ProductReviewListCreateView(generics.ListCreateAPIView):
     
 class ShoppingBagRecommendationsView(APIView):
     """
-    Returns 4 random photos to display as recommendations 
+    Returns up to 4 active photos to display as recommendations
     on the Shopping Bag / Cart page.
     """
     permission_classes = [AllowAny]
     RECOMMENDATION_LIMIT = 4
 
     def _pick_recommendation_ids(self, queryset, limit):
-        bounds = queryset.aggregate(min_id=Min('id'), max_id=Max('id'))
-        min_id = bounds.get('min_id')
-        max_id = bounds.get('max_id')
-        if min_id is None or max_id is None:
+        total = queryset.count()
+        if total == 0:
             return []
+        if total <= limit:
+            return list(queryset.order_by('-created_at').values_list('id', flat=True))
 
-        # Random anchor avoids expensive ORDER BY RANDOM() on large tables.
-        anchor = random.randint(min_id, max_id)
+        # Random start index is unbiased across active rows and avoids
+        # expensive ORDER BY RANDOM() on large tables.
+        start_index = random.randint(0, total - 1)
+        ordered_ids = queryset.order_by('id').values_list('id', flat=True)
         ids = list(
-            queryset
-            .filter(id__gte=anchor)
-            .order_by('id')
-            .values_list('id', flat=True)[:limit]
+            ordered_ids[start_index:start_index + limit]
         )
         if len(ids) < limit:
             ids.extend(
                 list(
-                    queryset
-                    .filter(id__lt=anchor)
-                    .order_by('id')
-                    .values_list('id', flat=True)[: limit - len(ids)]
+                    ordered_ids[: limit - len(ids)]
                 )
             )
         return ids
