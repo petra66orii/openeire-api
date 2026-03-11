@@ -1,7 +1,10 @@
 from django.contrib.auth.models import User
 from django.core import mail
+from django.db import IntegrityError
+from django.db import transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from unittest.mock import patch
 
 
 @override_settings(
@@ -70,51 +73,54 @@ class EmailUniquenessHardeningTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("email", response.json())
 
-    def test_password_reset_ambiguous_duplicate_email_returns_generic_success(self):
+    def test_db_enforces_case_insensitive_email_uniqueness(self):
         User.objects.create_user(
-            username="dup1",
+            username="unique1",
             email="dup@example.com",
             password="StrongPass123!",
             is_active=True,
         )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                User.objects.create_user(
+                    username="unique2",
+                    email="DUP@example.com",
+                    password="StrongPass123!",
+                    is_active=True,
+                )
+
+    def test_db_enforces_trimmed_case_insensitive_email_uniqueness(self):
         User.objects.create_user(
-            username="dup2",
-            email="dup@example.com",
+            username="trimunique1",
+            email="trimdup@example.com ",
             password="StrongPass123!",
             is_active=True,
         )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                User.objects.create_user(
+                    username="trimunique2",
+                    email=" TRIMDUP@example.com",
+                    password="StrongPass123!",
+                    is_active=True,
+                )
 
-        response = self.client.post(self.reset_url, data={"email": "DUP@example.com"})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json().get("message"), "Password reset link sent.")
-        self.assertEqual(len(mail.outbox), 0)
+    @patch("userprofiles.serializers.User.save", side_effect=IntegrityError("duplicate email"))
+    def test_register_handles_unknown_integrity_error_cleanly(self, _mock_save):
+        payload = {
+            "username": "raceuser",
+            "email": "race@example.com",
+            "password": "StrongPass123!",
+        }
+        response = self.client.post(self.register_url, data=payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("non_field_errors", response.json())
 
     def test_password_reset_unknown_email_returns_generic_success(self):
         response = self.client.post(self.reset_url, data={"email": "missing@example.com"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json().get("message"), "Password reset link sent.")
-        self.assertEqual(len(mail.outbox), 0)
-
-    def test_resend_verification_ambiguous_duplicate_email_returns_generic_success(self):
-        User.objects.create_user(
-            username="dupv1",
-            email="verifydup@example.com",
-            password="StrongPass123!",
-            is_active=False,
-        )
-        User.objects.create_user(
-            username="dupv2",
-            email="verifydup@example.com",
-            password="StrongPass123!",
-            is_active=False,
-        )
-
-        response = self.client.post(self.resend_url, data={"email": "VERIFYDUP@example.com"})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json().get("message"), "Verification email sent.")
         self.assertEqual(len(mail.outbox), 0)
 
     def test_resend_verification_unknown_email_returns_generic_success(self):
@@ -160,26 +166,3 @@ class EmailUniquenessHardeningTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.json())
         self.assertIn("refresh", response.json())
-
-    def test_login_with_ambiguous_duplicate_email_fails_cleanly(self):
-        User.objects.create_user(
-            username="duplogin1",
-            email="login-dup@example.com",
-            password="StrongPass123!",
-            is_active=True,
-        )
-        User.objects.create_user(
-            username="duplogin2",
-            email="login-dup@example.com",
-            password="StrongPass123!",
-            is_active=True,
-        )
-
-        response = self.client.post(
-            self.login_url,
-            data={"username": "LOGIN-DUP@example.com", "password": "StrongPass123!"},
-        )
-
-        self.assertEqual(response.status_code, 400)
-        body = response.json()
-        self.assertTrue("detail" in body or "non_field_errors" in body)
