@@ -197,6 +197,7 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
 
         self.assertEqual(str(raised.exception), "Prodigi fulfillment timed out.")
         self.assertNotIn("Read timed out", str(raised.exception))
+        self.assertTrue(raised.exception.__suppress_context__)
         self.assertEqual(mock_post.call_count, 1)
         self.assertIn("timed out", " ".join(captured_logs.output).lower())
 
@@ -231,6 +232,41 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         self.assertIn("Failed to prepare Prodigi asset URL", logs)
         self.assertIn("error_type=RuntimeError", logs)
         self.assertNotIn("signed-url-token-should-not-leak", logs)
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.headers = {"traceparent": 12345}
+        mock_response.json.return_value = {
+            "outcome": {"unexpected": "dict"},
+            "traceParent": {"not": "string"},
+            "failures": {
+                "recipient.address.postalOrZipCode": [
+                    {"code": {"not": "string"}},
+                    {"code": "MustBeAValidUSZipCodeFormat"},
+                ],
+                99: [
+                    {"code": "ShouldBeIgnored"},
+                ],
+            },
+        }
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order())
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment failed (status=400, outcome=unknown).",
+        )
+        log_output = " ".join(captured_logs.output)
+        self.assertIn("failure_codes=recipient.address.postalOrZipCode:MustBeAValidUSZipCodeFormat", log_output)
+        self.assertIn("trace_parent=n/a", log_output)
+        self.assertNotIn("ShouldBeIgnored", log_output)
+        self.assertNotIn("{'unexpected': 'dict'}", log_output)
 
 
 @override_settings(

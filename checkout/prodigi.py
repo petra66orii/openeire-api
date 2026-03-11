@@ -19,6 +19,8 @@ def _parse_prodigi_error(response: requests.Response) -> Tuple[Optional[str], Op
     """Extract safe diagnostic fields from a Prodigi error response."""
     outcome = None
     trace_parent = response.headers.get("traceparent")
+    if not isinstance(trace_parent, str):
+        trace_parent = None
     failure_codes: List[str] = []
 
     try:
@@ -27,18 +29,25 @@ def _parse_prodigi_error(response: requests.Response) -> Tuple[Optional[str], Op
         payload = {}
 
     if isinstance(payload, dict):
-        outcome = payload.get("outcome")
-        trace_parent = trace_parent or payload.get("traceParent")
+        payload_outcome = payload.get("outcome")
+        if isinstance(payload_outcome, str):
+            outcome = payload_outcome
+
+        payload_trace_parent = payload.get("traceParent")
+        if not trace_parent and isinstance(payload_trace_parent, str):
+            trace_parent = payload_trace_parent
         failures = payload.get("failures")
         if isinstance(failures, dict):
             for field, entries in failures.items():
+                if not isinstance(field, str):
+                    continue
                 if not isinstance(entries, list):
                     continue
                 for entry in entries:
                     if not isinstance(entry, dict):
                         continue
                     code = entry.get("code")
-                    if code:
+                    if isinstance(code, str) and code:
                         failure_codes.append(f"{field}:{code}")
 
     return outcome, trace_parent, failure_codes[:10]
@@ -142,10 +151,10 @@ def create_prodigi_order(order):
         )
     except requests.Timeout:
         logger.error("Prodigi request timed out (order=%s)", order.order_number)
-        raise RuntimeError("Prodigi fulfillment timed out.")
+        raise RuntimeError("Prodigi fulfillment timed out.") from None
     except requests.RequestException:
         logger.exception("Prodigi request failed (order=%s)", order.order_number)
-        raise RuntimeError("Prodigi fulfillment request failed.")
+        raise RuntimeError("Prodigi fulfillment request failed.") from None
 
     if 200 <= response.status_code < 300:
         try:
@@ -156,7 +165,7 @@ def create_prodigi_order(order):
                 order.order_number,
                 response.status_code,
             )
-            raise RuntimeError("Prodigi fulfillment returned an invalid response.")
+            raise RuntimeError("Prodigi fulfillment returned an invalid response.") from None
         logger.info(
             "Prodigi order created successfully (order=%s, prodigi_order_id=%s)",
             order.order_number,
