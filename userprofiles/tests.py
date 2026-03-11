@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.core import mail
 from django.db import IntegrityError
+from django.db import transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from unittest.mock import patch
@@ -80,12 +81,13 @@ class EmailUniquenessHardeningTests(TestCase):
             is_active=True,
         )
         with self.assertRaises(IntegrityError):
-            User.objects.create_user(
-                username="unique2",
-                email="DUP@example.com",
-                password="StrongPass123!",
-                is_active=True,
-            )
+            with transaction.atomic():
+                User.objects.create_user(
+                    username="unique2",
+                    email="DUP@example.com",
+                    password="StrongPass123!",
+                    is_active=True,
+                )
 
     def test_db_enforces_trimmed_case_insensitive_email_uniqueness(self):
         User.objects.create_user(
@@ -95,12 +97,13 @@ class EmailUniquenessHardeningTests(TestCase):
             is_active=True,
         )
         with self.assertRaises(IntegrityError):
-            User.objects.create_user(
-                username="trimunique2",
-                email=" TRIMDUP@example.com",
-                password="StrongPass123!",
-                is_active=True,
-            )
+            with transaction.atomic():
+                User.objects.create_user(
+                    username="trimunique2",
+                    email=" TRIMDUP@example.com",
+                    password="StrongPass123!",
+                    is_active=True,
+                )
 
     @patch("userprofiles.serializers.User.save", side_effect=IntegrityError("duplicate email"))
     def test_register_handles_unknown_integrity_error_cleanly(self, _mock_save):
