@@ -6,6 +6,7 @@ from pathlib import Path
 
 from django.core.cache import cache
 from django.core import mail
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
 from django.contrib.auth.models import User
@@ -97,6 +98,33 @@ class LicenseRequestTests(APITestCase):
         payload["email"] = "test+final@example.com"
         response = self.client.post(self.url, payload, format="json")
         self.assertEqual(response.status_code, 429)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="noreply@example.com",
+    )
+    def test_gallery_request_endpoint_throttles(self):
+        url = reverse("gallery_request")
+        limit = int(settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["gallery_access_request"].split("/")[0])
+
+        for i in range(limit):
+            response = self.client.post(url, {"email": f"throttle{i}@example.com"}, format="json")
+            self.assertEqual(response.status_code, 200)
+
+        blocked = self.client.post(url, {"email": "throttle-final@example.com"}, format="json")
+        self.assertEqual(blocked.status_code, 429)
+
+    def test_gallery_verify_endpoint_throttles(self):
+        access = GalleryAccess.objects.create(email="verify-throttle@example.com")
+        url = reverse("gallery_verify")
+        limit = int(settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["gallery_access_verify"].split("/")[0])
+
+        for _ in range(limit):
+            response = self.client.post(url, {"access_code": access.access_code}, format="json")
+            self.assertEqual(response.status_code, 200)
+
+        blocked = self.client.post(url, {"access_code": access.access_code}, format="json")
+        self.assertEqual(blocked.status_code, 429)
 
     def test_license_request_message_max_length(self):
         payload = self._payload(message="a" * 3000)
