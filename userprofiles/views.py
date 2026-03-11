@@ -29,6 +29,11 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
+
+def get_frontend_url():
+    return str(getattr(settings, "FRONTEND_URL", "http://localhost:5173")).rstrip("/")
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = (AllowAny,)
@@ -44,7 +49,7 @@ class RegisterView(generics.CreateAPIView):
         token = str(refresh.access_token)
         
         # --- Email Sending Logic ---
-        frontend_url = 'http://localhost:5173'
+        frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         
         subject = 'Welcome to OpenEire Studios! Verify Your Email'
@@ -114,12 +119,31 @@ class PasswordResetRequestView(generics.GenericAPIView):
 
         # Generate a short-lived token for the user
         refresh = RefreshToken.for_user(user)
-        _token = str(refresh.access_token)
-        
-        # TODO: Send an email with a link like /password-reset/confirm/{token}
-        logger.info("Password reset requested for user_id=%s", user.id)
-        
-        return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
+        token = str(refresh.access_token)
+
+        frontend_url = get_frontend_url()
+        reset_link = f"{frontend_url}/password-reset/confirm/{token}"
+        subject = "OpenEire Studios - Reset Your Password"
+        context = {
+            "username": user.username,
+            "reset_link": reset_link,
+        }
+        html_message = render_to_string("emails/password_email_reset.html", context)
+        plain_message = strip_tags(html_message)
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                html_message=html_message,
+            )
+            logger.info("Password reset email sent for user_id=%s", user.id)
+            return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
+        except Exception:
+            logger.exception("Failed to send password reset email for user_id=%s", user.id)
+            return Response({"error": "Failed to send password reset email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PasswordResetConfirmView(generics.GenericAPIView):
@@ -176,7 +200,7 @@ class ResendVerificationView(generics.GenericAPIView):
         token = str(refresh.access_token)
 
         # Resend the email (reuse logic from RegisterView)
-        frontend_url = 'http://localhost:5173'
+        frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         subject = 'Verify Your OpenEire Studios Email Address'
         context = {'username': user.username, 'verification_link': verification_link}
@@ -247,7 +271,7 @@ class ChangeEmailView(generics.UpdateAPIView):
             refresh = RefreshToken.for_user(user)
             token = str(refresh.access_token)
             
-            frontend_url = 'http://localhost:5173'
+            frontend_url = get_frontend_url()
             verification_link = f"{frontend_url}/verify-email/confirm/{token}"
             
             subject = 'Please Verify Your New Email Address'
