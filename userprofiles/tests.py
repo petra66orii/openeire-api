@@ -124,6 +124,43 @@ class EmailUniquenessHardeningTests(TestCase):
         self.assertEqual(response.json().get("message"), "Verification email sent.")
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_resend_verification_active_user_returns_generic_success_without_email(self):
+        User.objects.create_user(
+            username="activeuser",
+            email="active@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+
+        response = self.client.post(self.resend_url, data={"email": "ACTIVE@example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("message"), "Verification email sent.")
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_login_email_identifier_falls_back_to_username_auth(self):
+        User.objects.create_user(
+            username="emailstyle@example.com",
+            email="owner@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        User.objects.create_user(
+            username="otheruser",
+            email="emailstyle@example.com",
+            password="DifferentPass456!",
+            is_active=True,
+        )
+
+        response = self.client.post(
+            self.login_url,
+            data={"username": "emailstyle@example.com", "password": "StrongPass123!"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        self.assertIn("refresh", response.json())
+
     def test_login_with_ambiguous_duplicate_email_fails_cleanly(self):
         User.objects.create_user(
             username="duplogin1",

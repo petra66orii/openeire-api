@@ -138,6 +138,7 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         user = None
         request = self.context.get('request')
         normalized_identifier = (identifier or "").strip()
+        allow_username_fallback = True
 
         # If identifier looks like an email, enforce unique-match semantics first.
         if "@" in normalized_identifier:
@@ -152,16 +153,11 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
                 if user_by_email:
                     user = user_by_email
             elif len(candidates) > 1:
-                user = None
-            else:
-                user_by_username = authenticate(
-                    request=request,
-                    username=normalized_identifier,
-                    password=password,
-                )
-                if user_by_username:
-                    user = user_by_username
-        else:
+                allow_username_fallback = False
+
+        # Always fall back to username authentication.
+        # This preserves support for email-shaped usernames.
+        if user is None and allow_username_fallback:
             user_by_username = authenticate(
                 request=request,
                 username=normalized_identifier,
