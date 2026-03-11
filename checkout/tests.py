@@ -672,8 +672,9 @@ class CreatePaymentIntentSecurityTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+        self.assertIn("shipping_details", response.data)
         self.assertEqual(
-            response.data["shipping_details"],
+            response.data["shipping_details"]["address"],
             "Invalid shipping_details payload. Expected an object.",
         )
         mock_create.assert_not_called()
@@ -701,6 +702,29 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
         self.assertEqual(response.data["error"], "Invalid cart data provided.")
         self.assertNotIn("product_id", json.dumps(response.data))
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_non_object_cart_item_returns_sanitized_400(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                "not-an-object",
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        self.assertEqual(
+            response.data["error"],
+            "Invalid cart item payload. Expected an object.",
+        )
         mock_create.assert_not_called()
 
     @patch("checkout.views.stripe.PaymentIntent.create")

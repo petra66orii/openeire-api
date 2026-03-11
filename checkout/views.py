@@ -51,17 +51,21 @@ class CreatePaymentIntentView(APIView):
         # NEW: Get the selected shipping method from the frontend (default to budget)
         shipping_method = request.data.get('shipping_method', 'budget')
         
-        if not cart:
+        if cart is None:
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(cart, list):
             return Response(
                 {"error": "Invalid cart payload. Expected a list of cart items."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if len(cart) == 0:
+            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
         if shipping_details is not None and not isinstance(shipping_details, dict):
             return Response(
                 {
-                    "shipping_details": "Invalid shipping_details payload. Expected an object."
+                    "shipping_details": {
+                        "address": "Invalid shipping_details payload. Expected an object."
+                    }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -137,7 +141,10 @@ class CreatePaymentIntentView(APIView):
             for item in cart:
                 if not isinstance(item, dict):
                     return Response(
-                        {"error": "Invalid cart item payload. Expected an object."},
+                        {
+                            "code": "INVALID_CART_PAYLOAD",
+                            "error": "Invalid cart item payload. Expected an object.",
+                        },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 product_id = item['product_id']
@@ -184,7 +191,14 @@ class CreatePaymentIntentView(APIView):
                         )
                         shipping_cost += float(shipping_rule.cost) * quantity
                     except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
-                        print(f"Warning: No shipping rule for {product_instance.material} {product_instance.size} to {shipping_country}")
+                        logger.warning(
+                            "No shipping rule found for checkout item "
+                            "(material=%s, size=%s, country=%s, method=%s)",
+                            product_instance.material,
+                            product_instance.size,
+                            shipping_country,
+                            shipping_method,
+                        )
                         # You could add a fallback flat rate here if desired
 
         except (KeyError, TypeError, ValueError, ObjectDoesNotExist) as e:
