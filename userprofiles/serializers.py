@@ -7,6 +7,11 @@ from django_countries.serializer_fields import CountryField
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+
+def _normalize_email(value):
+    return str(value).strip().lower()
+
+
 class UserSerializer(serializers.ModelSerializer):
     """
     Serializer for the User model, specifically for registration.
@@ -24,9 +29,10 @@ class UserSerializer(serializers.ModelSerializer):
         """
         Check that the email is not already in use.
         """
-        if User.objects.filter(username__iexact=value).exists():
+        normalized = _normalize_email(value)
+        if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError("A user with this email already exists.")
-        return value
+        return normalized
 
     def validate_username(self, value):
         """
@@ -102,10 +108,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
 # --- (Password Reset Serializers remain the same) ---
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+
     def validate_email(self, value):
-        try: User.objects.get(email=value)
-        except User.DoesNotExist: raise serializers.ValidationError("User with this email does not exist.")
-        return value
+        return _normalize_email(value)
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, required=True, validators=[django_validate_password])
@@ -119,13 +124,7 @@ class ResendVerificationSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        try:
-            user = User.objects.get(email=value)
-            if user.is_active:
-                raise serializers.ValidationError("This account is already verified.")
-        except User.DoesNotExist:
-            raise serializers.ValidationError("No account found with this email address.")
-        return value
+        return _normalize_email(value)
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
@@ -137,22 +136,35 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         password = attrs.get('password')
 
         user = None
-        # Try authenticating with the identifier directly as username
-        user_by_username = authenticate(request=self.context.get('request'), username=identifier, password=password)
+        request = self.context.get('request')
+        normalized_identifier = (identifier or "").strip()
+        allow_username_fallback = True
 
-        if user_by_username:
-            user = user_by_username
-        else:
-            # If username auth failed, try finding the user by email
-            try:
-                user_obj = User.objects.get(email__iexact=identifier)
-                # Then authenticate using the found user's actual username
-                user_by_email = authenticate(request=self.context.get('request'), username=user_obj.username, password=password)
+        # If identifier looks like an email, enforce unique-match semantics first.
+        if "@" in normalized_identifier:
+            candidates = list(User.objects.filter(email__iexact=normalized_identifier).only("username")[:2])
+            if len(candidates) == 1:
+                user_obj = candidates[0]
+                user_by_email = authenticate(
+                    request=request,
+                    username=user_obj.username,
+                    password=password,
+                )
                 if user_by_email:
                     user = user_by_email
-            except User.DoesNotExist:
-                # No user with this email exists, authentication fails
-                pass
+            elif len(candidates) > 1:
+                allow_username_fallback = False
+
+        # Always fall back to username authentication.
+        # This preserves support for email-shaped usernames.
+        if user is None and allow_username_fallback:
+            user_by_username = authenticate(
+                request=request,
+                username=normalized_identifier,
+                password=password,
+            )
+            if user_by_username:
+                user = user_by_username
 
         # If no user was found by either method or if the user is inactive
         if not user or not user.is_active:
@@ -206,9 +218,10 @@ class ChangeEmailSerializer(serializers.Serializer):
         """
         Check that the new email is not already in use.
         """
-        if User.objects.filter(email__iexact=value).exists():
+        normalized = _normalize_email(value)
+        if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError("This email is already in use by another account.")
-        return value
+        return normalized
 
     def validate_current_password(self, value):
         """

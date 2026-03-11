@@ -110,12 +110,20 @@ class PasswordResetRequestView(generics.GenericAPIView):
     """
     serializer_class = PasswordResetRequestSerializer
     permission_classes = [AllowAny]
+    GENERIC_SUCCESS_MESSAGE = "Password reset link sent."
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
-        user = User.objects.get(email=email)
+        email = serializer.validated_data["email"]
+        matches = list(User.objects.filter(email__iexact=email).only("id", "username", "email", "is_active")[:2])
+
+        if len(matches) != 1:
+            if len(matches) > 1:
+                logger.warning("Password reset skipped due to duplicate email records.")
+            return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
+
+        user = matches[0]
 
         # Generate a short-lived token for the user
         refresh = RefreshToken.for_user(user)
@@ -140,10 +148,9 @@ class PasswordResetRequestView(generics.GenericAPIView):
                 html_message=html_message,
             )
             logger.info("Password reset email sent for user_id=%s", user.id)
-            return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
         except Exception:
             logger.exception("Failed to send password reset email for user_id=%s", user.id)
-            return Response({"error": "Failed to send password reset email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
 
 
 class PasswordResetConfirmView(generics.GenericAPIView):
@@ -188,12 +195,22 @@ class ResendVerificationView(generics.GenericAPIView):
     """
     serializer_class = ResendVerificationSerializer
     permission_classes = [AllowAny]
+    GENERIC_SUCCESS_MESSAGE = "Verification email sent."
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
-        user = User.objects.get(email=email)
+        email = serializer.validated_data["email"]
+        matches = list(User.objects.filter(email__iexact=email).only("id", "username", "email", "is_active")[:2])
+
+        if len(matches) != 1:
+            if len(matches) > 1:
+                logger.warning("Resend verification skipped due to duplicate email records.")
+            return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
+
+        user = matches[0]
+        if user.is_active:
+            return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
 
         # Generate a new token
         refresh = RefreshToken.for_user(user)
@@ -212,10 +229,9 @@ class ResendVerificationView(generics.GenericAPIView):
         try:
             send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
             logger.info("Verification email resent for user_id=%s", user.id)
-            return Response({"message": "Verification email sent."}, status=status.HTTP_200_OK)
         except Exception:
             logger.exception("Failed to resend verification email for user_id=%s", user.id)
-            return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
 
 class MyTokenObtainPairView(TokenObtainPairView):
     """
