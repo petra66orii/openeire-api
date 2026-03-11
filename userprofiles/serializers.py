@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.contrib.auth.password_validation import validate_password as django_validate_password
 from .models import UserProfile
 from django_countries.serializer_fields import CountryField
@@ -51,7 +51,21 @@ class UserSerializer(serializers.ModelSerializer):
         )
         user.set_password(validated_data['password'])
         user.is_active = False
-        user.save()
+        try:
+            user.save()
+        except IntegrityError:
+            errors = {}
+            email = validated_data.get("email")
+            username = validated_data.get("username")
+            if email and User.objects.filter(email__iexact=email).exists():
+                errors["email"] = "A user with this email already exists."
+            if username and User.objects.filter(username__iexact=username).exists():
+                errors["username"] = "A user with that username already exists."
+            if not errors:
+                errors["non_field_errors"] = [
+                    "Could not create account due to a data integrity conflict. Please retry."
+                ]
+            raise serializers.ValidationError(errors)
         return user
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -97,9 +111,25 @@ class UserProfileSerializer(serializers.ModelSerializer):
         
         # Loop through whatever user fields were sent (username, email, etc.)
         for attr, value in user_data.items():
+            if attr == "email":
+                value = _normalize_email(value)
             setattr(user, attr, value)
-        
-        user.save()
+
+        try:
+            user.save()
+        except IntegrityError:
+            errors = {}
+            email = user_data.get("email")
+            username = user_data.get("username")
+            if email and User.objects.filter(email__iexact=_normalize_email(email)).exclude(pk=user.pk).exists():
+                errors["email"] = "This email is already in use by another account."
+            if username and User.objects.filter(username__iexact=username).exclude(pk=user.pk).exists():
+                errors["username"] = "A user with that username already exists."
+            if not errors:
+                errors["non_field_errors"] = [
+                    "Could not update profile due to a data integrity conflict. Please retry."
+                ]
+            raise serializers.ValidationError(errors)
 
         # 3. Update UserProfile fields using the default Django logic
         # Since 'user' data is gone from validated_data, this won't crash.
@@ -240,7 +270,12 @@ class ChangeEmailSerializer(serializers.Serializer):
         
         # We also set the user to 'inactive' to force re-verification of the new email.
         instance.is_active = False 
-        instance.save(update_fields=['email', 'username', 'is_active'])
+        try:
+            instance.save(update_fields=['email', 'username', 'is_active'])
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"new_email": "This email is already in use by another account."}
+            )
         return instance
 
     def create(self, validated_data):
