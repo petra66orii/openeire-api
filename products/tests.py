@@ -3,6 +3,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.core.cache import cache
 from django.core import mail
@@ -149,6 +150,66 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(
             invalid_response.json(),
             {"error": "Invalid or expired code"},
+        )
+
+    def test_bag_recommendations_returns_up_to_four_active_photos(self):
+        for _ in range(5):
+            self._create_photo(is_active=True)
+        inactive = self._create_photo(is_active=False)
+
+        url = reverse("bag-recommendations")
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreater(len(response.data), 0)
+        self.assertLessEqual(len(response.data), 4)
+        returned_ids = {item["id"] for item in response.data}
+        self.assertNotIn(inactive.id, returned_ids)
+
+    def test_bag_recommendations_returns_empty_when_no_active_photos(self):
+        Photo.objects.update(is_active=False)
+        url = reverse("bag-recommendations")
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_bag_recommendations_filters_inactive_ids_from_selected_pool(self):
+        active = self._create_photo(is_active=True)
+        inactive = self._create_photo(is_active=False)
+        url = reverse("bag-recommendations")
+
+        with patch(
+            "products.views.ShoppingBagRecommendationsView._pick_recommendation_ids",
+            return_value=[active.id, inactive.id],
+        ):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        returned_ids = {item["id"] for item in response.data}
+        self.assertIn(active.id, returned_ids)
+        self.assertNotIn(inactive.id, returned_ids)
+
+    def test_bag_recommendations_uses_row_offset_sampling_over_active_rows(self):
+        Photo.objects.update(is_active=False)
+        active_a = self._create_photo(is_active=True)
+        self._create_photo(is_active=False)  # gap
+        active_b = self._create_photo(is_active=True)
+        self._create_photo(is_active=False)  # gap
+        active_c = self._create_photo(is_active=True)
+        active_d = self._create_photo(is_active=True)
+        active_e = self._create_photo(is_active=True)
+        active_ids = [active_a.id, active_b.id, active_c.id, active_d.id, active_e.id]
+
+        with patch("products.views.random.randint", return_value=3) as mocked_randint:
+            response = self.client.get(reverse("bag-recommendations"))
+
+        self.assertEqual(response.status_code, 200)
+        mocked_randint.assert_called_once_with(0, len(active_ids) - 1)
+        # Start at offset 3 => D, E, then wrap to A, B
+        self.assertEqual(
+            [item["id"] for item in response.data],
+            [active_d.id, active_e.id, active_a.id, active_b.id],
         )
 
     def test_license_request_message_max_length(self):

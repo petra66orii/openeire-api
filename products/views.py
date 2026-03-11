@@ -1,9 +1,10 @@
 import os
+import random
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse
 from django.db import transaction
-from django.db.models import Q, Exists, OuterRef, Min
+from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField
 from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
@@ -438,16 +439,52 @@ class ProductReviewListCreateView(generics.ListCreateAPIView):
     
 class ShoppingBagRecommendationsView(APIView):
     """
-    Returns 4 random photos to display as recommendations 
+    Returns up to 4 active photos to display as recommendations
     on the Shopping Bag / Cart page.
     """
     permission_classes = [AllowAny]
+    RECOMMENDATION_LIMIT = 4
+
+    def _pick_recommendation_ids(self, queryset, limit):
+        total = queryset.count()
+        if total == 0:
+            return []
+        if total <= limit:
+            return list(queryset.order_by('-created_at').values_list('id', flat=True))
+
+        # Random start index is unbiased across active rows and avoids
+        # expensive ORDER BY RANDOM() on large tables.
+        start_index = random.randint(0, total - 1)
+        ordered_ids = queryset.order_by('id').values_list('id', flat=True)
+        ids = list(
+            ordered_ids[start_index:start_index + limit]
+        )
+        if len(ids) < limit:
+            ids.extend(
+                list(
+                    ordered_ids[: limit - len(ids)]
+                )
+            )
+        return ids
 
     def get(self, request):
-        photos = Photo.objects.filter(is_active=True).annotate(
-            starting_price=Min('variants__price')
-        ).order_by('?')[:4]
-        
+        active_photos = Photo.objects.filter(is_active=True)
+        selected_ids = self._pick_recommendation_ids(active_photos, self.RECOMMENDATION_LIMIT)
+
+        if not selected_ids:
+            return Response([])
+
+        preserved_order = Case(
+            *[When(id=photo_id, then=position) for position, photo_id in enumerate(selected_ids)],
+            output_field=IntegerField(),
+        )
+        photos = (
+            Photo.objects
+            .filter(id__in=selected_ids, is_active=True)
+            .annotate(starting_price=Min('variants__price'))
+            .order_by(preserved_order)
+        )
+
         serializer = PhotoListSerializer(photos, many=True)
         return Response(serializer.data)
 
