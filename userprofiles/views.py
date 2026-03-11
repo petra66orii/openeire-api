@@ -1,4 +1,5 @@
 import jwt
+import logging
 from django.conf import settings
 from rest_framework import generics, status, serializers
 from rest_framework.permissions import AllowAny
@@ -26,6 +27,13 @@ from .serializers import (
     DeleteAccountSerializer,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def get_frontend_url():
+    return str(getattr(settings, "FRONTEND_URL", "http://localhost:5173")).rstrip("/")
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = (AllowAny,)
@@ -41,7 +49,7 @@ class RegisterView(generics.CreateAPIView):
         token = str(refresh.access_token)
         
         # --- Email Sending Logic ---
-        frontend_url = 'http://localhost:5173'
+        frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         
         subject = 'Welcome to OpenEire Studios! Verify Your Email'
@@ -57,9 +65,9 @@ class RegisterView(generics.CreateAPIView):
 
         try:
             send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
-            print(f"--- Verification email sent to {user.email} ---")
-        except Exception as e:
-            print(f"--- FAILED to send email: {e} ---")
+            logger.info("Verification email sent for user_id=%s", user.id)
+        except Exception:
+            logger.exception("Failed to send verification email for user_id=%s", user.id)
         # --- End of Email Sending Logic ---
 
         headers = self.get_success_headers(serializer.data)
@@ -112,11 +120,30 @@ class PasswordResetRequestView(generics.GenericAPIView):
         # Generate a short-lived token for the user
         refresh = RefreshToken.for_user(user)
         token = str(refresh.access_token)
-        
-        # TODO: Send an email with a link like /password-reset/confirm/{token}
-        print(f"--- PASSWORD RESET TOKEN FOR {user.email}: {token} ---")
-        
-        return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
+
+        frontend_url = get_frontend_url()
+        reset_link = f"{frontend_url}/password-reset/confirm/{token}"
+        subject = "OpenEire Studios - Reset Your Password"
+        context = {
+            "username": user.username,
+            "reset_link": reset_link,
+        }
+        html_message = render_to_string("emails/password_email_reset.html", context)
+        plain_message = strip_tags(html_message)
+
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                html_message=html_message,
+            )
+            logger.info("Password reset email sent for user_id=%s", user.id)
+            return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
+        except Exception:
+            logger.exception("Failed to send password reset email for user_id=%s", user.id)
+            return Response({"error": "Failed to send password reset email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PasswordResetConfirmView(generics.GenericAPIView):
@@ -173,7 +200,7 @@ class ResendVerificationView(generics.GenericAPIView):
         token = str(refresh.access_token)
 
         # Resend the email (reuse logic from RegisterView)
-        frontend_url = 'http://localhost:5173'
+        frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         subject = 'Verify Your OpenEire Studios Email Address'
         context = {'username': user.username, 'verification_link': verification_link}
@@ -184,10 +211,10 @@ class ResendVerificationView(generics.GenericAPIView):
 
         try:
             send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
-            print(f"--- Re-sent verification email to {user.email} ---")
+            logger.info("Verification email resent for user_id=%s", user.id)
             return Response({"message": "Verification email sent."}, status=status.HTTP_200_OK)
-        except Exception as e:
-            print(f"--- FAILED to resend email: {e} ---")
+        except Exception:
+            logger.exception("Failed to resend verification email for user_id=%s", user.id)
             return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class MyTokenObtainPairView(TokenObtainPairView):
@@ -244,7 +271,7 @@ class ChangeEmailView(generics.UpdateAPIView):
             refresh = RefreshToken.for_user(user)
             token = str(refresh.access_token)
             
-            frontend_url = 'http://localhost:5173'
+            frontend_url = get_frontend_url()
             verification_link = f"{frontend_url}/verify-email/confirm/{token}"
             
             subject = 'Please Verify Your New Email Address'
@@ -254,8 +281,8 @@ class ChangeEmailView(generics.UpdateAPIView):
             
             try:
                 send_mail(subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email], html_message=html_message)
-            except Exception as e:
-                print(f"--- FAILED to send re-verification email: {e} ---")
+            except Exception:
+                logger.exception("Failed to send re-verification email for user_id=%s", user.id)
                 # We don't fail the whole request, just log the email error
             
             return Response({"message": "Email updated successfully. Please check your new email address to re-verify your account."}, status=status.HTTP_200_OK)
@@ -283,11 +310,9 @@ class GoogleLogin(SocialLoginView):
     client_class = OAuth2Client
 
     def post(self, request, *args, **kwargs):
-        print("--- GOOGLE LOGIN DEBUG ---")
-        print(f"Request Data: {request.data}")
         response = super().post(request, *args, **kwargs)
         if response.status_code != 200:
-             print(f"❌ FAILED: {response.data}")
+            logger.warning("Google login failed with status_code=%s", response.status_code)
         return response
 
 class CountryListView(APIView):
