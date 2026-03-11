@@ -1,4 +1,5 @@
 import jwt
+import logging
 from django.conf import settings
 from rest_framework import generics, status, serializers
 from rest_framework.permissions import AllowAny
@@ -25,6 +26,8 @@ from .serializers import (
     ChangeEmailSerializer,
     DeleteAccountSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -57,9 +60,9 @@ class RegisterView(generics.CreateAPIView):
 
         try:
             send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
-            print(f"--- Verification email sent to {user.email} ---")
-        except Exception as e:
-            print(f"--- FAILED to send email: {e} ---")
+            logger.info("Verification email sent for user_id=%s", user.id)
+        except Exception:
+            logger.exception("Failed to send verification email for user_id=%s", user.id)
         # --- End of Email Sending Logic ---
 
         headers = self.get_success_headers(serializer.data)
@@ -111,10 +114,10 @@ class PasswordResetRequestView(generics.GenericAPIView):
 
         # Generate a short-lived token for the user
         refresh = RefreshToken.for_user(user)
-        token = str(refresh.access_token)
+        _token = str(refresh.access_token)
         
         # TODO: Send an email with a link like /password-reset/confirm/{token}
-        print(f"--- PASSWORD RESET TOKEN FOR {user.email}: {token} ---")
+        logger.info("Password reset requested for user_id=%s", user.id)
         
         return Response({"message": "Password reset link sent."}, status=status.HTTP_200_OK)
 
@@ -184,10 +187,10 @@ class ResendVerificationView(generics.GenericAPIView):
 
         try:
             send_mail(subject, plain_message, from_email, [to_email], html_message=html_message)
-            print(f"--- Re-sent verification email to {user.email} ---")
+            logger.info("Verification email resent for user_id=%s", user.id)
             return Response({"message": "Verification email sent."}, status=status.HTTP_200_OK)
-        except Exception as e:
-            print(f"--- FAILED to resend email: {e} ---")
+        except Exception:
+            logger.exception("Failed to resend verification email for user_id=%s", user.id)
             return Response({"error": "Failed to send email."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class MyTokenObtainPairView(TokenObtainPairView):
@@ -254,8 +257,8 @@ class ChangeEmailView(generics.UpdateAPIView):
             
             try:
                 send_mail(subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email], html_message=html_message)
-            except Exception as e:
-                print(f"--- FAILED to send re-verification email: {e} ---")
+            except Exception:
+                logger.exception("Failed to send re-verification email for user_id=%s", user.id)
                 # We don't fail the whole request, just log the email error
             
             return Response({"message": "Email updated successfully. Please check your new email address to re-verify your account."}, status=status.HTTP_200_OK)
@@ -283,11 +286,9 @@ class GoogleLogin(SocialLoginView):
     client_class = OAuth2Client
 
     def post(self, request, *args, **kwargs):
-        print("--- GOOGLE LOGIN DEBUG ---")
-        print(f"Request Data: {request.data}")
         response = super().post(request, *args, **kwargs)
         if response.status_code != 200:
-             print(f"❌ FAILED: {response.data}")
+            logger.warning("Google login failed with status_code=%s", response.status_code)
         return response
 
 class CountryListView(APIView):
