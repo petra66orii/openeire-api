@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.core import mail
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -18,6 +18,7 @@ from rest_framework.test import APITestCase
 
 from django.contrib.contenttypes.models import ContentType
 from checkout.models import Order, OrderItem
+from openeire_api.throttling import SharedScopedRateThrottle
 from .models import (
     LicenseRequest,
     LicenceDeliveryToken,
@@ -33,6 +34,7 @@ from .licensing import send_licence_quote_email
 class LicenseRequestTests(APITestCase):
     def setUp(self):
         cache.clear()
+        caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")].clear()
         base_media_root = Path(__file__).resolve().parent.parent / ".test_media"
         self.media_root = base_media_root / uuid.uuid4().hex
         self.media_root.mkdir(parents=True, exist_ok=True)
@@ -98,6 +100,28 @@ class LicenseRequestTests(APITestCase):
         payload = self._payload()
         payload["email"] = "test+final@example.com"
         response = self.client.post(self.url, payload, format="json")
+        self.assertEqual(response.status_code, 429)
+
+    def test_license_request_throttle_cache_outage_fail_open_allows_request(self):
+        class BrokenCache:
+            def get(self, *args, **kwargs):
+                raise RuntimeError("cache unavailable")
+
+        with self.settings(THROTTLE_FAIL_OPEN=True):
+            with patch.object(SharedScopedRateThrottle, "cache", BrokenCache()):
+                response = self.client.post(self.url, self._payload(), format="json")
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_license_request_throttle_cache_outage_fail_closed_returns_429(self):
+        class BrokenCache:
+            def get(self, *args, **kwargs):
+                raise RuntimeError("cache unavailable")
+
+        with self.settings(THROTTLE_FAIL_OPEN=False):
+            with patch.object(SharedScopedRateThrottle, "cache", BrokenCache()):
+                response = self.client.post(self.url, self._payload(), format="json")
+
         self.assertEqual(response.status_code, 429)
 
     @override_settings(

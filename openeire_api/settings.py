@@ -4,6 +4,7 @@ import sys
 from dotenv import load_dotenv
 from datetime import timedelta
 from corsheaders.defaults import default_headers
+from openeire_api.cache_config import build_cache_settings, env_bool, infer_runtime_env
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG') == 'True'
+RUNNING_TESTS = "test" in sys.argv
 
 # --- R2 CONFIG (Shared Across Environments) ---
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
@@ -68,6 +70,32 @@ INSTALLED_APPS = [
 ]
 
 SITE_ID = 1
+
+THROTTLE_CACHE_ALIAS = "throttle"
+CACHE_REDIS_URL = os.getenv("CACHE_REDIS_URL") or os.getenv("REDIS_URL")
+APP_ENV = infer_runtime_env(
+    app_env=os.getenv("APP_ENV"),
+    render_environment=os.getenv("RENDER_ENVIRONMENT"),
+    debug=DEBUG,
+    running_tests=RUNNING_TESTS,
+)
+REQUIRE_SHARED_THROTTLE_CACHE = env_bool(
+    os.getenv("REQUIRE_SHARED_THROTTLE_CACHE"),
+    default=(not DEBUG and not RUNNING_TESTS),
+)
+THROTTLE_FAIL_OPEN = env_bool(
+    os.getenv("THROTTLE_FAIL_OPEN"),
+    default=DEBUG,
+)
+
+CACHES = build_cache_settings(
+    cache_redis_url=None if RUNNING_TESTS else CACHE_REDIS_URL,
+    cache_key_prefix=os.getenv("CACHE_KEY_PREFIX", f"openeire-api:{APP_ENV}"),
+    cache_redis_connect_timeout_seconds=os.getenv("CACHE_REDIS_CONNECT_TIMEOUT_SECONDS"),
+    cache_redis_socket_timeout_seconds=os.getenv("CACHE_REDIS_SOCKET_TIMEOUT_SECONDS"),
+    throttle_cache_alias=THROTTLE_CACHE_ALIAS,
+    require_shared_throttle_cache=REQUIRE_SHARED_THROTTLE_CACHE,
+)
 
 # Simple JWT Configuration
 REST_FRAMEWORK = {
@@ -160,8 +188,6 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'openeire_api.wsgi.application'
-
-RUNNING_TESTS = "test" in sys.argv
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
