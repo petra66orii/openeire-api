@@ -7,3 +7,16 @@ STORAGES = {
 }
 
 MEDIA_ROOT = BASE_DIR / "test_media"
+
+THROTTLE_CACHE_ALIAS = "throttle"
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "openeire-test-default-cache",
+    },
+    THROTTLE_CACHE_ALIAS: {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "openeire-test-throttle-cache",
+        "TIMEOUT": None,
+    },
+}

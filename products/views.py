@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
-from rest_framework.throttling import ScopedRateThrottle
+from openeire_api.throttling import SharedScopedRateThrottle
 from .models import (
     Photo,
     Video,
@@ -52,7 +52,7 @@ from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 class RequestGalleryAccessView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = 'gallery_access_request'
 
     def post(self, request):
@@ -74,7 +74,7 @@ class RequestGalleryAccessView(APIView):
 
 class VerifyGalleryAccessView(APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = 'gallery_access_verify'
 
     def post(self, request):
@@ -224,7 +224,7 @@ class LicenseRequestCreateView(generics.CreateAPIView):
     queryset = LicenseRequest.objects.all()
     serializer_class = LicenseRequestSerializer
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = 'license_request'
 
     def create(self, request, *args, **kwargs):
