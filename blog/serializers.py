@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import BlogPost, Comment
 from taggit.serializers import (TagListSerializerField, TaggitSerializer)
+from .sanitization import sanitize_blog_html, sanitize_blog_plain_text
 
 class BlogPostListSerializer(TaggitSerializer, serializers.ModelSerializer):
     """
@@ -10,10 +11,15 @@ class BlogPostListSerializer(TaggitSerializer, serializers.ModelSerializer):
     author = serializers.ReadOnlyField(source='author.username')
     tags = TagListSerializerField()
     likes_count = serializers.IntegerField(source='number_of_likes', read_only=True)
+    excerpt = serializers.SerializerMethodField()
 
     class Meta:
         model = BlogPost
         fields = ['id', 'title', 'slug', 'author', 'featured_image', 'excerpt', 'created_at', 'tags', 'likes_count']
+
+    def get_excerpt(self, obj):
+        # Defense in depth for legacy rows that predate server-side sanitization.
+        return sanitize_blog_plain_text(obj.excerpt)
 
 class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
     """
@@ -25,6 +31,7 @@ class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
     likes_count = serializers.IntegerField(source='number_of_likes', read_only=True)
     has_liked = serializers.SerializerMethodField()
     related_posts = serializers.SerializerMethodField()
+    content = serializers.SerializerMethodField()
 
     class Meta:
         model = BlogPost
@@ -33,6 +40,10 @@ class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
             'created_at', 'updated_at', 'tags', 'likes_count', 'has_liked',
             'related_posts' 
         ]
+
+    def get_content(self, obj):
+        # Defense in depth for legacy rows that predate server-side sanitization.
+        return sanitize_blog_html(obj.content)
 
     def get_has_liked(self, obj):
         user = self.context.get('request').user
@@ -59,8 +70,15 @@ class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
 
 class CommentSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='user.username')
+    content = serializers.CharField()
 
     class Meta:
         model = Comment
         fields = ['id', 'user', 'content', 'created_at']
         read_only_fields = ['id', 'user', 'created_at']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Defense in depth for legacy rows that predate server-side sanitization.
+        data['content'] = sanitize_blog_plain_text(data.get('content'))
+        return data
