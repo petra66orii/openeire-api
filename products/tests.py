@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.core.cache import cache, caches
+from django.core.cache.backends.base import InvalidCacheBackendError
 from django.core import mail
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -105,10 +106,10 @@ class LicenseRequestTests(APITestCase):
     def test_license_request_throttle_cache_outage_fail_open_allows_request(self):
         class BrokenCache:
             def get(self, *args, **kwargs):
-                raise RuntimeError("cache unavailable")
+                raise InvalidCacheBackendError("cache unavailable")
 
         with self.settings(THROTTLE_FAIL_OPEN=True):
-            with patch.object(SharedScopedRateThrottle, "cache", BrokenCache()):
+            with patch.object(SharedScopedRateThrottle, "_resolve_cache", return_value=BrokenCache()):
                 response = self.client.post(self.url, self._payload(), format="json")
 
         self.assertEqual(response.status_code, 201)
@@ -116,10 +117,10 @@ class LicenseRequestTests(APITestCase):
     def test_license_request_throttle_cache_outage_fail_closed_returns_429(self):
         class BrokenCache:
             def get(self, *args, **kwargs):
-                raise RuntimeError("cache unavailable")
+                raise InvalidCacheBackendError("cache unavailable")
 
         with self.settings(THROTTLE_FAIL_OPEN=False):
-            with patch.object(SharedScopedRateThrottle, "cache", BrokenCache()):
+            with patch.object(SharedScopedRateThrottle, "_resolve_cache", return_value=BrokenCache()):
                 response = self.client.post(self.url, self._payload(), format="json")
 
         self.assertEqual(response.status_code, 429)

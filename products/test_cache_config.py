@@ -1,7 +1,9 @@
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
+from unittest.mock import patch
 
 from openeire_api.cache_config import build_cache_settings, infer_runtime_env
+from openeire_api.throttling import SharedScopedRateThrottle
 
 
 class CacheConfigTests(SimpleTestCase):
@@ -51,3 +53,24 @@ class CacheConfigTests(SimpleTestCase):
         self.assertEqual(caches["throttle"]["TIMEOUT"], None)
         self.assertEqual(caches["throttle"]["OPTIONS"]["socket_connect_timeout"], 0.5)
         self.assertEqual(caches["throttle"]["OPTIONS"]["socket_timeout"], 0.5)
+
+    def test_infer_runtime_env_prefers_test_when_running_tests(self):
+        app_env = infer_runtime_env(
+            app_env=None,
+            render_environment="production",
+            debug=False,
+            running_tests=True,
+        )
+
+        self.assertEqual(app_env, "test")
+
+    def test_non_cache_errors_are_not_swallowed_by_fail_open_policy(self):
+        throttle = SharedScopedRateThrottle()
+
+        with self.settings(THROTTLE_FAIL_OPEN=True):
+            with patch(
+                "rest_framework.throttling.ScopedRateThrottle.allow_request",
+                side_effect=ValueError("not a cache error"),
+            ):
+                with self.assertRaises(ValueError):
+                    throttle.allow_request(object(), object())

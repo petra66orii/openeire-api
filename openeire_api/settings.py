@@ -17,6 +17,8 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG') == 'True'
 RUNNING_TESTS = "test" in sys.argv
+USING_TEST_SETTINGS = os.getenv("DJANGO_SETTINGS_MODULE", "").endswith("settings_test")
+IS_TEST_ENV = RUNNING_TESTS or USING_TEST_SETTINGS
 
 # --- R2 CONFIG (Shared Across Environments) ---
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
@@ -77,11 +79,11 @@ APP_ENV = infer_runtime_env(
     app_env=os.getenv("APP_ENV"),
     render_environment=os.getenv("RENDER_ENVIRONMENT"),
     debug=DEBUG,
-    running_tests=RUNNING_TESTS,
+    running_tests=IS_TEST_ENV,
 )
-REQUIRE_SHARED_THROTTLE_CACHE = env_bool(
+REQUIRE_SHARED_THROTTLE_CACHE = False if IS_TEST_ENV else env_bool(
     os.getenv("REQUIRE_SHARED_THROTTLE_CACHE"),
-    default=(not DEBUG and not RUNNING_TESTS),
+    default=(not DEBUG),
 )
 THROTTLE_FAIL_OPEN = env_bool(
     os.getenv("THROTTLE_FAIL_OPEN"),
@@ -89,7 +91,7 @@ THROTTLE_FAIL_OPEN = env_bool(
 )
 
 CACHES = build_cache_settings(
-    cache_redis_url=None if RUNNING_TESTS else CACHE_REDIS_URL,
+    cache_redis_url=None if IS_TEST_ENV else CACHE_REDIS_URL,
     cache_key_prefix=os.getenv("CACHE_KEY_PREFIX", f"openeire-api:{APP_ENV}"),
     cache_redis_connect_timeout_seconds=os.getenv("CACHE_REDIS_CONNECT_TIMEOUT_SECONDS"),
     cache_redis_socket_timeout_seconds=os.getenv("CACHE_REDIS_SOCKET_TIMEOUT_SECONDS"),

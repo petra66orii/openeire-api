@@ -10,10 +10,10 @@ def env_bool(raw_value, default=False):
 def infer_runtime_env(app_env, render_environment, debug, running_tests):
     if app_env:
         return app_env
-    if render_environment:
-        return render_environment
     if running_tests:
         return "test"
+    if render_environment:
+        return render_environment
     if debug:
         return "development"
     return "production"

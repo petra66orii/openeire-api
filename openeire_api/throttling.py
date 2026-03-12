@@ -2,10 +2,19 @@ import logging
 
 from django.conf import settings
 from django.core.cache import caches
+from django.core.cache.backends.base import InvalidCacheBackendError
 from rest_framework import exceptions
 from rest_framework.throttling import ScopedRateThrottle
 
 logger = logging.getLogger(__name__)
+
+try:
+    from redis.exceptions import RedisError
+except ImportError:  # pragma: no cover - redis may not be installed in some local test envs.
+    RedisError = None
+
+
+_THROTTLE_CACHE_EXCEPTIONS = (InvalidCacheBackendError,) + ((RedisError,) if RedisError else ())
 
 
 class SharedScopedRateThrottle(ScopedRateThrottle):
@@ -14,12 +23,14 @@ class SharedScopedRateThrottle(ScopedRateThrottle):
     (for example via Redis) across workers/instances.
     """
 
-    cache = caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")]
+    def _resolve_cache(self):
+        return caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")]
 
     def allow_request(self, request, view):
         try:
+            self.cache = self._resolve_cache()
             return super().allow_request(request, view)
-        except Exception:
+        except _THROTTLE_CACHE_EXCEPTIONS:
             fail_open = getattr(settings, "THROTTLE_FAIL_OPEN", False)
             if fail_open:
                 logger.warning(
@@ -33,11 +44,12 @@ class SharedScopedRateThrottle(ScopedRateThrottle):
                 exc_info=True,
             )
             raise exceptions.Throttled(
-                detail="Request was throttled due to temporary throttling backend issue."
+                detail="Rate limiting backend is temporarily unavailable. Please retry shortly."
             )
 
     def wait(self):
         try:
+            self.cache = self._resolve_cache()
             return super().wait()
-        except Exception:
+        except _THROTTLE_CACHE_EXCEPTIONS:
             return None
