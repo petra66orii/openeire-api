@@ -45,9 +45,22 @@ def _strip_script_style_blocks(text):
 
 def _allowed_image_hosts():
     configured = getattr(settings, "BLOG_ALLOWED_IMAGE_HOSTS", [])
+    if configured is None:
+        entries = []
+    elif isinstance(configured, str):
+        entries = configured.split(",")
+    elif isinstance(configured, (list, tuple, set, frozenset)):
+        entries = configured
+    else:
+        # Fail closed on unexpected config types.
+        return set()
+
     hosts = set()
-    for host in configured:
+    for host in entries:
         text = str(host or "").strip().lower()
+        if "://" in text:
+            parsed = urlparse(text)
+            text = (parsed.hostname or "").lower()
         if text:
             hosts.add(text.lstrip("."))
     return hosts

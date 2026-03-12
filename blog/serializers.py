@@ -70,13 +70,15 @@ class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
 
 class CommentSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='user.username')
-    content = serializers.SerializerMethodField()
+    content = serializers.CharField()
 
     class Meta:
         model = Comment
         fields = ['id', 'user', 'content', 'created_at']
         read_only_fields = ['id', 'user', 'created_at']
 
-    def get_content(self, obj):
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
         # Defense in depth for legacy rows that predate server-side sanitization.
-        return sanitize_blog_plain_text(obj.content)
+        data['content'] = sanitize_blog_plain_text(data.get('content'))
+        return data

@@ -56,6 +56,19 @@ class BlogSanitizationTests(APITestCase):
 
         self.assertIn('src="https://images.example.com/photo.jpg"', post.content)
 
+    def test_blog_post_parses_comma_separated_image_allowlist_string(self):
+        with self.settings(BLOG_ALLOWED_IMAGE_HOSTS='images.example.com, cdn.example.org'):
+            post = self._create_post(
+                title='Comma Separated Allowlist',
+                content=(
+                    '<img src="https://images.example.com/ok.jpg">'
+                    '<img src="https://tracker.s/blocked.jpg">'
+                ),
+            )
+
+        self.assertIn('src="https://images.example.com/ok.jpg"', post.content)
+        self.assertNotIn('tracker.s', post.content)
+
     def test_blog_post_excerpt_is_sanitized_to_plain_text(self):
         post = self._create_post(
             title='Excerpt Sanitization',
@@ -129,3 +142,21 @@ class BlogSanitizationTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]['content'], 'Hello')
+
+    def test_comment_post_accepts_writable_content_and_sanitizes(self):
+        post = self._create_post(
+            title='Comment Create API',
+            content='<p>Body</p>',
+        )
+        self.client.force_authenticate(user=self.author)
+
+        response = self.client.post(
+            reverse('comment_list_create', args=[post.slug]),
+            {'content': '<b>Great</b> <script>alert(1)</script>'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Comment.objects.get(post=post, user=self.author)
+        self.assertEqual(created.content, 'Great')
+        self.assertEqual(response.data['content'], 'Great')
