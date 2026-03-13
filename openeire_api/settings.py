@@ -129,6 +129,18 @@ JWT_COOKIE_SECURE = env_bool(
     default=(not DEBUG),
 )
 JWT_COOKIE_SAMESITE = os.getenv("JWT_COOKIE_SAMESITE", "Lax")
+JWT_COOKIE_DOMAIN = os.getenv("JWT_COOKIE_DOMAIN") or None
+JWT_COOKIE_CSRF_PROTECTION = env_bool(
+    os.getenv("JWT_COOKIE_CSRF_PROTECTION"),
+    default=JWT_USE_HTTPONLY_COOKIES,
+)
+JWT_CSRF_COOKIE_NAME = os.getenv("JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+JWT_CSRF_HEADER_NAME = os.getenv("JWT_CSRF_HEADER_NAME", "HTTP_X_CSRFTOKEN")
+
+if JWT_USE_HTTPONLY_COOKIES and JWT_COOKIE_SAMESITE.lower() == "none" and not JWT_COOKIE_CSRF_PROTECTION:
+    raise ImproperlyConfigured(
+        "JWT cookie mode with SameSite=None requires JWT_COOKIE_CSRF_PROTECTION=True."
+    )
 
 CACHES = build_cache_settings(
     cache_redis_url=None if IS_TEST_ENV else CACHE_REDIS_URL,

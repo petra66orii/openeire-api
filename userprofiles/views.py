@@ -1,6 +1,8 @@
 import logging
+import secrets
 from django.conf import settings
 from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.contrib.auth.models import User
@@ -49,6 +51,7 @@ def _token_minutes(setting_name, default_value):
 
 
 def _set_jwt_cookie(response, *, name, value, max_age):
+    domain = getattr(settings, "JWT_COOKIE_DOMAIN", None) or None
     response.set_cookie(
         key=name,
         value=value,
@@ -57,6 +60,7 @@ def _set_jwt_cookie(response, *, name, value, max_age):
         httponly=True,
         samesite=getattr(settings, "JWT_COOKIE_SAMESITE", "Lax"),
         path="/",
+        domain=domain,
     )
 
 
@@ -64,8 +68,10 @@ def _set_jwt_cookies_if_enabled(response, *, access_token=None, refresh_token=No
     if not bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False)):
         return
 
+    csrf_max_age = None
     if access_token:
         access_lifetime = int(getattr(settings, "SIMPLE_JWT", {}).get("ACCESS_TOKEN_LIFETIME").total_seconds())
+        csrf_max_age = access_lifetime
         _set_jwt_cookie(
             response,
             name=getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access"),
@@ -74,17 +80,69 @@ def _set_jwt_cookies_if_enabled(response, *, access_token=None, refresh_token=No
         )
     if refresh_token:
         refresh_lifetime = int(getattr(settings, "SIMPLE_JWT", {}).get("REFRESH_TOKEN_LIFETIME").total_seconds())
+        csrf_max_age = refresh_lifetime
         _set_jwt_cookie(
             response,
             name=getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh"),
             value=refresh_token,
             max_age=refresh_lifetime,
         )
+    if bool(getattr(settings, "JWT_COOKIE_CSRF_PROTECTION", True)):
+        csrf_cookie_name = getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+        csrf_token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            key=csrf_cookie_name,
+            value=csrf_token,
+            max_age=csrf_max_age,
+            secure=bool(getattr(settings, "JWT_COOKIE_SECURE", True)),
+            httponly=False,
+            samesite=getattr(settings, "JWT_COOKIE_SAMESITE", "Lax"),
+            path="/",
+            domain=getattr(settings, "JWT_COOKIE_DOMAIN", None) or None,
+        )
 
 
 def _clear_jwt_cookies(response):
-    response.delete_cookie(getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access"), path="/")
-    response.delete_cookie(getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh"), path="/")
+    domain = getattr(settings, "JWT_COOKIE_DOMAIN", None) or None
+    samesite = getattr(settings, "JWT_COOKIE_SAMESITE", "Lax")
+    response.delete_cookie(
+        getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+
+
+def _is_cookie_mode_enabled():
+    return bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False))
+
+
+def _enforce_cookie_csrf(request):
+    if not _is_cookie_mode_enabled():
+        return
+    if not bool(getattr(settings, "JWT_COOKIE_CSRF_PROTECTION", True)):
+        return
+
+    csrf_cookie_name = getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+    csrf_header_name = getattr(settings, "JWT_CSRF_HEADER_NAME", "HTTP_X_CSRFTOKEN")
+    csrf_cookie = request.COOKIES.get(csrf_cookie_name)
+    csrf_header = request.META.get(csrf_header_name)
+    if not csrf_cookie or not csrf_header:
+        raise PermissionDenied("CSRF token missing.")
+    if not secrets.compare_digest(str(csrf_cookie), str(csrf_header)):
+        raise PermissionDenied("CSRF token mismatch.")
 
 
 class RegisterView(generics.CreateAPIView):
@@ -317,18 +375,17 @@ class MyTokenObtainPairView(TokenObtainPairView):
             access_token=access_token,
             refresh_token=refresh_token,
         )
-        if bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False)):
-            response.data = {"detail": "Login successful."}
         return response
 
 
 class MyTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         payload = request.data.copy()
-        if bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False)) and not payload.get("refresh"):
+        if _is_cookie_mode_enabled() and not payload.get("refresh"):
             cookie_name = getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh")
             cookie_refresh = request.COOKIES.get(cookie_name)
             if cookie_refresh:
+                _enforce_cookie_csrf(request)
                 payload["refresh"] = cookie_refresh
 
         serializer = self.get_serializer(data=payload)
@@ -341,8 +398,6 @@ class MyTokenRefreshView(TokenRefreshView):
             access_token=access_token,
             refresh_token=refresh_token,
         )
-        if bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False)):
-            response.data = {"detail": "Token refreshed."}
         return response
 
 
@@ -434,6 +489,14 @@ class LogoutView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        if _is_cookie_mode_enabled():
+            access_cookie_name = getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access")
+            refresh_cookie_name = getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh")
+            has_auth_cookies = bool(
+                request.COOKIES.get(access_cookie_name) or request.COOKIES.get(refresh_cookie_name)
+            )
+            if has_auth_cookies:
+                _enforce_cookie_csrf(request)
         response = Response({"message": "Logged out."}, status=status.HTTP_200_OK)
         _clear_jwt_cookies(response)
         return response
