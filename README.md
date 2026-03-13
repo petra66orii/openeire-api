@@ -161,7 +161,7 @@ python manage.py collectstatic --no-input
 ```
 
 ## Background Worker Overview
-- Celery tasks are not defined in this repository (`Configuration Required` if you plan to add Celery).
+- Celery tasks are not defined in this repository (Coming soon).
 - There is an internal AI-draft integration exposed as protected API endpoints:
   - `GET /api/internal/draft-queue/`
   - `POST /api/internal/draft-update/<pk>/`
@@ -183,5 +183,5 @@ See:
 - [docs/operations.md](docs/operations.md)
 
 ## Maintainer
-- Project/team owner: Configuration Required
-- Primary backend maintainer: Configuration Required
+- Project/team owner: [Miss Bott](https://github.com/petra66orii)
+- Primary backend maintainer: [Miss Bott](https://github.com/petra66orii)
