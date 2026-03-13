@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import serializers
 from .models import Order, OrderItem, ProductShipping
 from products.models import Photo, Video, ProductVariant, PrintTemplate
@@ -8,6 +10,9 @@ from django.urls import reverse
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
 from userprofiles.models import UserProfile
 from .address_validation import validate_physical_shipping_address
+
+logger = logging.getLogger(__name__)
+
 
 class OrderItemSerializer(serializers.ModelSerializer):
     """
@@ -111,7 +116,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
                     except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
                         # Fallback if data is missing (prevents crash)
-                        print(f"Warning: No shipping rule found for {product_instance}")
+                        logger.warning("No shipping rule found for product variant id=%s", product_instance.id)
                         pass # or add a default flat rate
                 
                 elif product_type_str in ['photo', 'video']:

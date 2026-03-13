@@ -1,6 +1,10 @@
 import boto3
+import logging
 from botocore.config import Config
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
 
 def generate_r2_presigned_url(file_key, expiration=172800):
     """
@@ -13,7 +17,7 @@ def generate_r2_presigned_url(file_key, expiration=172800):
         settings.R2_PRIVATE_ACCESS_KEY_ID,
         settings.R2_PRIVATE_SECRET_ACCESS_KEY,
     ]):
-        print("Missing R2 private bucket settings; cannot generate presigned URL.")
+        logger.error("Missing R2 private bucket settings; cannot generate presigned URL.")
         return None
 
     s3_client = boto3.client(
@@ -35,6 +39,6 @@ def generate_r2_presigned_url(file_key, expiration=172800):
             ExpiresIn=expiration
         )
         return response
-    except Exception as e:
-        print(f"Error generating presigned URL: {e}")
+    except Exception:
+        logger.exception("Error generating presigned URL.")
         return None

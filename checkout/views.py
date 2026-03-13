@@ -332,7 +332,10 @@ class StripeWebhookView(APIView):
             return
 
         if payment_status != 'paid':
-            print(f"WARN: Payment link session not paid yet (status={payment_status}). Skipping approval.")
+            logger.warning(
+                "Payment link session not paid yet (status=%s). Skipping approval.",
+                payment_status,
+            )
             return
 
         offer = (
@@ -355,8 +358,11 @@ class StripeWebhookView(APIView):
                 try:
                     payment_link = stripe.PaymentLink.retrieve(payment_link_id)
                     link_url = getattr(payment_link, "url", None)
-                except Exception as e:
-                    print(f"WARN: Could not retrieve payment link {payment_link_id}: {e}")
+                except Exception:
+                    logger.exception(
+                        "Could not retrieve payment link for id=%s.",
+                        payment_link_id,
+                    )
                     link_url = None
 
                 if link_url:
@@ -365,7 +371,11 @@ class StripeWebhookView(APIView):
                     )
 
                 if matching_requests.count() != 1:
-                    print(f"WARN: Expected 1 LicenseRequest for link {payment_link_id}, found {matching_requests.count()}.")
+                    logger.warning(
+                        "Expected exactly one LicenseRequest for payment_link_id=%s, found=%s.",
+                        payment_link_id,
+                        matching_requests.count(),
+                    )
                     return
             license_request = matching_requests.first()
 
@@ -374,7 +384,10 @@ class StripeWebhookView(APIView):
             license_request.save(update_fields=['stripe_payment_link_id', 'updated_at'])
 
         if license_request.status == 'DELIVERED':
-            print(f"INFO: License Request {license_request.id} already delivered. Skipping.")
+            logger.info(
+                "License request already delivered; skipping. license_request_id=%s",
+                license_request.id,
+            )
             return
 
         asset = license_request.asset
@@ -441,7 +454,10 @@ class StripeWebhookView(APIView):
             metadata={"checkout_session_id": checkout_session_id},
         )
 
-        print(f"OK: Rights-Managed license delivered for request {license_request.id}.")
+        logger.info(
+            "Rights-managed license delivered successfully. license_request_id=%s",
+            license_request.id,
+        )
 
     def post(self, request):
         stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -451,20 +467,20 @@ class StripeWebhookView(APIView):
 
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except (ValueError, stripe.error.SignatureVerificationError) as e:
-            print(f"Webhook signature verification failed: {e}")
+        except (ValueError, stripe.error.SignatureVerificationError):
+            logger.warning("Webhook signature verification failed.", exc_info=True)
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         event_id = event.get('id')
         event_type = event.get('type')
-        print(f"WEBHOOK RECEIVED: type={event_type}, id={event_id}")
+        logger.info("Stripe webhook received. event_type=%s event_id=%s", event_type, event_id)
         if event_type not in self.SUPPORTED_EVENT_TYPES:
             return Response(status=status.HTTP_200_OK)
 
         should_process_event = True
         event_record = None
         if not event_id:
-            print("WARN: Stripe event missing id; skipping idempotency tracking.")
+            logger.warning("Stripe event missing id; skipping idempotency tracking.")
         else:
             with transaction.atomic():
                 event_record, created = StripeWebhookEvent.objects.get_or_create(
@@ -477,7 +493,7 @@ class StripeWebhookView(APIView):
                 event_record = StripeWebhookEvent.objects.select_for_update().get(pk=event_record.pk)
                 if not created:
                     if event_record.status == 'SUCCESS':
-                        print(f"INFO: Stripe event {event_id} already processed; skipping.")
+                        logger.info("Stripe event already processed; skipping. event_id=%s", event_id)
                         should_process_event = False
                     elif event_record.status == 'PROCESSING':
                         stale_before = timezone.now() - timedelta(
@@ -489,15 +505,21 @@ class StripeWebhookView(APIView):
                             and event_record.received_at <= stale_before
                         )
                         if is_stale:
-                            print(f"WARN: Stripe event {event_id} had stale PROCESSING state; retrying.")
+                            logger.warning(
+                                "Stripe event had stale PROCESSING state; retrying. event_id=%s",
+                                event_id,
+                            )
                             event_record.error_message = "Recovered from stale PROCESSING state."
                             event_record.event_type = event_type or event_record.event_type or 'unknown'
                             event_record.save(update_fields=['error_message', 'event_type'])
                         else:
-                            print(f"INFO: Stripe event {event_id} is already being processed; skipping.")
+                            logger.info(
+                                "Stripe event is already being processed; skipping. event_id=%s",
+                                event_id,
+                            )
                             should_process_event = False
                     else:
-                        print(f"INFO: Retrying failed Stripe event {event_id}.")
+                        logger.info("Retrying failed Stripe event. event_id=%s", event_id)
                         event_record.status = 'PROCESSING'
                         event_record.error_message = None
                         event_record.processed_at = None
@@ -528,7 +550,7 @@ class StripeWebhookView(APIView):
                     cart_items = []
 
                 if not cart_items:
-                    print("INFO: No cart items found for payment_intent; skipping order creation.")
+                    logger.info("No cart items found for payment_intent; skipping order creation.")
                     return Response(status=status.HTTP_200_OK)
 
                 # 2. Determine the email
@@ -571,8 +593,8 @@ class StripeWebhookView(APIView):
                     if username and username != 'Guest':
                         try:
                             profile = UserProfile.objects.get(user__username=username)
-                            print(
-                                "WARN: Using legacy username fallback for webhook order binding. "
+                            logger.warning(
+                                "Using legacy username fallback for webhook order binding. "
                                 "Disable CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK once old payment intents are drained."
                             )
                         except UserProfile.DoesNotExist:
@@ -595,13 +617,16 @@ class StripeWebhookView(APIView):
                 serializer = OrderSerializer(data=order_data)
                 if serializer.is_valid():
                     order = serializer.save()
-                    print(f"OK: Order {order.order_number} created successfully. Email: {order.email}")
+                    logger.info("Order created successfully. order_number=%s", order.order_number)
 
                     try:
                         self._send_confirmation_email(order, request=request)
-                        print(f"OK: Confirmation email sent to {order.email}")
-                    except Exception as e:
-                        print(f"ERROR: Could not send email to {order.email}: {e}")
+                        logger.info("Confirmation email sent. order_number=%s", order.order_number)
+                    except Exception:
+                        logger.exception(
+                            "Could not send confirmation email. order_number=%s",
+                            order.order_number,
+                        )
                     
                     try:
                         has_physical_items = False
@@ -612,28 +637,37 @@ class StripeWebhookView(APIView):
                         
                         if has_physical_items:
                             # Only contact Prodigi if we actually have prints
-                            print(f"INFO: Sending Order {order.order_number} to Prodigi...")
+                            logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
                             create_prodigi_order(order)
-                            print("OK: Sent to Prodigi successfully.")
+                            logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
                         else:
                             # Digital-only order: Stay silent
-                            print(f"INFO: Digital Order {order.order_number} detected. Skipping Prodigi fulfillment.")
+                            logger.info(
+                                "Digital-only order detected; skipping Prodigi fulfillment. order_number=%s",
+                                order.order_number,
+                            )
 
-                    except Exception as e:
-                        print(f"ERROR: Failed to fulfill order {order.order_number}: {e}")
+                    except Exception:
+                        logger.exception(
+                            "Failed to fulfill order after webhook processing. order_number=%s",
+                            order.order_number,
+                        )
 
                 else:
                     error_fields = self._summarize_validation_errors(serializer.errors)
-                    print(f"ERROR: Error creating order. Validation fields: {error_fields}")
+                    logger.error("Error creating order. Validation fields: %s", error_fields)
                     processing_error = f"Order validation failed. Fields: {error_fields}"
-                    print(f"WARN: Acknowledging webhook event despite validation failure. {processing_error}")
+                    logger.warning(
+                        "Acknowledging webhook event despite validation failure. %s",
+                        processing_error,
+                    )
 
             elif event_type == 'checkout.session.completed':
                 session = event['data']['object']
                 self._handle_license_payment(request, session)
         except Exception as e:
             processing_error = str(e)
-            print(f"ERROR: Error processing Stripe event {event_id}: {processing_error}")
+            logger.exception("Error processing Stripe event. event_id=%s", event_id)
         finally:
             if event_record and should_process_event:
                 StripeWebhookEvent.objects.filter(pk=event_record.pk).update(
