@@ -1,7 +1,8 @@
-import jwt
 import logging
+import secrets
 from django.conf import settings
-from rest_framework import generics, status, serializers
+from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.contrib.auth.models import User
@@ -10,14 +11,14 @@ from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django_countries import countries
 from .serializers import UserSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
 from .models import UserProfile
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .serializers import (
     UserProfileSerializer,
     ResendVerificationSerializer,
@@ -26,12 +27,122 @@ from .serializers import (
     ChangeEmailSerializer,
     DeleteAccountSerializer,
 )
+from .token_utils import (
+    EMAIL_VERIFICATION_PURPOSE,
+    PASSWORD_RESET_PURPOSE,
+    decode_user_action_token,
+    issue_user_action_token,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def get_frontend_url():
     return str(getattr(settings, "FRONTEND_URL", "http://localhost:5173")).rstrip("/")
+
+
+def _token_minutes(setting_name, default_value):
+    raw = getattr(settings, setting_name, default_value)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default_value
+    return parsed if parsed > 0 else default_value
+
+
+def _set_jwt_cookie(response, *, name, value, max_age):
+    domain = getattr(settings, "JWT_COOKIE_DOMAIN", None) or None
+    response.set_cookie(
+        key=name,
+        value=value,
+        max_age=max_age,
+        secure=bool(getattr(settings, "JWT_COOKIE_SECURE", True)),
+        httponly=True,
+        samesite=getattr(settings, "JWT_COOKIE_SAMESITE", "Lax"),
+        path="/",
+        domain=domain,
+    )
+
+
+def _set_jwt_cookies_if_enabled(response, *, access_token=None, refresh_token=None):
+    if not bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False)):
+        return
+
+    csrf_max_age = None
+    if access_token:
+        access_lifetime = int(getattr(settings, "SIMPLE_JWT", {}).get("ACCESS_TOKEN_LIFETIME").total_seconds())
+        csrf_max_age = access_lifetime
+        _set_jwt_cookie(
+            response,
+            name=getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access"),
+            value=access_token,
+            max_age=access_lifetime,
+        )
+    if refresh_token:
+        refresh_lifetime = int(getattr(settings, "SIMPLE_JWT", {}).get("REFRESH_TOKEN_LIFETIME").total_seconds())
+        csrf_max_age = refresh_lifetime
+        _set_jwt_cookie(
+            response,
+            name=getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh"),
+            value=refresh_token,
+            max_age=refresh_lifetime,
+        )
+    if bool(getattr(settings, "JWT_COOKIE_CSRF_PROTECTION", True)):
+        csrf_cookie_name = getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+        csrf_token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            key=csrf_cookie_name,
+            value=csrf_token,
+            max_age=csrf_max_age,
+            secure=bool(getattr(settings, "JWT_COOKIE_SECURE", True)),
+            httponly=False,
+            samesite=getattr(settings, "JWT_COOKIE_SAMESITE", "Lax"),
+            path="/",
+            domain=getattr(settings, "JWT_COOKIE_DOMAIN", None) or None,
+        )
+
+
+def _clear_jwt_cookies(response):
+    domain = getattr(settings, "JWT_COOKIE_DOMAIN", None) or None
+    samesite = getattr(settings, "JWT_COOKIE_SAMESITE", "Lax")
+    response.delete_cookie(
+        getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+    response.delete_cookie(
+        getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf"),
+        path="/",
+        domain=domain,
+        samesite=samesite,
+    )
+
+
+def _is_cookie_mode_enabled():
+    return bool(getattr(settings, "JWT_USE_HTTPONLY_COOKIES", False))
+
+
+def _enforce_cookie_csrf(request):
+    if not _is_cookie_mode_enabled():
+        return
+    if not bool(getattr(settings, "JWT_COOKIE_CSRF_PROTECTION", True)):
+        return
+
+    csrf_cookie_name = getattr(settings, "JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+    csrf_header_name = getattr(settings, "JWT_CSRF_HEADER_NAME", "HTTP_X_CSRFTOKEN")
+    csrf_cookie = request.COOKIES.get(csrf_cookie_name)
+    csrf_header = request.META.get(csrf_header_name)
+    if not csrf_cookie or not csrf_header:
+        raise PermissionDenied("CSRF token missing.")
+    if not secrets.compare_digest(str(csrf_cookie), str(csrf_header)):
+        raise PermissionDenied("CSRF token mismatch.")
 
 
 class RegisterView(generics.CreateAPIView):
@@ -45,8 +156,11 @@ class RegisterView(generics.CreateAPIView):
         user = serializer.save()
         
         # Generate a token for the user
-        refresh = RefreshToken.for_user(user)
-        token = str(refresh.access_token)
+        token = issue_user_action_token(
+            user=user,
+            purpose=EMAIL_VERIFICATION_PURPOSE,
+            lifetime_minutes=_token_minutes("EMAIL_VERIFICATION_TOKEN_MINUTES", 60),
+        )
         
         # --- Email Sending Logic ---
         frontend_url = get_frontend_url()
@@ -86,9 +200,10 @@ class VerifyEmailView(APIView):
             return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Decode the token to get the user ID
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-            user_id = payload['user_id']
+            user_id = decode_user_action_token(
+                token=token,
+                expected_purpose=EMAIL_VERIFICATION_PURPOSE,
+            )
             user = User.objects.get(id=user_id)
 
             if user.is_active:
@@ -98,9 +213,9 @@ class VerifyEmailView(APIView):
             user.save()
             return Response({'message': 'Email successfully verified!'}, status=status.HTTP_200_OK)
 
-        except jwt.ExpiredSignatureError:
-            return Response({'error': 'Activation link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except (jwt.exceptions.DecodeError, User.DoesNotExist):
+        except (TokenError, ValueError):
+            return Response({'error': 'Invalid activation link.'}, status=status.HTTP_400_BAD_REQUEST)
+        except User.DoesNotExist:
             return Response({'error': 'Invalid activation link.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -126,8 +241,11 @@ class PasswordResetRequestView(generics.GenericAPIView):
         user = matches[0]
 
         # Generate a short-lived token for the user
-        refresh = RefreshToken.for_user(user)
-        token = str(refresh.access_token)
+        token = issue_user_action_token(
+            user=user,
+            purpose=PASSWORD_RESET_PURPOSE,
+            lifetime_minutes=_token_minutes("PASSWORD_RESET_TOKEN_MINUTES", 30),
+        )
 
         frontend_url = get_frontend_url()
         reset_link = f"{frontend_url}/password-reset/confirm/{token}"
@@ -168,12 +286,15 @@ class PasswordResetConfirmView(generics.GenericAPIView):
         password = serializer.validated_data['password']
 
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-            user = User.objects.get(id=payload['user_id'])
+            user_id = decode_user_action_token(
+                token=token,
+                expected_purpose=PASSWORD_RESET_PURPOSE,
+            )
+            user = User.objects.get(id=user_id)
             user.set_password(password)
             user.save()
             return Response({"message": "Password reset successful."}, status=status.HTTP_200_OK)
-        except (jwt.ExpiredSignatureError, jwt.exceptions.DecodeError, User.DoesNotExist):
+        except (TokenError, ValueError, User.DoesNotExist):
             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
         
 class UserProfileView(generics.RetrieveUpdateAPIView):
@@ -213,8 +334,11 @@ class ResendVerificationView(generics.GenericAPIView):
             return Response({"message": self.GENERIC_SUCCESS_MESSAGE}, status=status.HTTP_200_OK)
 
         # Generate a new token
-        refresh = RefreshToken.for_user(user)
-        token = str(refresh.access_token)
+        token = issue_user_action_token(
+            user=user,
+            purpose=EMAIL_VERIFICATION_PURPOSE,
+            lifetime_minutes=_token_minutes("EMAIL_VERIFICATION_TOKEN_MINUTES", 60),
+        )
 
         # Resend the email (reuse logic from RegisterView)
         frontend_url = get_frontend_url()
@@ -238,6 +362,43 @@ class MyTokenObtainPairView(TokenObtainPairView):
     Custom view using the custom serializer to allow email/username login.
     """
     serializer_class = MyTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code != status.HTTP_200_OK:
+            return response
+
+        access_token = response.data.get("access")
+        refresh_token = response.data.get("refresh")
+        _set_jwt_cookies_if_enabled(
+            response,
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+        return response
+
+
+class MyTokenRefreshView(TokenRefreshView):
+    def post(self, request, *args, **kwargs):
+        payload = request.data.copy()
+        if _is_cookie_mode_enabled() and not payload.get("refresh"):
+            cookie_name = getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh")
+            cookie_refresh = request.COOKIES.get(cookie_name)
+            if cookie_refresh:
+                _enforce_cookie_csrf(request)
+                payload["refresh"] = cookie_refresh
+
+        serializer = self.get_serializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        response = Response(serializer.validated_data, status=status.HTTP_200_OK)
+        access_token = response.data.get("access")
+        refresh_token = response.data.get("refresh")
+        _set_jwt_cookies_if_enabled(
+            response,
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+        return response
 
 
 class ChangePasswordView(generics.UpdateAPIView):
@@ -284,8 +445,11 @@ class ChangeEmailView(generics.UpdateAPIView):
             
             # --- Now, send a new verification email ---
             user = self.object
-            refresh = RefreshToken.for_user(user)
-            token = str(refresh.access_token)
+            token = issue_user_action_token(
+                user=user,
+                purpose=EMAIL_VERIFICATION_PURPOSE,
+                lifetime_minutes=_token_minutes("EMAIL_VERIFICATION_TOKEN_MINUTES", 60),
+            )
             
             frontend_url = get_frontend_url()
             verification_link = f"{frontend_url}/verify-email/confirm/{token}"
@@ -319,6 +483,23 @@ class DeleteAccountView(generics.GenericAPIView):
                 status=status.HTTP_204_NO_CONTENT
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LogoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if _is_cookie_mode_enabled():
+            access_cookie_name = getattr(settings, "JWT_ACCESS_COOKIE_NAME", "openeire_access")
+            refresh_cookie_name = getattr(settings, "JWT_REFRESH_COOKIE_NAME", "openeire_refresh")
+            has_auth_cookies = bool(
+                request.COOKIES.get(access_cookie_name) or request.COOKIES.get(refresh_cookie_name)
+            )
+            if has_auth_cookies:
+                _enforce_cookie_csrf(request)
+        response = Response({"message": "Logged out."}, status=status.HTTP_200_OK)
+        _clear_jwt_cookies(response)
+        return response
 
 class GoogleLogin(SocialLoginView):
     adapter_class = GoogleOAuth2Adapter

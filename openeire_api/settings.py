@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 from dotenv import load_dotenv
 from datetime import timedelta
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management.utils import get_random_secret_key
 from corsheaders.defaults import default_headers
 from openeire_api.cache_config import build_cache_settings, env_bool, infer_runtime_env
 
@@ -11,14 +13,41 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG') == 'True'
 RUNNING_TESTS = "test" in sys.argv
 USING_TEST_SETTINGS = os.getenv("DJANGO_SETTINGS_MODULE", "").endswith("settings_test")
 IS_TEST_ENV = RUNNING_TESTS or USING_TEST_SETTINGS
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG or IS_TEST_ENV:
+        SECRET_KEY = get_random_secret_key()
+    else:
+        raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is False.")
+
+
+def _is_weak_secret_key(value):
+    if not value:
+        return True
+    if value.startswith("django-insecure-"):
+        return True
+    if len(value) < 50:
+        return True
+    if len(set(value)) < 5:
+        return True
+    return False
+
+
+ENFORCE_STRONG_SECRET_KEY = env_bool(
+    os.getenv("ENFORCE_STRONG_SECRET_KEY"),
+    default=False,
+)
+if ENFORCE_STRONG_SECRET_KEY and _is_weak_secret_key(SECRET_KEY):
+    raise ImproperlyConfigured(
+        "SECRET_KEY appears weak. Use a long, random key with high entropy."
+    )
 
 # --- R2 CONFIG (Shared Across Environments) ---
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
@@ -89,6 +118,29 @@ THROTTLE_FAIL_OPEN = env_bool(
     os.getenv("THROTTLE_FAIL_OPEN"),
     default=DEBUG,
 )
+JWT_USE_HTTPONLY_COOKIES = env_bool(
+    os.getenv("JWT_USE_HTTPONLY_COOKIES"),
+    default=False,
+)
+JWT_ACCESS_COOKIE_NAME = os.getenv("JWT_ACCESS_COOKIE_NAME", "openeire_access")
+JWT_REFRESH_COOKIE_NAME = os.getenv("JWT_REFRESH_COOKIE_NAME", "openeire_refresh")
+JWT_COOKIE_SECURE = env_bool(
+    os.getenv("JWT_COOKIE_SECURE"),
+    default=(not DEBUG),
+)
+JWT_COOKIE_SAMESITE = os.getenv("JWT_COOKIE_SAMESITE", "Lax")
+JWT_COOKIE_DOMAIN = os.getenv("JWT_COOKIE_DOMAIN") or None
+JWT_COOKIE_CSRF_PROTECTION = env_bool(
+    os.getenv("JWT_COOKIE_CSRF_PROTECTION"),
+    default=JWT_USE_HTTPONLY_COOKIES,
+)
+JWT_CSRF_COOKIE_NAME = os.getenv("JWT_CSRF_COOKIE_NAME", "openeire_csrf")
+JWT_CSRF_HEADER_NAME = os.getenv("JWT_CSRF_HEADER_NAME", "HTTP_X_CSRFTOKEN")
+
+if JWT_USE_HTTPONLY_COOKIES and JWT_COOKIE_SAMESITE.lower() == "none" and not JWT_COOKIE_CSRF_PROTECTION:
+    raise ImproperlyConfigured(
+        "JWT cookie mode with SameSite=None requires JWT_COOKIE_CSRF_PROTECTION=True."
+    )
 
 CACHES = build_cache_settings(
     cache_redis_url=None if IS_TEST_ENV else CACHE_REDIS_URL,
@@ -148,9 +200,9 @@ SIMPLE_JWT = {
 
 REST_AUTH = {
     'USE_JWT': True,
-    'JWT_AUTH_COOKIE': None,
-    'JWT_AUTH_REFRESH_COOKIE': None,
-    'JWT_AUTH_HTTPONLY': False,
+    'JWT_AUTH_COOKIE': JWT_ACCESS_COOKIE_NAME if JWT_USE_HTTPONLY_COOKIES else None,
+    'JWT_AUTH_REFRESH_COOKIE': JWT_REFRESH_COOKIE_NAME if JWT_USE_HTTPONLY_COOKIES else None,
+    'JWT_AUTH_HTTPONLY': JWT_USE_HTTPONLY_COOKIES,
 }
 
 AUTHENTICATION_BACKENDS = [
@@ -326,6 +378,36 @@ CSRF_TRUSTED_ORIGINS = [
     "https://openeire.ie",
     "https://openeire.online",
 ]
+
+SECURE_SSL_REDIRECT = env_bool(
+    os.getenv("SECURE_SSL_REDIRECT"),
+    default=(not DEBUG),
+)
+SESSION_COOKIE_SECURE = env_bool(
+    os.getenv("SESSION_COOKIE_SECURE"),
+    default=(not DEBUG),
+)
+CSRF_COOKIE_SECURE = env_bool(
+    os.getenv("CSRF_COOKIE_SECURE"),
+    default=(not DEBUG),
+)
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
+SECURE_HSTS_SECONDS = int(
+    os.getenv("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0")
+)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool(
+    os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS"),
+    default=(not DEBUG),
+)
+SECURE_HSTS_PRELOAD = env_bool(
+    os.getenv("SECURE_HSTS_PRELOAD"),
+    default=(not DEBUG),
+)
+SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "strict-origin-when-cross-origin")
+X_FRAME_OPTIONS = os.getenv("X_FRAME_OPTIONS", "DENY")
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Email Configuration
 if not DEBUG:

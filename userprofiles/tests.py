@@ -4,7 +4,14 @@ from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from rest_framework_simplejwt.tokens import AccessToken
 from unittest.mock import patch
+
+from .token_utils import (
+    EMAIL_VERIFICATION_PURPOSE,
+    PASSWORD_RESET_PURPOSE,
+    issue_user_action_token,
+)
 
 
 @override_settings(
@@ -166,3 +173,197 @@ class EmailUniquenessHardeningTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.json())
         self.assertIn("refresh", response.json())
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="noreply@example.com",
+)
+class ActionTokenPurposeTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="tokenpurpose",
+            email="tokenpurpose@example.com",
+            password="StrongPass123!",
+            is_active=False,
+        )
+        self.verify_url = reverse("auth_verify_email")
+        self.reset_confirm_url = reverse("password_reset_confirm")
+        self.profile_url = reverse("user_profile")
+
+    def test_verify_email_rejects_token_without_verification_purpose(self):
+        generic_access = str(AccessToken.for_user(self.user))
+
+        response = self.client.post(self.verify_url, data={"token": generic_access})
+
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+
+    def test_verify_email_accepts_verification_purpose_token(self):
+        token = issue_user_action_token(
+            user=self.user,
+            purpose=EMAIL_VERIFICATION_PURPOSE,
+            lifetime_minutes=30,
+        )
+
+        response = self.client.post(self.verify_url, data={"token": token})
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)
+
+    def test_password_reset_confirm_rejects_token_with_wrong_purpose(self):
+        wrong_purpose_token = issue_user_action_token(
+            user=self.user,
+            purpose=EMAIL_VERIFICATION_PURPOSE,
+            lifetime_minutes=30,
+        )
+
+        response = self.client.post(
+            self.reset_confirm_url,
+            data={
+                "token": wrong_purpose_token,
+                "password": "NewStrongPass123!",
+                "confirm_password": "NewStrongPass123!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_password_reset_confirm_accepts_password_reset_token(self):
+        token = issue_user_action_token(
+            user=self.user,
+            purpose=PASSWORD_RESET_PURPOSE,
+            lifetime_minutes=30,
+        )
+
+        response = self.client.post(
+            self.reset_confirm_url,
+            data={
+                "token": token,
+                "password": "NewStrongPass123!",
+                "confirm_password": "NewStrongPass123!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPass123!"))
+
+    def test_action_token_is_not_accepted_for_api_bearer_auth(self):
+        active_user = User.objects.create_user(
+            username="active-action-user",
+            email="active-action-user@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        action_token = issue_user_action_token(
+            user=active_user,
+            purpose=PASSWORD_RESET_PURPOSE,
+            lifetime_minutes=30,
+        )
+
+        response = self.client.get(
+            self.profile_url,
+            HTTP_AUTHORIZATION=f"Bearer {action_token}",
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+
+@override_settings(
+    JWT_USE_HTTPONLY_COOKIES=True,
+    JWT_COOKIE_SECURE=False,
+    JWT_COOKIE_CSRF_PROTECTION=True,
+)
+class HttpOnlyJwtCookieAuthTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="cookieuser",
+            email="cookieuser@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        self.login_url = reverse("auth_login")
+        self.refresh_url = reverse("token_refresh")
+        self.logout_url = reverse("auth_logout")
+
+    def test_login_sets_http_only_jwt_cookies(self):
+        response = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        self.assertIn("refresh", response.json())
+        self.assertIn("openeire_access", response.cookies)
+        self.assertIn("openeire_refresh", response.cookies)
+        self.assertIn("openeire_csrf", response.cookies)
+        self.assertTrue(response.cookies["openeire_access"]["httponly"])
+        self.assertTrue(response.cookies["openeire_refresh"]["httponly"])
+        self.assertFalse(response.cookies["openeire_csrf"]["httponly"])
+
+    def test_refresh_from_cookie_requires_csrf_header(self):
+        login = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+        refresh_cookie = login.cookies["openeire_refresh"].value
+
+        self.client.cookies["openeire_refresh"] = refresh_cookie
+        response = self.client.post(self.refresh_url, data={})
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_refresh_reads_refresh_token_from_cookie_with_csrf(self):
+        login = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+        refresh_cookie = login.cookies["openeire_refresh"].value
+        csrf_cookie = login.cookies["openeire_csrf"].value
+
+        self.client.cookies["openeire_refresh"] = refresh_cookie
+        self.client.cookies["openeire_csrf"] = csrf_cookie
+        response = self.client.post(
+            self.refresh_url,
+            data={},
+            HTTP_X_CSRFTOKEN=csrf_cookie,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        self.assertIn("openeire_access", response.cookies)
+
+    def test_logout_with_auth_cookies_requires_csrf(self):
+        login = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+        self.client.cookies["openeire_access"] = login.cookies["openeire_access"].value
+        self.client.cookies["openeire_refresh"] = login.cookies["openeire_refresh"].value
+        self.client.cookies["openeire_csrf"] = login.cookies["openeire_csrf"].value
+
+        response = self.client.post(self.logout_url)
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_logout_clears_auth_cookies_with_csrf(self):
+        login = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+        access_cookie = login.cookies["openeire_access"].value
+        refresh_cookie = login.cookies["openeire_refresh"].value
+        csrf_cookie = login.cookies["openeire_csrf"].value
+        self.client.cookies["openeire_access"] = access_cookie
+        self.client.cookies["openeire_refresh"] = refresh_cookie
+        self.client.cookies["openeire_csrf"] = csrf_cookie
+        response = self.client.post(self.logout_url, HTTP_X_CSRFTOKEN=csrf_cookie)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.cookies["openeire_access"].value, "")
+        self.assertEqual(response.cookies["openeire_refresh"].value, "")
+        self.assertEqual(response.cookies["openeire_csrf"].value, "")
