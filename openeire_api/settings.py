@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import sys
+from urllib.parse import urlsplit
+import dj_database_url
 from dotenv import load_dotenv
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
@@ -251,14 +253,16 @@ SQLITE_SAVE_RETRY_ATTEMPTS = int(os.getenv('SQLITE_SAVE_RETRY_ATTEMPTS', '6'))
 SQLITE_SAVE_RETRY_DELAY_SECONDS = float(os.getenv('SQLITE_SAVE_RETRY_DELAY_SECONDS', '0.3'))
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'timeout': SQLITE_TIMEOUT_SECONDS,
-        },
-    }
+    'default': dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
 }
+
+# Apply the SQLite timeout only if we are actually using SQLite locally
+if DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
+    DATABASES['default']['OPTIONS'] = {'timeout': SQLITE_TIMEOUT_SECONDS}
 
 
 # Password validation
@@ -361,6 +365,23 @@ else:
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+
+def _frontend_origin_from_url(value):
+    if not value:
+        return None
+
+    parsed = urlsplit(str(value).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ImproperlyConfigured(
+            "FRONTEND_URL must be an absolute URL such as https://app.example.com."
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+FRONTEND_ORIGIN = _frontend_origin_from_url(FRONTEND_URL)
+
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -378,6 +399,10 @@ CSRF_TRUSTED_ORIGINS = [
     "https://openeire.ie",
     "https://openeire.online",
 ]
+
+if FRONTEND_ORIGIN:
+    CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_ORIGIN)
 
 SECURE_SSL_REDIRECT = env_bool(
     os.getenv("SECURE_SSL_REDIRECT"),
