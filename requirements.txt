@@ -33,10 +33,10 @@ python-dateutil==2.9.0.post0
 python-decouple==3.8
 python-dotenv==1.1.1
 python3-openid==3.2.0
-reportlab==4.1.0
+redis==7.3.0
+reportlab==4.4.10
 requests==2.31.0
 requests-oauthlib==2.0.0
-redis==5.2.1
 s3transfer==0.16.0
 six==1.17.0
 sqlparse==0.5.4
