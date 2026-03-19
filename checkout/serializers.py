@@ -120,13 +120,9 @@ class OrderSerializer(serializers.ModelSerializer):
                         pass # or add a default flat rate
                 
                 elif product_type_str in ['photo', 'video']:
-                    # Digital items have NO shipping cost
+                    # Digital items have NO shipping cost and now use one price.
                     has_consumer_digital_item = True
-                    license_type = str(options.get('license', 'hd')).strip().lower()
-                    if license_type == '4k':
-                        price = product_instance.price_4k
-                    else:
-                        price = product_instance.price_hd
+                    price = product_instance.price
 
                 item_total = price * quantity
                 order_total += item_total
@@ -154,7 +150,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """
-        Validate physical shipping addresses and digital license options.
+        Validate physical shipping addresses and digital item payload shape.
         """
         country = data.get('country')
         items = data.get('items', [])
@@ -176,7 +172,7 @@ class OrderSerializer(serializers.ModelSerializer):
             if shipping_errors:
                 raise serializers.ValidationError(shipping_errors)
 
-        # Validate digital item options.
+        # Validate digital item options payload shape only.
         for item in items:
             p_type = item.get('product_type')
 
@@ -186,17 +182,7 @@ class OrderSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError(
                         {"items": f"Invalid options payload for {p_type} item."}
                     )
-                license_type = str(options.get('license', 'hd')).strip().lower()
-                if license_type not in {'hd', '4k'}:
-                    raise serializers.ValidationError(
-                        {
-                            "items": (
-                                f"Invalid digital license option '{license_type}' "
-                                f"for {p_type} item."
-                            )
-                        }
-                    )
-        
+
         return data
 
 class OrderHistoryItemSerializer(serializers.ModelSerializer):

@@ -5,7 +5,6 @@ from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse
 from django.db import transaction
 from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField
-from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
 from django.conf import settings
@@ -144,17 +143,13 @@ class GalleryListView(generics.ListAPIView):
         if product_type == 'digital':
             # --- DIGITAL LOGIC ---
             
-            # Annotate prices for sorting
-            photos = photos.annotate(display_price=Coalesce('price_hd', 'price_4k'))
-            videos = videos.annotate(display_price=Coalesce('price_hd', 'price_4k'))
-
             # Apply Sorting
             if sort_key == 'price_asc':
-                photos = photos.order_by('display_price')
-                videos = videos.order_by('display_price')
+                photos = photos.order_by('price')
+                videos = videos.order_by('price')
             elif sort_key == 'price_desc':
-                photos = photos.order_by('-display_price')
-                videos = videos.order_by('-display_price')
+                photos = photos.order_by('-price')
+                videos = videos.order_by('-price')
             else: # date_desc
                 photos = photos.order_by('-created_at')
                 videos = videos.order_by('-created_at')

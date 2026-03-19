@@ -86,8 +86,7 @@ class PhotoListSerializer(serializers.ModelSerializer):
             'description',
             'collection',
             'preview_image',
-            'price_hd',
-            'price_4k',
+            'price',
             'product_type',
             'starting_price',
             'purchase_flows',
@@ -156,8 +155,7 @@ class VideoListSerializer(serializers.ModelSerializer):
             'description',
             'thumbnail_image',
             'collection',
-            'price_hd',
-            'price_4k',
+            'price',
             'product_type',
             'duration',
             'resolution',
@@ -300,7 +298,7 @@ class PhotoDetailSerializer(serializers.ModelSerializer):
         model = Photo
         fields = (
             'id', 'title', 'description', 'collection', 'preview_image', 
-            'price_hd', 'price_4k', 'tags', 'created_at',
+            'price', 'tags', 'created_at',
             'product_type', 'variants', 'average_rating', 'review_count',
             'related_products', 'purchase_flows', 'default_purchase_flow',
         )
@@ -347,7 +345,7 @@ class VideoDetailSerializer(serializers.ModelSerializer):
         model = Video
         fields = (
             'id', 'title', 'description', 'collection', 'thumbnail_image', 
-            'price_hd', 'price_4k', 'tags', 'created_at',
+            'price', 'tags', 'created_at',
             'product_type', 'average_rating', 'review_count',
             'duration', 'resolution', 'frame_rate',
             'related_products', 'purchase_flows', 'default_purchase_flow',

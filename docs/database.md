@@ -1,7 +1,7 @@
 # Database Model Reference
 
 ## Overview
-The project uses Django ORM models across five domain apps. In `settings.py`, the default configured engine is SQLite. CI includes PostgreSQL service configuration, but runtime DB switching is `Configuration Required` because `DATABASE_URL` is not consumed in current settings.
+The project uses Django ORM models across five domain apps. In `settings.py`, the default configured engine is SQLite, while hosted environments can override it through `DATABASE_URL`.
 
 ## Core Entities
 
@@ -26,7 +26,7 @@ The project uses Django ORM models across five domain apps. In `settings.py`, th
   - `title`, `description`, `collection`, `tags`, `is_active`
   - `preview_image` (public media)
   - `high_res_file` (private asset storage)
-  - `price_hd`, `price_4k`
+  - `price`
   - `created_at`
 - Related to:
   - `ProductVariant` (one-to-many)
@@ -38,7 +38,7 @@ The project uses Django ORM models across five domain apps. In `settings.py`, th
   - `title`, `description`, `collection`, `tags`, `is_active`
   - `thumbnail_image` (public)
   - `video_file` (private)
-  - `price_hd`, `price_4k`
+  - `price`
   - `duration`, `resolution`, `frame_rate`
   - `created_at`
 

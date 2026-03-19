@@ -295,8 +295,7 @@ class StripeWebhookLicenseTests(TestCase):
             collection="Test Collection",
             preview_image=preview,
             high_res_file=high_res,
-            price_hd=Decimal("10.00"),
-            price_4k=Decimal("20.00"),
+            price=Decimal("20.00"),
             is_active=True,
         )
 
@@ -474,8 +473,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             collection="Test Collection",
             preview_image=preview,
             high_res_file=high_res,
-            price_hd=Decimal("15.00"),
-            price_4k=Decimal("25.00"),
+            price=Decimal("25.00"),
             is_active=True,
         )
         self.variant = ProductVariant.objects.create(
@@ -566,7 +564,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertNotIn("audit", body_lower)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_rejects_invalid_digital_license_option(self, mock_construct):
+    def test_webhook_ignores_legacy_digital_license_option(self, mock_construct):
         mock_construct.return_value = self._payment_intent_event(license_value="tampered")
 
         response = self.client.post(
@@ -577,8 +575,8 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(Order.objects.count(), 0)
-        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 1)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_rejects_guest_digital_order_creation(self, mock_construct):
@@ -734,8 +732,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
             collection="Test Collection",
             preview_image=preview,
             high_res_file=high_res,
-            price_hd=Decimal("10.00"),
-            price_4k=Decimal("20.00"),
+            price=Decimal("20.00"),
             is_active=True,
         )
         self.variant = ProductVariant.objects.create(
@@ -752,8 +749,9 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.url = reverse("create_payment_intent")
 
     @patch("checkout.views.stripe.PaymentIntent.create")
-    def test_invalid_digital_license_option_is_rejected(self, mock_create):
+    def test_legacy_digital_license_option_is_ignored(self, mock_create):
         self.client.force_authenticate(user=self.user)
+        mock_create.return_value = Mock(client_secret="cs_test_123")
         payload = {
             "cart": [
                 {
@@ -771,9 +769,9 @@ class CreatePaymentIntentSecurityTests(TestCase):
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("Invalid digital license option", response.data["error"])
-        mock_create.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("clientSecret", response.data)
+        mock_create.assert_called_once()
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_options_payload_shape_is_rejected(self, mock_create):

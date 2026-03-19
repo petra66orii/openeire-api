@@ -236,7 +236,7 @@ class ProductVariantInline(admin.TabularInline):
 class PhotoAdmin(admin.ModelAdmin):
     form = PhotoAdminForm
     
-    list_display = ('title', 'collection', 'price_hd', 'price_4k', 'created_at')
+    list_display = ('title', 'collection', 'price', 'created_at')
     list_filter = ('collection',)
     search_fields = ('title', 'tags', 'description')
     
@@ -265,7 +265,7 @@ class PhotoAdmin(admin.ModelAdmin):
 
 # @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):
-    list_display = ('title', 'collection', 'resolution', 'frame_rate', 'price_hd')
+    list_display = ('title', 'collection', 'resolution', 'frame_rate', 'price')
     list_filter = ('collection', 'resolution')
     search_fields = ('title', 'description', 'tags')
     
@@ -281,7 +281,7 @@ class VideoAdmin(admin.ModelAdmin):
             'fields': ('duration', 'resolution', 'frame_rate')
         }),
         ('Pricing', {
-            'fields': ('price_hd', 'price_4k')
+            'fields': ('price',)
         }),
     )
 
