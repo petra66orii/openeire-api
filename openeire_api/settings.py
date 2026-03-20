@@ -367,11 +367,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 
-
 def _frontend_origin_from_url(value):
     if not value:
         return None
-
     parsed = urlsplit(str(value).strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ImproperlyConfigured(
@@ -379,12 +377,12 @@ def _frontend_origin_from_url(value):
         )
     return f"{parsed.scheme}://{parsed.netloc}"
 
-
 FRONTEND_ORIGIN = _frontend_origin_from_url(FRONTEND_URL)
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://openeire.onrender.com",
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -398,9 +396,10 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:5173",
     "https://openeire.ie",
     "https://openeire.online",
+    "https://openeire.onrender.com",
 ]
 
-if FRONTEND_ORIGIN:
+if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
     CSRF_TRUSTED_ORIGINS.append(FRONTEND_ORIGIN)
 
