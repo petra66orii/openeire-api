@@ -564,7 +564,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertNotIn("audit", body_lower)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_ignores_legacy_digital_license_option(self, mock_construct):
+    def test_webhook_ignores_invalid_digital_license_option(self, mock_construct):
         mock_construct.return_value = self._payment_intent_event(license_value="tampered")
 
         response = self.client.post(
@@ -749,7 +749,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.url = reverse("create_payment_intent")
 
     @patch("checkout.views.stripe.PaymentIntent.create")
-    def test_legacy_digital_license_option_is_ignored(self, mock_create):
+    def test_invalid_digital_license_option_is_ignored(self, mock_create):
         self.client.force_authenticate(user=self.user)
         mock_create.return_value = Mock(client_secret="cs_test_123")
         payload = {
