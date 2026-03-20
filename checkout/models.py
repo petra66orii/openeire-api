@@ -77,8 +77,8 @@ class OrderItem(models.Model):
     object_id = models.PositiveIntegerField()
     product = GenericForeignKey('content_type', 'object_id')
     
-    # Store details at time of purchase
-    details = models.JSONField(null=True, blank=True) # e.g., {'quality': '4k'} or {'size': 'A4'}
+    # Store item options at time of purchase.
+    details = models.JSONField(null=True, blank=True)
 
     def __str__(self):
         return f"Item for order {self.order.order_number}"

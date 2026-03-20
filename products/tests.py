@@ -59,8 +59,7 @@ class LicenseRequestTests(APITestCase):
             collection="Test Collection",
             preview_image=preview,
             high_res_file=high_res,
-            price_hd=Decimal("10.00"),
-            price_4k=Decimal("20.00"),
+            price=Decimal("20.00"),
             is_active=is_active,
         )
 
@@ -73,8 +72,7 @@ class LicenseRequestTests(APITestCase):
             collection="Test Collection",
             thumbnail_image=thumbnail,
             video_file=video,
-            price_hd=Decimal("12.00"),
-            price_4k=Decimal("24.00"),
+            price=Decimal("24.00"),
             is_active=is_active,
         )
 
