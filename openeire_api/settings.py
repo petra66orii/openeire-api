@@ -531,13 +531,10 @@ LOGGING = {
             'level': 'ERROR',
             'propagate': False,
         },
-<<<<<<< fix/email-auth
         'products': {
             'handlers': ['console'],
             'level': 'ERROR',
             'propagate': False,
         },
-=======
->>>>>>> main
     },
 }
