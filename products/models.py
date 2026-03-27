@@ -585,7 +585,8 @@ class ProductReview(models.Model):
 @receiver(post_save, sender=Photo)
 def generate_variants_for_photo(sender, instance, created, **kwargs):
     """
-    Automatically create ProductVariants for a new Photo based on PrintTemplates.
+    Automatically create ProductVariants for a new printable Photo based on
+    PrintTemplates.
     """
     if created and instance.is_printable:
         templates = PrintTemplate.objects.all()

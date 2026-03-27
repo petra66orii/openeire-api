@@ -708,6 +708,61 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(Order.objects.count(), 0)
         self.assertEqual(len(mail.outbox), 0)
 
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_rejects_non_printable_physical_variant_order(self, mock_construct):
+        self.photo.is_printable = False
+        self.photo.save(update_fields=["is_printable"])
+        cart = [
+            {
+                "product_id": self.variant.id,
+                "product_type": "physical",
+                "quantity": 1,
+                "options": {},
+            }
+        ]
+        mock_construct.return_value = {
+            "id": "evt_non_printable_physical",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_non_printable_physical",
+                    "receipt_email": "buyer@example.com",
+                    "metadata": {
+                        "cart": json.dumps(cart),
+                        "username": "Guest",
+                        "save_info": "false",
+                        "shipping_cost": "0",
+                        "shipping_method": "budget",
+                    },
+                    "shipping": {
+                        "name": "Buyer",
+                        "phone": "+3530000000",
+                        "address": {
+                            "country": "IE",
+                            "city": "Galway",
+                            "line1": "1 Test Street",
+                            "line2": "",
+                            "postal_code": "H62 X254",
+                            "state": "Galway",
+                        },
+                    },
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 0)
+        event = StripeWebhookEvent.objects.get(stripe_event_id="evt_non_printable_physical")
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("Physical product", event.error_message)
+
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_123")
 class CreatePaymentIntentSecurityTests(TestCase):
