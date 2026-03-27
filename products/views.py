@@ -178,7 +178,7 @@ class GalleryListView(generics.ListAPIView):
             has_variants = ProductVariant.objects.filter(photo=OuterRef('pk'))
             
             # We filter the 'photos' queryset which has ALREADY been filtered by collection/search above
-            physical_photos = photos.annotate(
+            physical_photos = photos.filter(is_printable=True).annotate(
                 has_physical=Exists(has_variants),
                 starting_price=Min('variants__price')
             ).filter(has_physical=True)
@@ -217,7 +217,7 @@ class DigitalPhotoDetailView(generics.RetrieveAPIView):
     permission_classes = [IsDigitalGalleryAuthorized]
 
 class PhysicalPhotoDetailView(generics.RetrieveAPIView):
-    queryset = Photo.objects.filter(is_active=True)
+    queryset = Photo.objects.filter(is_active=True, is_printable=True)
     serializer_class = PhysicalPhotoDetailSerializer
     permission_classes = [AllowAny]
 
@@ -378,7 +378,7 @@ class AILicenseDraftUpdateView(APIView):
         )
 
 class ProductDetailView(generics.RetrieveAPIView):
-    queryset = ProductVariant.objects.filter(photo__is_active=True)
+    queryset = ProductVariant.objects.filter(photo__is_active=True, photo__is_printable=True)
     serializer_class = ProductDetailSerializer
     permission_classes = [AllowAny]
 
@@ -437,7 +437,10 @@ class ProductReviewListCreateView(generics.ListCreateAPIView):
         elif product_type_str == 'video':
             queryset = Video.objects.filter(is_active=True)
         elif product_type_str == 'product':
-            queryset = ProductVariant.objects.filter(photo__is_active=True)
+            queryset = ProductVariant.objects.filter(
+                photo__is_active=True,
+                photo__is_printable=True,
+            )
         else:
             raise Http404("Invalid product type.")
         

@@ -26,6 +26,7 @@ from .models import (
     LicenceDeliveryToken,
     GalleryAccess,
     Photo,
+    PrintTemplate,
     ProductVariant,
     Video,
     generate_variants_for_photo,
@@ -51,7 +52,7 @@ class LicenseRequestTests(APITestCase):
         self.photo = self._create_photo(is_active=True)
         self.url = reverse('license-request-create')
 
-    def _create_photo(self, is_active=True):
+    def _create_photo(self, is_active=True, is_printable=False):
         preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
         high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
         return Photo.objects.create(
@@ -62,6 +63,7 @@ class LicenseRequestTests(APITestCase):
             high_res_file=high_res,
             price=Decimal("20.00"),
             is_active=is_active,
+            is_printable=is_printable,
         )
 
     def _create_video(self, is_active=True):
@@ -166,6 +168,28 @@ class LicenseRequestTests(APITestCase):
         )
         self.assertFalse(GalleryAccess.objects.filter(email="smtp-timeout@example.com").exists())
         mock_send_mail.assert_called_once()
+
+    def test_photo_creation_generates_variants_only_for_printable_photos(self):
+        post_save.connect(generate_variants_for_photo, sender=Photo)
+        self.addCleanup(post_save.disconnect, generate_variants_for_photo, sender=Photo)
+
+        template = PrintTemplate.objects.create(
+            material="eco_canvas",
+            size="12x18",
+            production_cost=Decimal("40.00"),
+            sku_suffix="CAN-12x18",
+        )
+        printable_photo = self._create_photo(is_active=True, is_printable=True)
+        digital_only_photo = self._create_photo(is_active=True, is_printable=False)
+
+        variant = ProductVariant.objects.get(
+            photo=printable_photo,
+            material="eco_canvas",
+            size="12x18",
+        )
+        self.assertEqual(variant.price, template.retail_price)
+        self.assertEqual(variant.sku, f"PHOTO-{printable_photo.id}-CAN-12x18")
+        self.assertFalse(ProductVariant.objects.filter(photo=digital_only_photo).exists())
 
     def test_gallery_verify_endpoint_throttles(self):
         access = GalleryAccess.objects.create(email="verify-throttle@example.com")
@@ -549,6 +573,8 @@ class LicenseRequestTests(APITestCase):
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
 
     def test_physical_product_page_uses_physical_purchase_flow(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
         ProductVariant.objects.create(
             photo=self.photo,
             material="eco_canvas",
@@ -592,6 +618,8 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data["default_purchase_flow"], "PERSONAL_CHECKOUT")
 
     def test_physical_gallery_items_are_not_serialized_as_digital_photos(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
         ProductVariant.objects.create(
             photo=self.photo,
             material="eco_canvas",
@@ -607,6 +635,8 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data[0]["default_purchase_flow"], "PHYSICAL_PRINT_CHECKOUT")
 
     def test_variant_detail_does_not_expose_high_res_in_nested_photo(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
         variant = ProductVariant.objects.create(
             photo=self.photo,
             material="eco_canvas",
@@ -625,13 +655,15 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data["photo"]["product_type"], "physical")
 
     def test_physical_related_products_include_only_printable_items(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
         ProductVariant.objects.create(
             photo=self.photo,
             material="eco_canvas",
             size="12x18",
             price=Decimal("99.00"),
         )
-        printable_photo = self._create_photo(is_active=True)
+        printable_photo = self._create_photo(is_active=True, is_printable=True)
         ProductVariant.objects.create(
             photo=printable_photo,
             material="eco_canvas",

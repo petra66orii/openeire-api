@@ -65,8 +65,6 @@ class OrderSerializer(serializers.ModelSerializer):
         shipping_country = validated_data.get('country') 
         shipping_method = validated_data.get('shipping_method', 'budget')
 
-        order = Order.objects.create(user_profile=user_profile, **validated_data)
-
         model_map = {
             'photo': Photo, 
             'video': Video, 
@@ -76,6 +74,7 @@ class OrderSerializer(serializers.ModelSerializer):
         order_total = 0
         calculated_delivery_cost = 0  # Start at 0
         has_consumer_digital_item = False
+        order_items_to_create = []
 
         for item_data in items_data:
             product_id = item_data['product_id']
@@ -90,7 +89,14 @@ class OrderSerializer(serializers.ModelSerializer):
                 continue
 
             try:
-                product_instance = model_class.objects.get(id=product_id)
+                if product_type_str == 'physical':
+                    product_instance = model_class.objects.get(
+                        id=product_id,
+                        photo__is_active=True,
+                        photo__is_printable=True,
+                    )
+                else:
+                    product_instance = model_class.objects.get(id=product_id)
                 
                 # --- PRICE LOGIC ---
                 price = 0
@@ -127,16 +133,33 @@ class OrderSerializer(serializers.ModelSerializer):
                 item_total = price * quantity
                 order_total += item_total
 
-                OrderItem.objects.create(
-                    order=order,
-                    product=product_instance,
-                    quantity=quantity,
-                    item_total=item_total,
-                    details=options
+                order_items_to_create.append(
+                    {
+                        "product": product_instance,
+                        "quantity": quantity,
+                        "item_total": item_total,
+                        "details": options,
+                    }
                 )
 
             except model_class.DoesNotExist:
+                if product_type_str == 'physical':
+                    raise serializers.ValidationError(
+                        {
+                            "items": (
+                                f"Physical product {product_id} is no longer available for sale."
+                            )
+                        }
+                    )
                 continue
+
+        order = Order.objects.create(user_profile=user_profile, **validated_data)
+        OrderItem.objects.bulk_create(
+            [
+                OrderItem(order=order, **item_kwargs)
+                for item_kwargs in order_items_to_create
+            ]
+        )
         
         # 3. Save the calculated values to the order
         order.order_total = order_total
