@@ -74,8 +74,8 @@ class RequestGalleryAccessView(APIView):
                     recipient_list=[email],
                     fail_silently=False,
                 )
-        except SMTPException:
-            logger.exception("Failed to send gallery access email for %s", email)
+        except (SMTPException, OSError):
+            logger.exception("Failed to send gallery access email")
             return Response(
                 {"error": "Unable to send access code right now. Please try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -153,6 +153,20 @@ class LicenseRequestTests(APITestCase):
         self.assertFalse(GalleryAccess.objects.filter(email="smtp-fail@example.com").exists())
         mock_send_mail.assert_called_once()
 
+    @patch("products.views.send_mail", side_effect=OSError("smtp timeout"))
+    def test_gallery_request_handles_mail_transport_os_errors(self, mock_send_mail):
+        url = reverse("gallery_request")
+
+        response = self.client.post(url, {"email": "smtp-timeout@example.com"}, format="json")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"error": "Unable to send access code right now. Please try again later."},
+        )
+        self.assertFalse(GalleryAccess.objects.filter(email="smtp-timeout@example.com").exists())
+        mock_send_mail.assert_called_once()
+
     def test_gallery_verify_endpoint_throttles(self):
         access = GalleryAccess.objects.create(email="verify-throttle@example.com")
         url = reverse("gallery_verify")
@@ -345,7 +359,7 @@ class LicenseRequestTests(APITestCase):
         req.message = "Edited text only"
         req.save(update_fields=["message", "updated_at"])
         req.transition_to("NEEDS_INFO")
-        latest_log = req.audit_logs.first()
+        latest_log = req.audit_logs.get(to_status="NEEDS_INFO")
         self.assertEqual(latest_log.to_status, "NEEDS_INFO")
         self.assertEqual(latest_log.note, "")
 
