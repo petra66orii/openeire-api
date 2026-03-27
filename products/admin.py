@@ -236,8 +236,8 @@ class ProductVariantInline(admin.TabularInline):
 class PhotoAdmin(admin.ModelAdmin):
     form = PhotoAdminForm
     
-    list_display = ('title', 'collection', 'price', 'created_at')
-    list_filter = ('collection',)
+    list_display = ('title', 'collection', 'is_printable', 'price', 'created_at')
+    list_filter = ('collection', 'is_printable')
     search_fields = ('title', 'tags', 'description')
     
     inlines = [ProductVariantInline]
@@ -245,9 +245,13 @@ class PhotoAdmin(admin.ModelAdmin):
 
     @admin.action(description="Generate missing variants from Templates")
     def regenerate_variants(self, request, queryset):
-        templates = PrintTemplate.objects.filter(is_active=True)
+        templates = PrintTemplate.objects.all()
         count = 0
+        skipped = 0
         for photo in queryset:
+            if not photo.is_printable:
+                skipped += 1
+                continue
             for t in templates:
                 # Calculate retail price dynamically here as well
                 obj, created = ProductVariant.objects.get_or_create(
@@ -261,7 +265,10 @@ class PhotoAdmin(admin.ModelAdmin):
                 )
                 if created:
                     count += 1
-        self.message_user(request, f"Created {count} new variants.")
+        message = f"Created {count} new variants."
+        if skipped:
+            message += f" Skipped {skipped} non-printable photo(s)."
+        self.message_user(request, message)
 
 # @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):

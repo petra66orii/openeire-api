@@ -154,7 +154,14 @@ class CreatePaymentIntentView(APIView):
                 model_class = model_map.get(product_type)
                 if not model_class: continue
 
-                product_instance = model_class.objects.get(id=product_id)
+                if product_type == 'physical':
+                    product_instance = model_class.objects.get(
+                        id=product_id,
+                        photo__is_active=True,
+                        photo__is_printable=True,
+                    )
+                else:
+                    product_instance = model_class.objects.get(id=product_id)
                 
                 # Digital items use a single price; physical variants use their own price.
                 if product_type in ['photo', 'video']:

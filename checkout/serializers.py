@@ -90,7 +90,13 @@ class OrderSerializer(serializers.ModelSerializer):
                 continue
 
             try:
-                product_instance = model_class.objects.get(id=product_id)
+                if product_type_str == 'physical':
+                    product_instance = model_class.objects.get(
+                        id=product_id,
+                        photo__is_printable=True,
+                    )
+                else:
+                    product_instance = model_class.objects.get(id=product_id)
                 
                 # --- PRICE LOGIC ---
                 price = 0

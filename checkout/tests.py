@@ -984,6 +984,8 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_guest_physical_only_cart_is_allowed(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
         mock_create.return_value = Mock(client_secret="cs_test_123")
         payload = {
             "cart": [
@@ -1099,4 +1101,37 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("shipping_details", response.data)
         self.assertIn("address", response.data["shipping_details"])
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_non_printable_physical_variant_is_rejected(self, mock_create):
+        self.photo.is_printable = False
+        self.photo.save(update_fields=["is_printable"])
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Galway",
+                    "country": "IE",
+                    "postal_code": "H62 X254",
+                    "state": "Galway",
+                },
+            },
+        }
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
         mock_create.assert_not_called()

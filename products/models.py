@@ -80,6 +80,7 @@ class Photo(models.Model):
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
+    is_printable = models.BooleanField(default=False)
 
     def __str__(self):
         return self.title
@@ -584,10 +585,10 @@ class ProductReview(models.Model):
 @receiver(post_save, sender=Photo)
 def generate_variants_for_photo(sender, instance, created, **kwargs):
     """
-    Automatically create ProductVariants for a new Photo based on active PrintTemplates.
+    Automatically create ProductVariants for a new Photo based on PrintTemplates.
     """
-    if created:
-        templates = PrintTemplate.objects.filter(is_active=True)
+    if created and instance.is_printable:
+        templates = PrintTemplate.objects.all()
         
         variants_to_create = []
         for t in templates:
@@ -600,7 +601,7 @@ def generate_variants_for_photo(sender, instance, created, **kwargs):
                     photo=instance,
                     material=t.material,
                     size=t.size,
-                    price=t.base_price,
+                    price=t.retail_price,
                     sku=sku
                 )
             )

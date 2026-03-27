@@ -443,6 +443,7 @@ class PhysicalPhotoDetailSerializer(PhotoDetailSerializer):
         qs = Photo.objects.filter(
             collection=obj.collection,
             is_active=True,
+            is_printable=True,
             variants__isnull=False,
         ).exclude(id=obj.id).annotate(
             starting_price=Min('variants__price')
