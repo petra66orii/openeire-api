@@ -65,6 +65,8 @@ R2_PRIVATE_SECRET_ACCESS_KEY = os.getenv('R2_PRIVATE_SECRET_ACCESS_KEY', R2_SECR
 ALLOWED_HOSTS = [
     "127.0.0.1",
     "localhost",
+    "api.openeire.ie",
+    "api.openeire.online",
 ]
 
 RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
