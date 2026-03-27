@@ -1,5 +1,7 @@
+import logging
 import os
 import random
+from smtplib import SMTPException
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse
@@ -48,6 +50,8 @@ from .serializers import (
 )
 from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
+logger = logging.getLogger(__name__)
+
 
 class RequestGalleryAccessView(APIView):
     permission_classes = [AllowAny]
@@ -59,16 +63,23 @@ class RequestGalleryAccessView(APIView):
         if not email:
             return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        access_record = GalleryAccess.objects.create(email=email)
+        try:
+            with transaction.atomic():
+                access_record = GalleryAccess.objects.create(email=email)
 
-        # Ensure EMAIL_HOST_USER is set in settings.py
-        send_mail(
-            subject="OpenEire Studios - Private Gallery Access",
-            message=f"Hello,\n\nHere is your access code for the Digital Stock Gallery:\n\n{access_record.access_code}\n\nValid for 30 days.",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
+                send_mail(
+                    subject="OpenEire Studios - Private Gallery Access",
+                    message=f"Hello,\n\nHere is your access code for the Digital Stock Gallery:\n\n{access_record.access_code}\n\nValid for 30 days.",
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[email],
+                    fail_silently=False,
+                )
+        except SMTPException:
+            logger.exception("Failed to send gallery access email for %s", email)
+            return Response(
+                {"error": "Unable to send access code right now. Please try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response({"message": "Code sent"}, status=status.HTTP_200_OK)
 
 class VerifyGalleryAccessView(APIView):

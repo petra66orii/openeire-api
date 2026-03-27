@@ -3,6 +3,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from smtplib import SMTPAuthenticationError
 from unittest.mock import patch
 
 from django.core.cache import cache, caches
@@ -137,6 +138,20 @@ class LicenseRequestTests(APITestCase):
 
         blocked = self.client.post(url, {"email": "throttle-final@example.com"}, format="json")
         self.assertEqual(blocked.status_code, 429)
+
+    @patch("products.views.send_mail", side_effect=SMTPAuthenticationError(535, b"5.7.8 Authentication failed"))
+    def test_gallery_request_rolls_back_when_email_send_fails(self, mock_send_mail):
+        url = reverse("gallery_request")
+
+        response = self.client.post(url, {"email": "smtp-fail@example.com"}, format="json")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"error": "Unable to send access code right now. Please try again later."},
+        )
+        self.assertFalse(GalleryAccess.objects.filter(email="smtp-fail@example.com").exists())
+        mock_send_mail.assert_called_once()
 
     def test_gallery_verify_endpoint_throttles(self):
         access = GalleryAccess.objects.create(email="verify-throttle@example.com")
