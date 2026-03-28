@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, SimpleTestCase, override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from blog.models import BlogPost
@@ -40,6 +40,9 @@ class SiteMetadataTests(TestCase):
         self.assertIn("https://openeire.ie/gallery/physical", content)
         self.assertNotIn("https://openeire.ie/gallery/photo/", content)
         self.assertNotIn("https://openeire.ie/gallery/video/", content)
+        self.assertIn("<priority>1.0</priority>", content)
+        self.assertIn("<priority>0.4</priority>", content)
+        self.assertNotIn("bound method", content)
 
     def test_blog_sitemap_uses_frontend_blog_urls(self):
         author = get_user_model().objects.create_user(

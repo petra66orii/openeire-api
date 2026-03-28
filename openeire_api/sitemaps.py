@@ -32,9 +32,9 @@ class FrontendAbsoluteUrlSitemap(Sitemap):
                 {
                     "item": item,
                     "location": self.location(item),
-                    "lastmod": self.lastmod(item) if hasattr(self, "lastmod") else None,
-                    "changefreq": getattr(self, "changefreq", None),
-                    "priority": getattr(self, "priority", None),
+                    "lastmod": self._get("lastmod", item),
+                    "changefreq": self._get("changefreq", item),
+                    "priority": self._get("priority", item),
                     "alternates": [],
                 }
             )
@@ -43,7 +43,6 @@ class FrontendAbsoluteUrlSitemap(Sitemap):
 
 class StaticPageSitemap(FrontendAbsoluteUrlSitemap):
     changefreq = "weekly"
-    priority = 0.7
 
     pages = (
         {"path": "/", "priority": 1.0},
