@@ -39,6 +39,7 @@ Set values for the variables used by settings and integrations:
   - `STRIPE_PUBLIC_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 - Prodigi:
   - `PRODIGI_API_KEY`, `PRODIGI_SANDBOX`, `SITE_URL`
+  - `SITE_URL` is a fallback only. In production, physical print assets should resolve through the private storage backend so Prodigi receives a short-lived signed URL instead of a permanent public media URL.
 - Internal worker:
   - `AI_WORKER_SECRET` (+ optional IP allowlist vars)
 
@@ -96,6 +97,7 @@ Media:
 - Debug/test: local filesystem (`MEDIA_ROOT`).
 - Non-debug: S3-compatible storage backend through `django-storages`.
 - Private digital assets use custom `PrivateAssetStorage` and separate private bucket settings.
+- Prodigi print fulfillment prefers the storage backend URL for private `high_res_file` assets. With private R2 configured correctly, this should produce a temporary signed URL that Prodigi can fetch without exposing the original file publicly.
 
 ## 7. Deployment Platform Notes (Render)
 
