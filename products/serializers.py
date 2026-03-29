@@ -1,5 +1,7 @@
 import re
 from rest_framework import serializers
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from .models import (
     Photo,
     Video,
@@ -190,7 +192,18 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         if request is not None and getattr(request, "user", None) and request.user.is_authenticated:
-            data['email'] = request.user.email
+            account_email = str(request.user.email or "").strip().lower()
+            if not account_email:
+                raise serializers.ValidationError(
+                    {"email": "Add a valid email address to your account before submitting a license request."}
+                )
+            try:
+                validate_email(account_email)
+            except DjangoValidationError:
+                raise serializers.ValidationError(
+                    {"email": "Add a valid email address to your account before submitting a license request."}
+                )
+            data['email'] = account_email
 
         try:
             content_type = ContentType.objects.get(app_label='products', model=asset_type)
