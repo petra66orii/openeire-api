@@ -446,6 +446,31 @@ class LicenceDeliveryToken(models.Model):
     def __str__(self):
         return f"Token for LicenseRequest {self.license_request_id}"
 
+
+class PersonalDownloadToken(models.Model):
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    order_item = models.ForeignKey(
+        'checkout.OrderItem',
+        on_delete=models.CASCADE,
+        related_name='personal_download_tokens',
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Personal Download Token"
+        verbose_name_plural = "Personal Download Tokens"
+
+    @property
+    def is_valid(self):
+        now = timezone.now()
+        return self.used_at is None and now < self.expires_at
+
+    def __str__(self):
+        return f"Token for OrderItem {self.order_item_id}"
+
 class ProductVariant(models.Model):
     """
     Specific physical versions of a Photo (e.g., A4 Canvas, Framed Print).

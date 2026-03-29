@@ -3,5 +3,6 @@ db.sqlite3
 __pycache__
 .env
 /test_media
+/.test_media
 /media/
 media/licences/

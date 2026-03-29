@@ -1,1 +1,1 @@
-OpenÉire Studios - Order Confirmation {{ order.order_number }}
+OpenEire Studios - Order Confirmation {{ order.order_number }}

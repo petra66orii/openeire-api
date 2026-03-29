@@ -26,6 +26,7 @@ from products.models import (
     StripeWebhookEvent,
     LicenceDocument,
     LicenseRequestAuditLog,
+    PersonalDownloadToken,
     generate_variants_for_photo,
 )
 from .models import Order
@@ -666,11 +667,35 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIn("PERSONAL USE LICENCE", body)
         self.assertIn(order.personal_terms_version, body)
         self.assertIn("http://testserver/api/licence/personal-use/", body)
+        self.assertIn("Your personal download links:", body)
+        token = PersonalDownloadToken.objects.get(order_item__order=order)
+        self.assertIn(
+            f"http://testserver/api/personal-download/{token.token}/",
+            body,
+        )
 
         body_lower = body.lower()
         self.assertNotIn("rights-managed", body_lower)
         self.assertNotIn("indemnity", body_lower)
         self.assertNotIn("audit", body_lower)
+
+    @override_settings(FRONTEND_URL=None)
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_confirmation_email_omits_profile_link_when_frontend_url_missing(self, mock_construct):
+        mock_construct.return_value = self._payment_intent_event()
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        body = mail.outbox[0].body
+        self.assertNotIn("None/profile", body)
+        self.assertNotIn("logging into your profile", body)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_ignores_invalid_digital_license_option(self, mock_construct):

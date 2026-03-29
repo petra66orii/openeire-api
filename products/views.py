@@ -1,5 +1,4 @@
 import logging
-import os
 import random
 from smtplib import SMTPException
 from django.shortcuts import get_object_or_404
@@ -26,6 +25,7 @@ from .models import (
     GalleryAccess,
     LicenseRequest,
     LicenceDeliveryToken,
+    PersonalDownloadToken,
 )
 from .licensing import get_asset_file_field
 from .licensing import send_licence_initial_draft_email
@@ -583,19 +583,13 @@ class ProtectedDownloadView(APIView):
 
         if not file_handle:
             raise Http404("File not attached to product")
+        try:
+            file_handle.open("rb")
+        except Exception:
+            raise Http404("File not available")
 
-        file_path = file_handle.path
-
-        if not os.path.exists(file_path):
-            raise Http404("File on disk not found")
-        # 4. Serve the file as an attachment.
-        response = FileResponse(open(file_path, 'rb'))
-        
-        # Set filename so the browser saves it nicely (e.g., "sunset.jpg")
-        filename = os.path.basename(file_path)
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        
-        return response
+        filename = file_handle.name.rsplit("/", 1)[-1]
+        return FileResponse(file_handle, as_attachment=True, filename=filename)
 
 
 class LicenceAssetDownloadView(APIView):
@@ -623,6 +617,44 @@ class LicenceAssetDownloadView(APIView):
 
             token_obj.used_at = timezone.now()
             token_obj.save(update_fields=["used_at"])
+
+        filename = file_field.name.rsplit("/", 1)[-1]
+        return FileResponse(file_field, as_attachment=True, filename=filename)
+
+
+class PersonalAssetDownloadView(APIView):
+    """
+    Serves personal-use digital purchases via an expiring token link.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        token_obj = PersonalDownloadToken.objects.select_related("order_item").filter(token=token).first()
+        if not token_obj or not token_obj.is_valid:
+            raise Http404("Download link has expired or was already used.")
+
+        order_item = token_obj.order_item
+        asset = order_item.product
+        file_field = get_asset_file_field(asset)
+        if not file_field:
+            raise Http404("File not attached to asset")
+
+        try:
+            file_field.open("rb")
+        except Exception:
+            raise Http404("File not available")
+
+        used_at = timezone.now()
+        with transaction.atomic():
+            updated = PersonalDownloadToken.objects.filter(
+                pk=token_obj.pk,
+                used_at__isnull=True,
+                expires_at__gt=used_at,
+            ).update(used_at=used_at)
+
+        if updated != 1:
+            file_field.close()
+            raise Http404("Download link has expired or was already used.")
 
         filename = file_field.name.rsplit("/", 1)[-1]
         return FileResponse(file_field, as_attachment=True, filename=filename)
