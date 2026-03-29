@@ -2,6 +2,7 @@ from django.db import migrations
 
 
 def backfill_productvariant_prodigi_sku(apps, schema_editor):
+    batch_size = 500
     ProductVariant = apps.get_model("products", "ProductVariant")
     PrintTemplate = apps.get_model("products", "PrintTemplate")
 
@@ -20,9 +21,20 @@ def backfill_productvariant_prodigi_sku(apps, schema_editor):
             continue
         variant.prodigi_sku = prodigi_sku
         variants_to_update.append(variant)
+        if len(variants_to_update) >= batch_size:
+            ProductVariant.objects.bulk_update(
+                variants_to_update,
+                ["prodigi_sku"],
+                batch_size=batch_size,
+            )
+            variants_to_update = []
 
     if variants_to_update:
-        ProductVariant.objects.bulk_update(variants_to_update, ["prodigi_sku"])
+        ProductVariant.objects.bulk_update(
+            variants_to_update,
+            ["prodigi_sku"],
+            batch_size=batch_size,
+        )
 
 
 class Migration(migrations.Migration):
