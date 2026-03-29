@@ -201,6 +201,7 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise serializers.ValidationError('No active account found with the given credentials')
 
         # If authentication succeeds, proceed with token generation
+        self.user = user
         refresh = self.get_token(user)
 
         data = {}
