@@ -230,7 +230,7 @@ class LicenseRequestAdminForm(forms.ModelForm):
 class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
     extra = 1  # Show 1 empty row by default
-    fields = ('material', 'size', 'price', 'sku')
+    fields = ('material', 'size', 'price', 'sku', 'prodigi_sku')
 
 # @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
@@ -247,7 +247,9 @@ class PhotoAdmin(admin.ModelAdmin):
     def regenerate_variants(self, request, queryset):
         templates = PrintTemplate.objects.all()
         count = 0
+        repaired = 0
         skipped = 0
+        variants_to_backfill = []
         for photo in queryset:
             if not photo.is_printable:
                 skipped += 1
@@ -260,12 +262,25 @@ class PhotoAdmin(admin.ModelAdmin):
                     size=t.size,
                     defaults={
                         'price': t.retail_price, # Ensure this uses the *retail* price, not base price!
-                        'sku': f"PHOTO-{photo.id}-{t.sku_suffix}"
+                        'sku': f"PHOTO-{photo.id}-{t.sku_suffix}",
+                        'prodigi_sku': t.prodigi_sku,
                     }
                 )
                 if created:
                     count += 1
+                elif not obj.prodigi_sku and t.prodigi_sku:
+                    obj.prodigi_sku = t.prodigi_sku
+                    variants_to_backfill.append(obj)
+                    repaired += 1
+        if variants_to_backfill:
+            ProductVariant.objects.bulk_update(
+                variants_to_backfill,
+                ['prodigi_sku'],
+                batch_size=500,
+            )
         message = f"Created {count} new variants."
+        if repaired:
+            message += f" Repaired {repaired} variant SKU(s)."
         if skipped:
             message += f" Skipped {skipped} non-printable photo(s)."
         self.message_user(request, message)

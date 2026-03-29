@@ -30,7 +30,7 @@ from products.models import (
 )
 from .models import Order
 from .address_validation import validate_physical_shipping_address
-from .prodigi import create_prodigi_order
+from .prodigi import create_prodigi_order, _get_prodigi_asset_url
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -118,14 +118,24 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         def url(self):
             raise RuntimeError("signed-url-token-should-not-leak")
 
-    def _build_order(self, *, bad_asset_url=False):
+    class _StorageBackedFileHandle:
+        def __init__(self, *, name, storage_url, fallback_url=None):
+            self.name = name
+            self.storage = SimpleNamespace(url=Mock(return_value=storage_url))
+            self._fallback_url = fallback_url or storage_url
+
+        @property
+        def url(self):
+            return self._fallback_url
+
+    def _build_order(self, *, bad_asset_url=False, prodigi_sku="ECO-CAN-12X18"):
         high_res_file = (
             self._BadFileHandle()
             if bad_asset_url
             else SimpleNamespace(url="https://cdn.example.com/high-res.jpg")
         )
         product = SimpleNamespace(
-            prodigi_sku="ECO-CAN-12X18",
+            prodigi_sku=prodigi_sku,
             material="eco_canvas",
             photo=SimpleNamespace(
                 high_res_file=high_res_file
@@ -144,6 +154,39 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             country="IE",
             shipping_method="budget",
             items=self._ItemsManager([item]),
+        )
+
+    def _build_mixed_physical_order(self):
+        valid_product = SimpleNamespace(
+            prodigi_sku="ECO-CAN-12X18",
+            material="eco_canvas",
+            photo=SimpleNamespace(
+                high_res_file=SimpleNamespace(url="https://cdn.example.com/high-res.jpg")
+            ),
+        )
+        missing_sku_product = SimpleNamespace(
+            prodigi_sku=None,
+            material="eco_canvas",
+            photo=SimpleNamespace(
+                high_res_file=SimpleNamespace(url="https://cdn.example.com/high-res-2.jpg")
+            ),
+        )
+        items = [
+            SimpleNamespace(product=valid_product, quantity=1),
+            SimpleNamespace(product=missing_sku_product, quantity=1),
+        ]
+        return SimpleNamespace(
+            order_number="ORDER124",
+            first_name="Test Buyer",
+            email="buyer@example.com",
+            street_address1="1 Test Street",
+            street_address2="",
+            town="Dublin",
+            county="Dublin",
+            postcode="D01 F5P2",
+            country="IE",
+            shipping_method="budget",
+            items=self._ItemsManager(items),
         )
 
     @override_settings(PRODIGI_CONNECT_TIMEOUT_SECONDS=3, PRODIGI_READ_TIMEOUT_SECONDS=9)
@@ -224,14 +267,79 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
     def test_prodigi_asset_url_failure_logs_error_type_only(self, mock_post):
         with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
             with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
-                result = create_prodigi_order(self._build_order(bad_asset_url=True))
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order(bad_asset_url=True))
 
-        self.assertIsNone(result)
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment could not prepare all physical items.",
+        )
         self.assertEqual(mock_post.call_count, 0)
         logs = " ".join(captured_logs.output)
         self.assertIn("Failed to prepare Prodigi asset URL", logs)
+        self.assertIn("could not prepare all physical items", logs)
         self.assertIn("error_type=RuntimeError", logs)
         self.assertNotIn("signed-url-token-should-not-leak", logs)
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_missing_sku_raises_fulfillment_error(self, mock_post):
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_order(prodigi_sku=None))
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment could not prepare all physical items.",
+        )
+        self.assertEqual(mock_post.call_count, 0)
+        self.assertIn("missing_sku=1", " ".join(captured_logs.output))
+
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_partial_physical_payload_is_rejected(self, mock_post):
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(self._build_mixed_physical_order())
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment could not prepare all physical items.",
+        )
+        self.assertEqual(mock_post.call_count, 0)
+        logs = " ".join(captured_logs.output)
+        self.assertIn("physical_items=2", logs)
+        self.assertIn("prepared_items=1", logs)
+        self.assertIn("missing_sku=1", logs)
+
+    def test_prodigi_prefers_storage_signed_url_for_private_assets(self):
+        signed_url = "https://private-r2.example.com/digital_products/photos/high-res.jpg?X-Amz-Signature=test"
+        file_handle = self._StorageBackedFileHandle(
+            name="digital_products/photos/high-res.jpg",
+            storage_url=signed_url,
+            fallback_url="digital_products/photos/high-res.jpg",
+        )
+        product = SimpleNamespace(
+            photo=SimpleNamespace(high_res_file=file_handle)
+        )
+
+        image_url = _get_prodigi_asset_url(product, site_url="https://openeire.ie")
+
+        self.assertEqual(image_url, signed_url)
+        file_handle.storage.url.assert_called_once_with("digital_products/photos/high-res.jpg")
+
+    def test_prodigi_joins_relative_asset_paths_safely(self):
+        file_handle = SimpleNamespace(url="digital_products/photos/high-res.jpg")
+        product = SimpleNamespace(
+            photo=SimpleNamespace(high_res_file=file_handle)
+        )
+
+        image_url = _get_prodigi_asset_url(product, site_url="https://media.openeire.ie")
+
+        self.assertEqual(
+            image_url,
+            "https://media.openeire.ie/digital_products/photos/high-res.jpg",
+        )
 
     @patch("checkout.prodigi.requests.post")
     def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
