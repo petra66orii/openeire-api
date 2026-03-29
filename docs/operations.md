@@ -57,6 +57,7 @@ Recommended operator checks:
 - Inspect `StripeWebhookEvent` records for `FAILED`.
 - Re-deliver Stripe webhook events from Stripe dashboard when needed.
 - Verify `LicenseRequest` status transitions and audit logs in admin.
+- For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
 
 ## Logging and Monitoring
 
@@ -121,6 +122,13 @@ Operational practice:
 ### Order created but fulfillment/email failed
 - Cause: downstream provider issue (Prodigi/SMTP).
 - Fix: inspect logs, verify provider credentials and network access, retry manually where appropriate.
+
+### Prodigi order exists but image/cost remains pending
+- Cause: Prodigi is still fetching or processing the print asset, or sandbox pricing has not finalized yet.
+- Fix:
+  1. Verify the order image loads in the Prodigi dashboard.
+  2. Confirm private R2 credentials are valid so signed asset URLs can be generated.
+  3. Keep `SITE_URL` set to a real public origin as fallback, but expect production fulfillment to prefer storage-generated signed URLs.
 
 ### Digital downloads denied unexpectedly
 - Cause: missing purchase linkage or wrong user context.

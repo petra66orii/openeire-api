@@ -124,7 +124,7 @@ Prodigi:
 - `PRODIGI_SANDBOX`
 - `PRODIGI_CONNECT_TIMEOUT_SECONDS`
 - `PRODIGI_READ_TIMEOUT_SECONDS`
-- `SITE_URL`
+- `SITE_URL` (fallback only; used if storage returns a relative asset path instead of an absolute signed URL)
 
 Licensing/AI worker:
 - `LICENCE_DOWNLOAD_BASE_URL`
@@ -181,6 +181,10 @@ Detailed endpoint contracts are documented in [docs/api.md](docs/api.md).
 See:
 - [docs/deployment.md](docs/deployment.md)
 - [docs/operations.md](docs/operations.md)
+
+Prodigi fulfillment note:
+- Physical print orders prefer storage-generated URLs for `high_res_file`, which allows private Cloudflare R2 assets to be handed to Prodigi via short-lived signed URLs.
+- `SITE_URL` remains configured as a fallback only for environments where storage returns a relative media path.
 
 ## Maintainer
 - Project/team owner: [Miss Bott](https://github.com/petra66orii)
