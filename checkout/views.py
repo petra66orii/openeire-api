@@ -223,11 +223,10 @@ class CreatePaymentIntentView(APIView):
         amount_in_cents = int(grand_total * 100)
 
         customer_email = None
-        if isinstance(shipping_details, dict):
+        if request.user.is_authenticated:
+            customer_email = request.user.email
+        elif isinstance(shipping_details, dict):
             customer_email = shipping_details.get('email')
-        
-        if not customer_email and request.user.is_authenticated:
-             customer_email = request.user.email
 
         try:
             metadata = {
@@ -603,6 +602,7 @@ class StripeWebhookView(APIView):
 
                 if profile is not None:
                     order_data['user_profile'] = profile.id
+                    order_data['email'] = profile.user.email
 
                     if save_info:
                         profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)

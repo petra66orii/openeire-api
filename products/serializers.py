@@ -187,7 +187,11 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
         asset_type = asset_type.strip().lower()
         if asset_type not in {'photo', 'video'}:
             raise serializers.ValidationError({"asset_type": "Invalid asset type."})
-        
+
+        request = self.context.get("request")
+        if request is not None and getattr(request, "user", None) and request.user.is_authenticated:
+            data['email'] = request.user.email
+
         try:
             content_type = ContentType.objects.get(app_label='products', model=asset_type)
             model_class = content_type.model_class()

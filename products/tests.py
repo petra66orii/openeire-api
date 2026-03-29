@@ -369,6 +369,22 @@ class LicenseRequestTests(APITestCase):
         obj = LicenseRequest.objects.latest("id")
         self.assertEqual(obj.email, "test@example.com")
 
+    def test_license_request_authenticated_user_email_overrides_payload(self):
+        user = User.objects.create_user(
+            username="licensedbuyer",
+            email="account@example.com",
+            password="StrongPass123!",
+        )
+        self.client.force_authenticate(user=user)
+        payload = self._payload()
+        payload["email"] = "different@example.com"
+
+        response = self.client.post(self.url, payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        obj = LicenseRequest.objects.latest("id")
+        self.assertEqual(obj.email, user.email)
+
     def test_status_context_does_not_leak_across_non_status_save(self):
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
