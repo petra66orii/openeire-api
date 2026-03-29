@@ -37,6 +37,7 @@ from .models import Order, ProductShipping
 from .serializers import OrderSerializer, OrderHistoryListSerializer
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order 
+from .order_claiming import claim_guest_orders_for_user
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -721,4 +722,5 @@ class OrderHistoryView(generics.ListAPIView):
         This view should return a list of all the orders
         for the currently authenticated user.
         """
+        claim_guest_orders_for_user(self.request.user)
         return Order.objects.filter(user_profile=self.request.user.userprofile).order_by('-date')

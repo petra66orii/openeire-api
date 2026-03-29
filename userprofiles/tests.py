@@ -6,6 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework_simplejwt.tokens import AccessToken
 from unittest.mock import patch
+from checkout.models import Order
 
 from .token_utils import (
     EMAIL_VERIFICATION_PURPOSE,
@@ -367,3 +368,19 @@ class HttpOnlyJwtCookieAuthTests(TestCase):
         self.assertEqual(response.cookies["openeire_access"].value, "")
         self.assertEqual(response.cookies["openeire_refresh"].value, "")
         self.assertEqual(response.cookies["openeire_csrf"].value, "")
+
+    def test_login_claims_guest_orders_matching_account_email(self):
+        guest_order = Order.objects.create(
+            email="COOKIEUSER@example.com ",
+            stripe_pid="pi_guest_order",
+        )
+
+        response = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        guest_order.refresh_from_db()
+        self.assertIsNotNone(guest_order.user_profile)
+        self.assertEqual(guest_order.user_profile.user_id, self.user.id)

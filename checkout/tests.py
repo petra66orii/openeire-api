@@ -1395,3 +1395,30 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
         mock_create.assert_not_called()
+
+
+class OrderHistoryClaimingTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user(
+            username="historybuyer",
+            email="history@example.com",
+            password="StrongPass123!",
+        )
+        self.order_history_url = reverse("order_history")
+
+    def test_order_history_claims_matching_guest_orders(self):
+        guest_order = Order.objects.create(
+            email=" History@Example.com ",
+            stripe_pid="pi_history_claim",
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.order_history_url)
+
+        self.assertEqual(response.status_code, 200)
+        guest_order.refresh_from_db()
+        self.assertIsNotNone(guest_order.user_profile)
+        self.assertEqual(guest_order.user_profile.user_id, self.user.id)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["order_number"], guest_order.order_number)

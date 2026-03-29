@@ -33,6 +33,7 @@ from .token_utils import (
     decode_user_action_token,
     issue_user_action_token,
 )
+from checkout.order_claiming import claim_guest_orders_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -364,9 +365,18 @@ class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code != status.HTTP_200_OK:
-            return response
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        response = Response(serializer.validated_data, status=status.HTTP_200_OK)
+        authenticated_user = getattr(serializer, "user", None)
+        if authenticated_user is not None:
+            claimed_count = claim_guest_orders_for_user(authenticated_user)
+            if claimed_count:
+                logger.info(
+                    "Claimed %s guest orders for user_id=%s during login.",
+                    claimed_count,
+                    authenticated_user.id,
+                )
 
         access_token = response.data.get("access")
         refresh_token = response.data.get("refresh")
