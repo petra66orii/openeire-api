@@ -722,5 +722,11 @@ class OrderHistoryView(generics.ListAPIView):
         This view should return a list of all the orders
         for the currently authenticated user.
         """
-        claim_guest_orders_for_user(self.request.user)
+        try:
+            claim_guest_orders_for_user(self.request.user)
+        except Exception:
+            logger.exception(
+                "Guest order claiming failed during order history fetch. user_id=%s",
+                self.request.user.id,
+            )
         return Order.objects.filter(user_profile=self.request.user.userprofile).order_by('-date')

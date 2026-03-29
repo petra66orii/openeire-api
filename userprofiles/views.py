@@ -370,13 +370,20 @@ class MyTokenObtainPairView(TokenObtainPairView):
         response = Response(serializer.validated_data, status=status.HTTP_200_OK)
         authenticated_user = getattr(serializer, "user", None)
         if authenticated_user is not None:
-            claimed_count = claim_guest_orders_for_user(authenticated_user)
-            if claimed_count:
-                logger.info(
-                    "Claimed %s guest orders for user_id=%s during login.",
-                    claimed_count,
+            try:
+                claimed_count = claim_guest_orders_for_user(authenticated_user)
+            except Exception:
+                logger.exception(
+                    "Guest order claiming failed during login. user_id=%s",
                     authenticated_user.id,
                 )
+            else:
+                if claimed_count:
+                    logger.info(
+                        "Claimed %s guest orders for user_id=%s during login.",
+                        claimed_count,
+                        authenticated_user.id,
+                    )
 
         access_token = response.data.get("access")
         refresh_token = response.data.get("refresh")

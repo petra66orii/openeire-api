@@ -31,6 +31,7 @@ from products.models import (
 from .models import Order
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, _get_prodigi_asset_url
+from . import views as checkout_views
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -1422,3 +1423,34 @@ class OrderHistoryClaimingTests(TestCase):
         self.assertEqual(guest_order.user_profile.user_id, self.user.id)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["order_number"], guest_order.order_number)
+
+    def test_order_history_does_not_claim_placeholder_guest_email(self):
+        self.user.email = "guest@example.com"
+        self.user.save(update_fields=["email"])
+        placeholder_order = Order.objects.create(
+            email="guest@example.com",
+            stripe_pid="pi_placeholder_guest",
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.order_history_url)
+
+        self.assertEqual(response.status_code, 200)
+        placeholder_order.refresh_from_db()
+        self.assertIsNone(placeholder_order.user_profile)
+        self.assertEqual(response.data, [])
+
+    @patch.object(checkout_views, "claim_guest_orders_for_user", side_effect=RuntimeError("claim failure"))
+    def test_order_history_survives_claiming_failure(self, _mock_claim):
+        claimed_order = Order.objects.create(
+            email=self.user.email,
+            user_profile=self.user.userprofile,
+            stripe_pid="pi_claimed_order",
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.order_history_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["order_number"], claimed_order.order_number)

@@ -384,3 +384,14 @@ class HttpOnlyJwtCookieAuthTests(TestCase):
         guest_order.refresh_from_db()
         self.assertIsNotNone(guest_order.user_profile)
         self.assertEqual(guest_order.user_profile.user_id, self.user.id)
+
+    @patch("userprofiles.views.claim_guest_orders_for_user", side_effect=RuntimeError("claim failure"))
+    def test_login_succeeds_even_if_guest_order_claiming_fails(self, _mock_claim):
+        response = self.client.post(
+            self.login_url,
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        self.assertIn("refresh", response.json())
