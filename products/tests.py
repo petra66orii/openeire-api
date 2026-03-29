@@ -24,6 +24,7 @@ from openeire_api.throttling import SharedScopedRateThrottle
 from .models import (
     LicenseRequest,
     LicenceDeliveryToken,
+    PersonalDownloadToken,
     GalleryAccess,
     Photo,
     PrintTemplate,
@@ -610,6 +611,72 @@ class LicenseRequestTests(APITestCase):
         self.assertTrue(response.data["personal_terms_url"].endswith("/api/licence/personal-use/"))
         self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
+
+    def test_personal_download_token_not_burned_if_file_unavailable(self):
+        user = User.objects.create_user(
+            username="personaltokenbuyer",
+            email="personaltokenbuyer@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_token_test",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.photo.high_res_file.storage.delete(self.photo.high_res_file.name)
+        url = reverse("personal-asset-download", args=[str(token.token)])
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 404)
+        token.refresh_from_db()
+        self.assertIsNone(token.used_at)
+
+    def test_personal_download_token_streams_asset_and_burns_token(self):
+        user = User.objects.create_user(
+            username="personaltokendownload",
+            email="personaltokendownload@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_success",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        url = reverse("personal-asset-download", args=[str(token.token)])
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment;", response["Content-Disposition"])
+        token.refresh_from_db()
+        self.assertIsNotNone(token.used_at)
 
     def test_physical_product_page_uses_physical_purchase_flow(self):
         self.photo.is_printable = True

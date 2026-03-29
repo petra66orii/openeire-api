@@ -26,6 +26,7 @@ from products.models import (
     StripeWebhookEvent,
     LicenceDocument,
     LicenseRequestAuditLog,
+    PersonalDownloadToken,
     generate_variants_for_photo,
 )
 from .models import Order
@@ -666,6 +667,12 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIn("PERSONAL USE LICENCE", body)
         self.assertIn(order.personal_terms_version, body)
         self.assertIn("http://testserver/api/licence/personal-use/", body)
+        self.assertIn("Your personal download links:", body)
+        token = PersonalDownloadToken.objects.get(order_item__order=order)
+        self.assertIn(
+            f"http://testserver/api/personal-download/{token.token}/",
+            body,
+        )
 
         body_lower = body.lower()
         self.assertNotIn("rights-managed", body_lower)

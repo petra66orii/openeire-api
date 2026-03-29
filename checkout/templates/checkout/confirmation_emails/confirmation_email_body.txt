@@ -13,12 +13,19 @@ This digital download order is licensed for personal use only.
 - {{ line }}
 {% endfor %}
 Read the full Personal Use Licence: {{ personal_terms_url }}
+
+{% if personal_download_items %}
+Your personal download links:
+{% for item in personal_download_items %}
+- {{ item.title }}: {{ item.download_url }}
+{% endfor %}
+{% endif %}
 {% endif %}
 
-You can view your order history and download any digital items by logging into your profile:
-https://openeire.online/profile
+You can also view your order history and download your digital items by logging into your profile:
+{{ profile_url }}
 
 If you have any questions, feel free to contact us at {{ contact_email }}.
 
 Best regards,
-OpenÉire Studios Team
+OpenEire Studios Team

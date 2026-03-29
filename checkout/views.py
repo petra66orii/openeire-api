@@ -31,6 +31,7 @@ from products.licensing import (
     send_licence_delivery_email,
     get_asset_file_field,
 )
+from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
 from .models import Order, ProductShipping
@@ -310,11 +311,24 @@ class StripeWebhookView(APIView):
     def _send_confirmation_email(self, order, request=None):
         """Send the user a confirmation email"""
         cust_email = order.email
+        personal_download_items = []
+        for item in order.items.all():
+            if item.content_type.model not in {"photo", "video"}:
+                continue
+            token_obj = ensure_personal_download_token(item)
+            personal_download_items.append(
+                {
+                    "title": getattr(item.product, "title", f"Digital item {item.object_id}"),
+                    "download_url": self._build_personal_download_url(request, token_obj),
+                }
+            )
         context = {
             'order': order,
             'contact_email': settings.DEFAULT_FROM_EMAIL,
             'personal_terms_url': get_personal_licence_url(request=request),
             'personal_terms_summary': get_personal_licence_summary(),
+            'personal_download_items': personal_download_items,
+            'profile_url': urljoin(str(settings.FRONTEND_URL).rstrip("/") + "/", "profile"),
         }
         subject = render_to_string(
             'checkout/confirmation_emails/confirmation_email_subject.txt',
@@ -339,6 +353,13 @@ class StripeWebhookView(APIView):
     def _build_license_download_url(self, request, token_obj):
         path = reverse('license-asset-download', args=[str(token_obj.token)])
         base_url = getattr(settings, "LICENCE_DOWNLOAD_BASE_URL", None)
+        if base_url:
+            return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        return request.build_absolute_uri(path)
+
+    def _build_personal_download_url(self, request, token_obj):
+        path = reverse('personal-asset-download', args=[str(token_obj.token)])
+        base_url = getattr(settings, "PERSONAL_DOWNLOAD_BASE_URL", None)
         if base_url:
             return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
         return request.build_absolute_uri(path)
