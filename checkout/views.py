@@ -4,7 +4,8 @@ import logging
 from datetime import timedelta
 from django.conf import settings
 from django.core.mail import EmailMessage
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.template.loader import render_to_string
 from django.urls import reverse
@@ -40,6 +41,17 @@ from .prodigi import create_prodigi_order
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
 logger = logging.getLogger(__name__)
+
+
+def _validated_email_or_none(value):
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    try:
+        validate_email(candidate)
+    except DjangoValidationError:
+        return None
+    return candidate.lower()
 
 class CreatePaymentIntentView(APIView):
     permission_classes = [AllowAny]
@@ -223,11 +235,18 @@ class CreatePaymentIntentView(APIView):
         amount_in_cents = int(grand_total * 100)
 
         customer_email = None
-        if isinstance(shipping_details, dict):
+        if request.user.is_authenticated:
+            customer_email = _validated_email_or_none(request.user.email)
+            if not customer_email:
+                return Response(
+                    {
+                        "code": "ACCOUNT_EMAIL_REQUIRED",
+                        "error": "Add a valid email address to your account before checkout.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif isinstance(shipping_details, dict):
             customer_email = shipping_details.get('email')
-        
-        if not customer_email and request.user.is_authenticated:
-             customer_email = request.user.email
 
         try:
             metadata = {
@@ -603,6 +622,16 @@ class StripeWebhookView(APIView):
 
                 if profile is not None:
                     order_data['user_profile'] = profile.id
+                    account_email = _validated_email_or_none(profile.user.email)
+                    if account_email:
+                        order_data['email'] = account_email
+                    else:
+                        logger.warning(
+                            "Authenticated webhook order kept Stripe email because account email was blank or invalid. "
+                            "user_id=%s event_id=%s",
+                            profile.user_id,
+                            event_id,
+                        )
 
                     if save_info:
                         profile.default_phone_number = shipping_details.get('phone', profile.default_phone_number)

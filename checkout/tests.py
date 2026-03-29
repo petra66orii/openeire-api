@@ -727,6 +727,46 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(order.user_profile.user_id, self.user.id)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_uses_account_email_for_authenticated_order(self, mock_construct):
+        event = self._payment_intent_event()
+        event["data"]["object"]["receipt_email"] = "different@example.com"
+        mock_construct.return_value = event
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.email, self.user.email)
+        self.assertIsNotNone(order.user_profile)
+        self.assertEqual(order.user_profile.user_id, self.user.id)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_falls_back_to_stripe_email_when_account_email_blank(self, mock_construct):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        event = self._payment_intent_event()
+        event["data"]["object"]["receipt_email"] = "different@example.com"
+        mock_construct.return_value = event
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.email, "different@example.com")
+        self.assertIsNotNone(order.user_profile)
+        self.assertEqual(order.user_profile.user_id, self.user.id)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_rejects_digital_order_when_user_id_missing_even_if_username_exists(self, mock_construct):
         mock_construct.return_value = self._payment_intent_event(
             username=self.user.username,
@@ -1206,6 +1246,63 @@ class CreatePaymentIntentSecurityTests(TestCase):
         mock_create.assert_called_once()
         sent_metadata = mock_create.call_args.kwargs["metadata"]
         self.assertEqual(sent_metadata["user_id"], str(self.user.id))
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_authenticated_checkout_uses_account_email_over_submitted_email(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "different@example.com"},
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_create.assert_called_once()
+        self.assertEqual(
+            mock_create.call_args.kwargs["receipt_email"],
+            self.user.email,
+        )
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_authenticated_checkout_requires_valid_account_email(self, mock_create):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "different@example.com"},
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "ACCOUNT_EMAIL_REQUIRED")
+        self.assertIn("valid email address", response.data["error"])
+        mock_create.assert_not_called()
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_us_address_for_physical_item_is_rejected(self, mock_create):
