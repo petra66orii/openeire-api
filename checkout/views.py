@@ -328,7 +328,7 @@ class StripeWebhookView(APIView):
             'personal_terms_url': get_personal_licence_url(request=request),
             'personal_terms_summary': get_personal_licence_summary(),
             'personal_download_items': personal_download_items,
-            'profile_url': urljoin(str(settings.FRONTEND_URL).rstrip("/") + "/", "profile"),
+            'profile_url': self._build_profile_url(),
         }
         subject = render_to_string(
             'checkout/confirmation_emails/confirmation_email_subject.txt',
@@ -363,6 +363,13 @@ class StripeWebhookView(APIView):
         if base_url:
             return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
         return request.build_absolute_uri(path)
+
+    def _build_profile_url(self):
+        frontend_url = getattr(settings, "FRONTEND_URL", None)
+        if frontend_url:
+            return urljoin(str(frontend_url).rstrip("/") + "/", "profile")
+        logger.warning("FRONTEND_URL is not configured; omitting profile link from confirmation email")
+        return None
 
     def _handle_license_payment(self, request, session):
         payment_link_id = self._extract_payment_link_id(session)

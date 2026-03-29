@@ -22,8 +22,10 @@ Your personal download links:
 {% endif %}
 {% endif %}
 
+{% if profile_url %}
 You can also view your order history and download your digital items by logging into your profile:
 {{ profile_url }}
+{% endif %}
 
 If you have any questions, feel free to contact us at {{ contact_email }}.
 

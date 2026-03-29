@@ -629,24 +629,32 @@ class PersonalAssetDownloadView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, token):
+        token_obj = PersonalDownloadToken.objects.select_related("order_item").filter(token=token).first()
+        if not token_obj or not token_obj.is_valid:
+            raise Http404("Download link has expired or was already used.")
+
+        order_item = token_obj.order_item
+        asset = order_item.product
+        file_field = get_asset_file_field(asset)
+        if not file_field:
+            raise Http404("File not attached to asset")
+
+        try:
+            file_field.open("rb")
+        except Exception:
+            raise Http404("File not available")
+
+        used_at = timezone.now()
         with transaction.atomic():
-            token_obj = PersonalDownloadToken.objects.select_for_update().filter(token=token).first()
-            if not token_obj or not token_obj.is_valid:
-                raise Http404("Download link has expired or was already used.")
+            updated = PersonalDownloadToken.objects.filter(
+                pk=token_obj.pk,
+                used_at__isnull=True,
+                expires_at__gt=used_at,
+            ).update(used_at=used_at)
 
-            order_item = token_obj.order_item
-            asset = order_item.product
-            file_field = get_asset_file_field(asset)
-            if not file_field:
-                raise Http404("File not attached to asset")
-
-            try:
-                file_field.open("rb")
-            except Exception:
-                raise Http404("File not available")
-
-            token_obj.used_at = timezone.now()
-            token_obj.save(update_fields=["used_at"])
+        if updated != 1:
+            file_field.close()
+            raise Http404("Download link has expired or was already used.")
 
         filename = file_field.name.rsplit("/", 1)[-1]
         return FileResponse(file_field, as_attachment=True, filename=filename)
