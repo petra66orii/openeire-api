@@ -178,6 +178,7 @@ class LicenseRequestTests(APITestCase):
             size="12x18",
             production_cost=Decimal("40.00"),
             sku_suffix="CAN-12x18",
+            prodigi_sku="GLOBAL-CAN-12X18",
         )
         printable_photo = self._create_photo(is_active=True, is_printable=True)
         digital_only_photo = self._create_photo(is_active=True, is_printable=False)
@@ -189,6 +190,7 @@ class LicenseRequestTests(APITestCase):
         )
         self.assertEqual(variant.price, template.retail_price)
         self.assertEqual(variant.sku, f"PHOTO-{printable_photo.id}-CAN-12x18")
+        self.assertEqual(variant.prodigi_sku, "GLOBAL-CAN-12X18")
         self.assertFalse(ProductVariant.objects.filter(photo=digital_only_photo).exists())
 
     def test_gallery_verify_endpoint_throttles(self):

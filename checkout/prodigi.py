@@ -1,6 +1,7 @@
 import logging
 import os
 from typing import List, Optional, Tuple
+from urllib.parse import urljoin
 
 import requests
 from django.conf import settings
@@ -53,6 +54,37 @@ def _parse_prodigi_error(response: requests.Response) -> Tuple[Optional[str], Op
     return outcome, trace_parent, failure_codes[:10]
 
 
+def _normalize_absolute_asset_url(raw_url: str, *, base_url: str) -> str:
+    if raw_url.startswith(("http://", "https://")):
+        return raw_url
+    return urljoin(f"{base_url.rstrip('/')}/", str(raw_url).lstrip("/"))
+
+
+def _get_prodigi_asset_url(product, *, site_url: str) -> str:
+    """
+    Return an absolute URL that Prodigi can fetch for a physical print asset.
+
+    Preference order:
+    1. Storage-generated URL for the private asset (signed in production R2)
+    2. Field ``url`` if already provided as an absolute URL
+    3. Site URL + relative path fallback for local/dev storage
+    """
+    file_field = product.photo.high_res_file
+    storage = getattr(file_field, "storage", None)
+    file_name = getattr(file_field, "name", None)
+
+    if storage is not None and file_name:
+        storage_url = storage.url(file_name)
+        if isinstance(storage_url, str) and storage_url:
+            return _normalize_absolute_asset_url(storage_url, base_url=site_url)
+
+    raw_url = file_field.url
+    if isinstance(raw_url, str) and raw_url:
+        return _normalize_absolute_asset_url(raw_url, base_url=site_url)
+
+    raise ValueError("No accessible asset URL available for Prodigi fulfillment.")
+
+
 def create_prodigi_order(order):
     """
     Formats an OpenEire order and sends it to the Prodigi API.
@@ -73,13 +105,17 @@ def create_prodigi_order(order):
     }
 
     items_payload = []
+    physical_items_seen = 0
+    skipped_missing_sku = 0
+    skipped_asset_preparation = 0
     for item in order.items.all():
         product = item.product
 
         if hasattr(product, "prodigi_sku") and product.prodigi_sku:
+            if hasattr(product, "photo"):
+                physical_items_seen += item.quantity
             try:
-                raw_url = product.photo.high_res_file.url
-                image_url = raw_url if raw_url.startswith("http") else f"{site_url}{raw_url}"
+                image_url = _get_prodigi_asset_url(product, site_url=site_url)
 
                 if "127.0.0.1" in image_url or "localhost" in image_url:
                     logger.warning(
@@ -112,9 +148,36 @@ def create_prodigi_order(order):
                     product.prodigi_sku,
                     exc.__class__.__name__,
                 )
+                skipped_asset_preparation += item.quantity
                 continue
+        elif hasattr(product, "photo"):
+            physical_items_seen += item.quantity
+            skipped_missing_sku += item.quantity
+
+    if physical_items_seen and (skipped_missing_sku or skipped_asset_preparation):
+        logger.warning(
+            "Prodigi fulfillment could not prepare all physical items "
+            "(order=%s, physical_items=%s, prepared_items=%s, missing_sku=%s, asset_prepare_failures=%s)",
+            order.order_number,
+            physical_items_seen,
+            sum(item["copies"] for item in items_payload),
+            skipped_missing_sku,
+            skipped_asset_preparation,
+        )
+        raise RuntimeError("Prodigi fulfillment could not prepare all physical items.")
 
     if not items_payload:
+        if physical_items_seen:
+            logger.warning(
+                "Prodigi fulfillment could not prepare any physical items "
+                "(order=%s, physical_items=%s, missing_sku=%s, asset_prepare_failures=%s)",
+                order.order_number,
+                physical_items_seen,
+                skipped_missing_sku,
+                skipped_asset_preparation,
+            )
+            raise RuntimeError("Prodigi fulfillment could not prepare any physical items.")
+
         logger.info("No physical items found for Prodigi fulfillment (order=%s)", order.order_number)
         return None
 

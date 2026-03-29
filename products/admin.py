@@ -230,7 +230,7 @@ class LicenseRequestAdminForm(forms.ModelForm):
 class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
     extra = 1  # Show 1 empty row by default
-    fields = ('material', 'size', 'price', 'sku')
+    fields = ('material', 'size', 'price', 'sku', 'prodigi_sku')
 
 # @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
@@ -260,11 +260,15 @@ class PhotoAdmin(admin.ModelAdmin):
                     size=t.size,
                     defaults={
                         'price': t.retail_price, # Ensure this uses the *retail* price, not base price!
-                        'sku': f"PHOTO-{photo.id}-{t.sku_suffix}"
+                        'sku': f"PHOTO-{photo.id}-{t.sku_suffix}",
+                        'prodigi_sku': t.prodigi_sku,
                     }
                 )
                 if created:
                     count += 1
+                elif not obj.prodigi_sku and t.prodigi_sku:
+                    obj.prodigi_sku = t.prodigi_sku
+                    obj.save(update_fields=['prodigi_sku'])
         message = f"Created {count} new variants."
         if skipped:
             message += f" Skipped {skipped} non-printable photo(s)."

@@ -596,14 +596,15 @@ def generate_variants_for_photo(sender, instance, created, **kwargs):
             # Generate a unique SKU: "PHOTO-{ID}-{SUFFIX}"
             # e.g. "PHOTO-25-CAN-A4"
             sku = f"PHOTO-{instance.id}-{t.sku_suffix}"
-            
+
             variants_to_create.append(
                 ProductVariant(
                     photo=instance,
                     material=t.material,
                     size=t.size,
                     price=t.retail_price,
-                    sku=sku
+                    sku=sku,
+                    prodigi_sku=t.prodigi_sku,
                 )
             )
         
