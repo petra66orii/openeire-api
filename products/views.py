@@ -27,8 +27,11 @@ from .models import (
     LicenceDeliveryToken,
     PersonalDownloadToken,
 )
-from .licensing import get_asset_file_field
-from .licensing import send_licence_initial_draft_email
+from .licensing import (
+    get_asset_file_field,
+    send_licence_admin_notification_email,
+    send_licence_initial_draft_email,
+)
 from .personal_licence import (
     get_personal_licence_summary,
     get_personal_licence_text,
@@ -233,6 +236,19 @@ class LicenseRequestCreateView(generics.CreateAPIView):
     throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = 'license_request'
 
+    def _notify_admin_of_license_request(self, obj):
+        try:
+            send_licence_admin_notification_email(obj)
+        except Exception:
+            logger.exception(
+                "Failed to send admin notification for licence request %s",
+                obj.id,
+            )
+
+    def perform_create(self, serializer):
+        created = serializer.save()
+        self._notify_admin_of_license_request(created)
+
     def create(self, request, *args, **kwargs):
         asset_ids = request.data.get('asset_ids')
         if asset_ids is None:
@@ -253,7 +269,8 @@ class LicenseRequestCreateView(generics.CreateAPIView):
             payload['asset_id'] = asset_ids[0]
             serializer = self.get_serializer(data=payload)
             serializer.is_valid(raise_exception=True)
-            self.perform_create(serializer)
+            created = serializer.save()
+            self._notify_admin_of_license_request(created)
             headers = self.get_success_headers(serializer.data)
             return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
@@ -266,6 +283,7 @@ class LicenseRequestCreateView(generics.CreateAPIView):
             serializer = self.get_serializer(data=payload)
             if serializer.is_valid():
                 created = serializer.save()
+                self._notify_admin_of_license_request(created)
                 created_items.append(
                     {
                         "id": created.id,
