@@ -4,6 +4,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.mail import EmailMessage
+from django.urls import reverse
 from django.utils import timezone
 
 from .models import LicenceDocument, LicenceDeliveryToken
@@ -208,3 +209,67 @@ def send_licence_initial_draft_email(license_request):
         to=[license_request.email],
     )
     email.send(fail_silently=False)
+
+
+def get_licence_admin_notification_recipients():
+    configured = list(getattr(settings, "LICENCE_ADMIN_NOTIFICATION_RECIPIENTS", []) or [])
+    if configured:
+        return configured
+
+    admins = getattr(settings, "ADMINS", ()) or ()
+    return [email for _, email in admins if email]
+
+
+def send_licence_admin_notification_email(license_request):
+    recipients = get_licence_admin_notification_recipients()
+    if not recipients:
+        return False
+
+    asset = license_request.asset
+    territory = (
+        license_request.get_territory_display()
+        if license_request.territory
+        else "Not specified"
+    )
+    permitted_media = (
+        license_request.get_permitted_media_display()
+        if license_request.permitted_media
+        else "Not specified"
+    )
+    exclusivity = (
+        license_request.get_exclusivity_display()
+        if license_request.exclusivity
+        else "Not specified"
+    )
+    admin_path = reverse("customadmin:products_licenserequest_change", args=[license_request.id])
+    admin_base_url = getattr(settings, "LICENCE_ADMIN_BASE_URL", None) or getattr(settings, "SITE_URL", None)
+    admin_url = f"{str(admin_base_url).rstrip('/')}{admin_path}" if admin_base_url else admin_path
+
+    subject = f"New licence request: {asset}"
+    body = (
+        "A new commercial licence request has been submitted.\n\n"
+        f"Request ID: {license_request.id}\n"
+        f"Submitted: {timezone.localtime(license_request.created_at).strftime('%Y-%m-%d %H:%M %Z')}\n"
+        f"Asset: {asset}\n"
+        f"Asset Type: {license_request.content_type.model if license_request.content_type_id else 'unknown'}\n"
+        f"Client Name: {license_request.client_name}\n"
+        f"Company: {license_request.company or 'Not provided'}\n"
+        f"Email: {license_request.email}\n"
+        f"Project Type: {license_request.get_project_type_display()}\n"
+        f"Duration: {license_request.get_duration_display()}\n"
+        f"Territory: {territory}\n"
+        f"Permitted Media: {permitted_media}\n"
+        f"Exclusivity: {exclusivity}\n"
+        f"Reach Caps: {license_request.reach_caps or 'None'}\n"
+        f"Message: {license_request.message or 'No message provided.'}\n\n"
+        f"Review in admin: {admin_url}\n"
+    )
+
+    email = EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=recipients,
+    )
+    email.send(fail_silently=False)
+    return True

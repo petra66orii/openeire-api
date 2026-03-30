@@ -407,6 +407,53 @@ class LicenseRequestTests(APITestCase):
         )
         self.assertFalse(LicenseRequest.objects.filter(client_name="Test Client").exists())
 
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='licensing@example.com',
+        LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+    )
+    def test_license_request_sends_admin_notification_email(self):
+        response = self.client.post(self.url, self._payload(), format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ['admin@example.com'])
+        self.assertIn("New licence request", sent.subject)
+        self.assertIn("Test Client", sent.body)
+        self.assertIn("test@example.com", sent.body)
+        self.assertIn(str(self.photo), sent.body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='licensing@example.com',
+        LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+    )
+    @patch("products.views.send_licence_admin_notification_email", side_effect=OSError("smtp timeout"))
+    def test_license_request_persists_when_admin_notification_fails(self, mock_notify):
+        response = self.client.post(self.url, self._payload(), format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(LicenseRequest.objects.filter(email="test@example.com").exists())
+        mock_notify.assert_called_once()
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='licensing@example.com',
+        LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+    )
+    def test_license_request_multiple_assets_sends_admin_notification_per_created_request(self):
+        photo_two = self._create_photo(is_active=True)
+        payload = self._payload(asset_id=None)
+        payload.pop("asset_id", None)
+        payload["asset_ids"] = [self.photo.id, photo_two.id]
+
+        response = self.client.post(self.url, payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["created"]), 2)
+        self.assertEqual(len(mail.outbox), 2)
+
     def test_status_context_does_not_leak_across_non_status_save(self):
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
