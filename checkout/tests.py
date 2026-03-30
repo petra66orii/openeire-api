@@ -22,6 +22,7 @@ from rest_framework.test import APIClient
 from products.models import (
     LicenseRequest,
     Photo,
+    PrintTemplate,
     ProductVariant,
     StripeWebhookEvent,
     LicenceDocument,
@@ -29,10 +30,11 @@ from products.models import (
     PersonalDownloadToken,
     generate_variants_for_photo,
 )
-from .models import Order
+from .models import Order, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, _get_prodigi_asset_url
 from . import views as checkout_views
+from .serializers import OrderSerializer
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -938,7 +940,12 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIn("Physical product", event.error_message)
 
 
-@override_settings(STRIPE_SECRET_KEY="sk_test_123")
+@override_settings(
+    STRIPE_SECRET_KEY="sk_test_123",
+    FREE_SHIPPING_ENABLED=True,
+    FREE_SHIPPING_THRESHOLD="150.00",
+    FREE_SHIPPING_ELIGIBLE_COUNTRIES=["IE"],
+)
 class CreatePaymentIntentSecurityTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -969,6 +976,19 @@ class CreatePaymentIntentSecurityTests(TestCase):
             material="eco_canvas",
             size="12x18",
             price=Decimal("99.00"),
+        )
+        self.template = PrintTemplate.objects.create(
+            material="eco_canvas",
+            size="12x18",
+            production_cost=Decimal("40.00"),
+            sku_suffix="CAN-12x18",
+            prodigi_sku="PRODIGI-CAN-12x18",
+        )
+        ProductShipping.objects.create(
+            product=self.template,
+            country="IE",
+            method="budget",
+            cost=Decimal("8.45"),
         )
         self.user = get_user_model().objects.create_user(
             username="checkoutuser",
@@ -1248,6 +1268,131 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(sent_metadata["user_id"], "")
 
     @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_physical_cart_over_threshold_gets_free_shipping(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 2,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["shippingCost"], 0.0)
+        self.assertTrue(response.data["freeShippingApplied"])
+        self.assertEqual(response.data["freeShippingThreshold"], 150.0)
+        mock_create.assert_called_once()
+        metadata = mock_create.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["shipping_cost"], "0.00")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_mixed_cart_only_uses_physical_subtotal_for_free_shipping(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                },
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 2,
+                    "options": {"license": "hd"},
+                },
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["shippingCost"], 8.45)
+        self.assertFalse(response.data["freeShippingApplied"])
+        mock_create.assert_called_once()
+        metadata = mock_create.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["shipping_cost"], "8.45")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_free_shipping_does_not_apply_outside_eligible_countries(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        ProductShipping.objects.create(
+            product=self.template,
+            country="US",
+            method="budget",
+            cost=Decimal("9.88"),
+        )
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 2,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Austin",
+                    "country": "US",
+                    "postal_code": "73301",
+                    "state": "TX",
+                },
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["shippingCost"], 19.76)
+        self.assertFalse(response.data["freeShippingApplied"])
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
     def test_authenticated_digital_cart_is_allowed(self, mock_create):
         self.client.force_authenticate(user=self.user)
         mock_create.return_value = Mock(client_secret="cs_test_123")
@@ -1479,3 +1624,85 @@ class OrderHistoryClaimingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["order_number"], claimed_order.order_number)
+
+
+@override_settings(
+    FREE_SHIPPING_ENABLED=True,
+    FREE_SHIPPING_THRESHOLD="150.00",
+    FREE_SHIPPING_ELIGIBLE_COUNTRIES=["IE"],
+)
+class FreeShippingOrderSerializerTests(TestCase):
+    def setUp(self):
+        preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
+        high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
+        self.photo = Photo.objects.create(
+            title="Print Photo",
+            description="Test description",
+            collection="Test Collection",
+            preview_image=preview,
+            high_res_file=high_res,
+            price=Decimal("25.00"),
+            is_active=True,
+            is_printable=True,
+        )
+        self.variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        self.template = PrintTemplate.objects.create(
+            material="eco_canvas",
+            size="12x18",
+            production_cost=Decimal("40.00"),
+            sku_suffix="CAN-12x18",
+            prodigi_sku="PRODIGI-CAN-12x18",
+        )
+        ProductShipping.objects.create(
+            product=self.template,
+            country="IE",
+            method="budget",
+            cost=Decimal("8.45"),
+        )
+
+    def _serializer_payload(self, quantity):
+        return {
+            "first_name": "Buyer",
+            "email": "buyer@example.com",
+            "phone_number": "+3530000000",
+            "street_address1": "1 Test Street",
+            "street_address2": "",
+            "town": "Dublin",
+            "county": "Dublin",
+            "postcode": "D01 F5P2",
+            "country": "IE",
+            "shipping_method": "budget",
+            "stripe_pid": f"pi_free_shipping_{quantity}",
+            "items": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": quantity,
+                }
+            ],
+        }
+
+    def test_order_serializer_applies_free_shipping_when_physical_subtotal_meets_threshold(self):
+        serializer = OrderSerializer(data=self._serializer_payload(quantity=2))
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        order = serializer.save()
+
+        self.assertEqual(order.order_total, Decimal("198.00"))
+        self.assertEqual(order.delivery_cost, Decimal("0.00"))
+        self.assertEqual(order.total_price, Decimal("198.00"))
+
+    def test_order_serializer_keeps_paid_shipping_below_threshold(self):
+        serializer = OrderSerializer(data=self._serializer_payload(quantity=1))
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        order = serializer.save()
+
+        self.assertEqual(order.order_total, Decimal("99.00"))
+        self.assertEqual(order.delivery_cost, Decimal("8.45"))
+        self.assertEqual(order.total_price, Decimal("107.45"))

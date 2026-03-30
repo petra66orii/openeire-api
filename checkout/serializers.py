@@ -1,8 +1,6 @@
-import logging
-
 from rest_framework import serializers
-from .models import Order, OrderItem, ProductShipping
-from products.models import Photo, Video, ProductVariant, PrintTemplate
+from .models import Order, OrderItem
+from products.models import Photo, Video, ProductVariant
 from products.personal_licence import get_personal_licence_url, get_personal_terms_version
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
@@ -10,8 +8,7 @@ from django.urls import reverse
 from products.serializers import PhotoListSerializer, VideoListSerializer, ProductListSerializer
 from userprofiles.models import UserProfile
 from .address_validation import validate_physical_shipping_address
-
-logger = logging.getLogger(__name__)
+from .shipping import calculate_physical_shipping_quote
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -75,6 +72,7 @@ class OrderSerializer(serializers.ModelSerializer):
         calculated_delivery_cost = 0  # Start at 0
         has_consumer_digital_item = False
         order_items_to_create = []
+        physical_line_items = []
 
         for item_data in items_data:
             product_id = item_data['product_id']
@@ -103,27 +101,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 
                 if product_type_str == 'physical':
                     price = product_instance.price
-                    try:
-                        template = PrintTemplate.objects.get(
-                            material=product_instance.material,
-                            size=product_instance.size
-                        )
-                        
-                        # Find the exact cost from our fixtures
-                        shipping_rule = ProductShipping.objects.get(
-                            product=template,
-                            country=shipping_country,
-                            method=shipping_method
-                        )
-                        
-                        # Add to total delivery cost (Cost * Quantity)
-                        # Note: Prodigi sometimes bundles, but charging per item is safer for now
-                        calculated_delivery_cost += (shipping_rule.cost * quantity)
-
-                    except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
-                        # Fallback if data is missing (prevents crash)
-                        logger.warning("No shipping rule found for product variant id=%s", product_instance.id)
-                        pass # or add a default flat rate
+                    physical_line_items.append((product_instance, quantity))
                 
                 elif product_type_str in ['photo', 'video']:
                     # Digital items have NO shipping cost and now use one price.
@@ -160,6 +138,13 @@ class OrderSerializer(serializers.ModelSerializer):
                 for item_kwargs in order_items_to_create
             ]
         )
+
+        shipping_quote = calculate_physical_shipping_quote(
+            line_items=physical_line_items,
+            shipping_country=shipping_country,
+            shipping_method=shipping_method,
+        )
+        calculated_delivery_cost = shipping_quote.delivery_cost
         
         # 3. Save the calculated values to the order
         order.order_total = order_total

@@ -2,6 +2,7 @@ import stripe
 import json
 import logging
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 from django.core.mail import EmailMessage
 from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
@@ -20,7 +21,6 @@ from products.models import (
     Photo,
     Video,
     ProductVariant,
-    PrintTemplate,
     LicenseRequest,
     LicenceOffer,
     StripeWebhookEvent,
@@ -34,11 +34,12 @@ from products.licensing import (
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
-from .models import Order, ProductShipping
+from .models import Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order 
 from .order_claiming import claim_guest_orders_for_user
+from .shipping import calculate_physical_shipping_quote, get_free_shipping_threshold
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -84,9 +85,9 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        total = 0
-        shipping_cost = 0.00
+        total = Decimal("0.00")
         model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
+        physical_line_items = []
 
         # Safely extract the country from shipping details (default to IE if missing)
         shipping_country = 'IE'
@@ -189,32 +190,11 @@ class CreatePaymentIntentView(APIView):
                 else:
                     price_str = getattr(product_instance, 'price', '0')
                     
-                price = float(price_str)
+                price = Decimal(str(price_str))
                 total += price * quantity
 
-                # --- NEW DYNAMIC SHIPPING CALCULATION ---
                 if product_type == 'physical':
-                    try:
-                        template = PrintTemplate.objects.get(
-                            material=product_instance.material, 
-                            size=product_instance.size
-                        )
-                        shipping_rule = ProductShipping.objects.get(
-                            product=template, 
-                            country=shipping_country, 
-                            method=shipping_method
-                        )
-                        shipping_cost += float(shipping_rule.cost) * quantity
-                    except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
-                        logger.warning(
-                            "No shipping rule found for checkout item "
-                            "(material=%s, size=%s, country=%s, method=%s)",
-                            product_instance.material,
-                            product_instance.size,
-                            shipping_country,
-                            shipping_method,
-                        )
-                        # You could add a fallback flat rate here if desired
+                    physical_line_items.append((product_instance, quantity))
 
         except (KeyError, TypeError, ValueError, ObjectDoesNotExist) as e:
             logger.warning(
@@ -232,9 +212,16 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        # Add dynamic shipping to total
+        shipping_quote = calculate_physical_shipping_quote(
+            line_items=physical_line_items,
+            shipping_country=shipping_country,
+            shipping_method=shipping_method,
+        )
+        shipping_cost = shipping_quote.delivery_cost
         grand_total = total + shipping_cost
-        amount_in_cents = int(grand_total * 100)
+        amount_in_cents = int(
+            (grand_total * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
 
         customer_email = None
         if request.user.is_authenticated:
@@ -256,7 +243,7 @@ class CreatePaymentIntentView(APIView):
                 'username': request.user.username if request.user.is_authenticated else 'Guest',
                 'user_id': str(request.user.id) if request.user.is_authenticated else '',
                 'save_info': str(request.data.get('save_info', False)).lower(),
-                'shipping_cost': shipping_cost,
+                'shipping_cost': str(shipping_cost),
                 'shipping_method': shipping_method # Store method in metadata for Webhook
             }
 
@@ -270,8 +257,10 @@ class CreatePaymentIntentView(APIView):
             
             return Response({
                 'clientSecret': intent.client_secret,
-                'shippingCost': shipping_cost, 
-                'totalPrice': grand_total
+                'shippingCost': float(shipping_cost),
+                'totalPrice': float(grand_total),
+                'freeShippingApplied': shipping_quote.free_shipping_applied,
+                'freeShippingThreshold': float(get_free_shipping_threshold()),
             }, status=status.HTTP_200_OK)
         except Exception:
             logger.exception(
