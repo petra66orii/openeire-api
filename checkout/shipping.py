@@ -10,7 +10,7 @@ from .models import ProductShipping
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FREE_SHIPPING_THRESHOLD = Decimal("120.00")
+DEFAULT_FREE_SHIPPING_THRESHOLD = Decimal("150.00")
 
 
 @dataclass(frozen=True)
