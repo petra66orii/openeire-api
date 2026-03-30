@@ -39,11 +39,14 @@ def get_free_shipping_eligible_countries():
     configured = getattr(settings, "FREE_SHIPPING_ELIGIBLE_COUNTRIES", None)
     if not configured:
         return set()
-    return {
+    normalized = {
         str(country).strip().upper()
         for country in configured
         if str(country).strip()
     }
+    if "*" in normalized:
+        return {"*"}
+    return normalized
 
 
 def free_shipping_applies(*, physical_subtotal, shipping_country):
@@ -56,6 +59,8 @@ def free_shipping_applies(*, physical_subtotal, shipping_country):
 
     eligible_countries = get_free_shipping_eligible_countries()
     if not eligible_countries:
+        return False
+    if "*" in eligible_countries:
         return True
 
     return str(shipping_country or "").strip().upper() in eligible_countries

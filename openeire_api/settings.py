@@ -482,12 +482,12 @@ PRODIGI_CONNECT_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_CONNECT_TIMEOUT_SECON
 PRODIGI_READ_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_READ_TIMEOUT_SECONDS', '20'))
 FREE_SHIPPING_ENABLED = env_bool(
     os.getenv("FREE_SHIPPING_ENABLED"),
-    default=True,
+    default=False,
 )
-FREE_SHIPPING_THRESHOLD = os.getenv("FREE_SHIPPING_THRESHOLD", "120.00")
+FREE_SHIPPING_THRESHOLD = os.getenv("FREE_SHIPPING_THRESHOLD", "150.00")
 FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
     code.strip().upper()
-    for code in os.getenv("FREE_SHIPPING_ELIGIBLE_COUNTRIES", "").split(",")
+    for code in os.getenv("FREE_SHIPPING_ELIGIBLE_COUNTRIES", "IE").split(",")
     if code.strip()
 ]
 

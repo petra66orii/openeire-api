@@ -2,7 +2,7 @@ import stripe
 import json
 import logging
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 from django.core.mail import EmailMessage
 from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
@@ -219,7 +219,9 @@ class CreatePaymentIntentView(APIView):
         )
         shipping_cost = shipping_quote.delivery_cost
         grand_total = total + shipping_cost
-        amount_in_cents = int(grand_total * 100)
+        amount_in_cents = int(
+            (grand_total * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
 
         customer_email = None
         if request.user.is_authenticated:

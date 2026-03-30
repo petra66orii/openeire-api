@@ -940,7 +940,12 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIn("Physical product", event.error_message)
 
 
-@override_settings(STRIPE_SECRET_KEY="sk_test_123")
+@override_settings(
+    STRIPE_SECRET_KEY="sk_test_123",
+    FREE_SHIPPING_ENABLED=True,
+    FREE_SHIPPING_THRESHOLD="150.00",
+    FREE_SHIPPING_ELIGIBLE_COUNTRIES=["IE"],
+)
 class CreatePaymentIntentSecurityTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -1296,7 +1301,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["shippingCost"], 0.0)
         self.assertTrue(response.data["freeShippingApplied"])
-        self.assertEqual(response.data["freeShippingThreshold"], 120.0)
+        self.assertEqual(response.data["freeShippingThreshold"], 150.0)
         mock_create.assert_called_once()
         metadata = mock_create.call_args.kwargs["metadata"]
         self.assertEqual(metadata["shipping_cost"], "0.00")
@@ -1345,6 +1350,47 @@ class CreatePaymentIntentSecurityTests(TestCase):
         mock_create.assert_called_once()
         metadata = mock_create.call_args.kwargs["metadata"]
         self.assertEqual(metadata["shipping_cost"], "8.45")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_free_shipping_does_not_apply_outside_eligible_countries(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        ProductShipping.objects.create(
+            product=self.template,
+            country="US",
+            method="budget",
+            cost=Decimal("9.88"),
+        )
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 2,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Austin",
+                    "country": "US",
+                    "postal_code": "73301",
+                    "state": "TX",
+                },
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["shippingCost"], 19.76)
+        self.assertFalse(response.data["freeShippingApplied"])
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_authenticated_digital_cart_is_allowed(self, mock_create):
@@ -1580,7 +1626,11 @@ class OrderHistoryClaimingTests(TestCase):
         self.assertEqual(response.data[0]["order_number"], claimed_order.order_number)
 
 
-@override_settings(FREE_SHIPPING_THRESHOLD="120.00")
+@override_settings(
+    FREE_SHIPPING_ENABLED=True,
+    FREE_SHIPPING_THRESHOLD="150.00",
+    FREE_SHIPPING_ELIGIBLE_COUNTRIES=["IE"],
+)
 class FreeShippingOrderSerializerTests(TestCase):
     def setUp(self):
         preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
