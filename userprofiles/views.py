@@ -13,6 +13,7 @@ from django_countries import countries
 from .serializers import UserSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from allauth.socialaccount.models import SocialApp
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
@@ -520,11 +521,42 @@ class LogoutView(APIView):
 
 class GoogleLogin(SocialLoginView):
     adapter_class = GoogleOAuth2Adapter
-    callback_url = "postmessage" 
+    callback_url = "postmessage"
     client_class = OAuth2Client
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
+        has_settings_app = bool(
+            getattr(settings, "SOCIALACCOUNT_PROVIDERS", {})
+            .get("google", {})
+            .get("APP")
+        )
+        try:
+            response = super().post(request, *args, **kwargs)
+        except SocialApp.DoesNotExist:
+            logger.exception(
+                "Google login attempted without an allauth SocialApp configuration. "
+                "settings_app_present=%s",
+                has_settings_app,
+            )
+            return Response(
+                {"detail": "Google login is not configured on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except SocialApp.MultipleObjectsReturned:
+            logger.exception(
+                "Google login attempted with duplicate allauth app configuration. "
+                "settings_app_present=%s",
+                has_settings_app,
+            )
+            return Response(
+                {
+                    "detail": (
+                        "Google login is misconfigured on the server. "
+                        "Configure either a Google SocialApp or env-based Google OAuth settings, not both."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if response.status_code != 200:
             logger.warning("Google login failed with status_code=%s", response.status_code)
         return response

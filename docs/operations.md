@@ -119,6 +119,17 @@ Operational practice:
 - Cause: invalid/missing `STRIPE_WEBHOOK_SECRET` or forwarded raw-body issues.
 - Fix: verify webhook secret and ensure raw request body reaches Django unchanged.
 
+### Google social login returns 503 or `SocialApp.DoesNotExist`
+- Cause: Google OAuth is enabled in code, but `allauth` cannot find a configured provider app.
+- Fix:
+  1. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_SECRET` in the runtime environment.
+  2. Redeploy or restart the service.
+  3. Verify the Google OAuth client allows the production frontend origin and redirect flow you use.
+- Notes:
+  - This codebase supports settings-backed Google app config, so a database `SocialApp` entry is not required when env vars are present.
+  - Do not configure both a Django admin `SocialApp` and env-based Google OAuth settings for the same provider at the same time.
+  - If only one of the Google env vars is set, startup should fail fast with `ImproperlyConfigured`.
+
 ### Order created but fulfillment/email failed
 - Cause: downstream provider issue (Prodigi/SMTP).
 - Fix: inspect logs, verify provider credentials and network access, retry manually where appropriate.
