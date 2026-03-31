@@ -1,0 +1,14 @@
+Hi,
+
+Tracking information is now available for your OpenÉire order {{ order.order_number }}.
+
+{% for shipment in shipments %}
+Shipment {{ forloop.counter }}{% if shipment.carrier_name %} - {{ shipment.carrier_name }}{% endif %}{% if shipment.carrier_service %} ({{ shipment.carrier_service }}){% endif %}
+{% if shipment.tracking_number %}Tracking number: {{ shipment.tracking_number }}{% endif %}
+{% if shipment.tracking_url %}Track here: {{ shipment.tracking_url }}{% endif %}
+{% if shipment.dispatch_date %}Dispatched: {{ shipment.dispatch_date }}{% endif %}
+
+{% endfor %}
+If you need help with your order, reply to this email or contact us at {{ contact_email }}.
+
+OpenÉire Studios

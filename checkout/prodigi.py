@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 
 import requests
 from django.conf import settings
+from django.urls import reverse
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,26 @@ def _get_prodigi_asset_url(product, *, site_url: str) -> str:
         return _normalize_absolute_asset_url(raw_url, base_url=site_url)
 
     raise ValueError("No accessible asset URL available for Prodigi fulfillment.")
+
+
+def _get_prodigi_callback_url() -> Optional[str]:
+    base_url = getattr(settings, "PRODIGI_CALLBACK_BASE_URL", None) or os.environ.get(
+        "PRODIGI_CALLBACK_BASE_URL"
+    )
+    if not base_url:
+        return None
+
+    callback_token = getattr(settings, "PRODIGI_CALLBACK_TOKEN", "")
+    if not callback_token:
+        logger.warning(
+            "Prodigi callback token is not configured; callback URL will not be attached."
+        )
+        return None
+
+    callback_path = reverse("prodigi_callback")
+    callback_url = urljoin(f"{str(base_url).rstrip('/')}/", callback_path.lstrip("/"))
+    separator = "&" if "?" in callback_url else "?"
+    return f"{callback_url}{separator}token={callback_token}"
 
 
 def create_prodigi_order(order):
@@ -203,7 +224,17 @@ def create_prodigi_order(order):
         },
         "items": items_payload,
         "idempotencyKey": order.order_number,
+        "merchantReference": order.order_number,
     }
+
+    callback_url = _get_prodigi_callback_url()
+    if callback_url:
+        payload["callbackUrl"] = callback_url
+    else:
+        logger.warning(
+            "Prodigi callback URL is not configured; tracking updates will not be pushed automatically (order=%s)",
+            order.order_number,
+        )
 
     try:
         response = requests.post(

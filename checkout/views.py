@@ -40,6 +40,13 @@ from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order 
 from .order_claiming import claim_guest_orders_for_user
 from .shipping import calculate_physical_shipping_quote, get_free_shipping_threshold
+from .tracking import (
+    build_tracking_signature,
+    callback_token_is_valid,
+    send_tracking_email,
+    tracked_shipments,
+    update_order_from_prodigi_payload,
+)
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -686,7 +693,11 @@ class StripeWebhookView(APIView):
                         if has_physical_items:
                             # Only contact Prodigi if we actually have prints
                             logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
-                            create_prodigi_order(order)
+                            prodigi_response = create_prodigi_order(order)
+                            if isinstance(prodigi_response, dict):
+                                prodigi_order = prodigi_response.get("order")
+                                if isinstance(prodigi_order, dict):
+                                    update_order_from_prodigi_payload(order, prodigi_order)
                             logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
                         else:
                             # Digital-only order: Stay silent
@@ -747,3 +758,75 @@ class OrderHistoryView(generics.ListAPIView):
                 self.request.user.id,
             )
         return Order.objects.filter(user_profile=self.request.user.userprofile).order_by('-date')
+
+
+class ProdigiCallbackView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        if not callback_token_is_valid(request.query_params.get("token")):
+            logger.warning("Prodigi callback rejected due to invalid token.")
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        prodigi_order = None
+        data_payload = payload.get("data")
+        if isinstance(data_payload, dict):
+            nested_order = data_payload.get("order")
+            if isinstance(nested_order, dict):
+                prodigi_order = nested_order
+            else:
+                prodigi_order = data_payload
+        elif isinstance(payload.get("order"), dict):
+            prodigi_order = payload.get("order")
+        if not isinstance(prodigi_order, dict):
+            logger.warning("Prodigi callback received invalid payload shape.")
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        prodigi_order_id = str(prodigi_order.get("id") or "").strip()
+        merchant_reference = str(prodigi_order.get("merchantReference") or "").strip()
+
+        order = None
+        if prodigi_order_id:
+            order = Order.objects.filter(prodigi_order_id=prodigi_order_id).first()
+        if order is None and merchant_reference:
+            order = Order.objects.filter(order_number=merchant_reference).first()
+        if order is None:
+            logger.warning(
+                "Prodigi callback ignored because no local order matched (prodigi_order_id=%s merchant_reference=%s)",
+                prodigi_order_id or "n/a",
+                merchant_reference or "n/a",
+            )
+            return Response(status=status.HTTP_200_OK)
+
+        shipments = update_order_from_prodigi_payload(order, prodigi_order)
+        tracking_signature = build_tracking_signature(shipments)
+
+        if not tracking_signature:
+            logger.info(
+                "Prodigi callback updated order without tracking info (order=%s)",
+                order.order_number,
+            )
+            return Response(status=status.HTTP_200_OK)
+
+        if order.tracking_email_signature == tracking_signature:
+            logger.info(
+                "Prodigi tracking email already sent for current shipment state (order=%s)",
+                order.order_number,
+            )
+            return Response(status=status.HTTP_200_OK)
+
+        tracked = tracked_shipments(shipments)
+        try:
+            if send_tracking_email(order, tracked):
+                order.tracking_email_signature = tracking_signature
+                order.tracking_email_sent_at = timezone.now()
+                order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
+        except Exception:
+            logger.exception(
+                "Failed to send tracking email after Prodigi callback (order=%s)",
+                order.order_number,
+            )
+
+        return Response(status=status.HTTP_200_OK)

@@ -129,6 +129,8 @@ Prodigi:
 - `PRODIGI_SANDBOX`
 - `PRODIGI_CONNECT_TIMEOUT_SECONDS`
 - `PRODIGI_READ_TIMEOUT_SECONDS`
+- `PRODIGI_CALLBACK_BASE_URL` (required for tracking callbacks)
+- `PRODIGI_CALLBACK_TOKEN` (required for tracking callbacks)
 - `SITE_URL` (fallback only; used if storage returns a relative asset path instead of an absolute signed URL)
 
 Licensing/AI worker:
@@ -190,6 +192,8 @@ See:
 Prodigi fulfillment note:
 - Physical print orders prefer storage-generated URLs for `high_res_file`, which allows private Cloudflare R2 assets to be handed to Prodigi via short-lived signed URLs.
 - `SITE_URL` remains configured as a fallback only for environments where storage returns a relative media path.
+- Prodigi order creation sets a callback URL only when both `PRODIGI_CALLBACK_BASE_URL` and `PRODIGI_CALLBACK_TOKEN` are configured.
+- When a callback includes shipment tracking details, the API stores the shipment metadata on the order and emails the customer once per unique tracking update.
 
 ## Maintainer
 - Project/team owner: [Miss Bott](https://github.com/petra66orii)
