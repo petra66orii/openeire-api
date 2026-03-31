@@ -419,7 +419,38 @@ class GoogleLoginMisconfigurationTests(TestCase):
         "post",
         side_effect=SocialApp.MultipleObjectsReturned(),
     )
+    @override_settings(SOCIALACCOUNT_PROVIDERS={})
     def test_google_login_returns_503_when_provider_app_is_duplicated(self, _mock_post):
+        response = self.client.post(self.url, data={})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": (
+                    "Google login is misconfigured on the server. "
+                    "Multiple Google SocialApp records were found; keep only one Google SocialApp entry."
+                )
+            },
+        )
+
+    @override_settings(
+        SOCIALACCOUNT_PROVIDERS={
+            "google": {
+                "APP": {
+                    "client_id": "google-client-id",
+                    "secret": "google-secret",
+                    "key": "",
+                }
+            }
+        }
+    )
+    @patch.object(
+        SocialLoginView,
+        "post",
+        side_effect=SocialApp.MultipleObjectsReturned(),
+    )
+    def test_google_login_returns_503_with_env_and_db_conflict_guidance(self, _mock_post):
         response = self.client.post(self.url, data={})
 
         self.assertEqual(response.status_code, 503)

@@ -548,13 +548,18 @@ class GoogleLogin(SocialLoginView):
                 "settings_app_present=%s",
                 has_settings_app,
             )
+            if has_settings_app:
+                detail = (
+                    "Google login is misconfigured on the server. "
+                    "Configure either a Google SocialApp or env-based Google OAuth settings, not both."
+                )
+            else:
+                detail = (
+                    "Google login is misconfigured on the server. "
+                    "Multiple Google SocialApp records were found; keep only one Google SocialApp entry."
+                )
             return Response(
-                {
-                    "detail": (
-                        "Google login is misconfigured on the server. "
-                        "Configure either a Google SocialApp or env-based Google OAuth settings, not both."
-                    )
-                },
+                {"detail": detail},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         if response.status_code != 200:

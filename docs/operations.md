@@ -130,6 +130,7 @@ Operational practice:
 - Notes:
   - This codebase supports settings-backed Google app config, so a database `SocialApp` entry is not required when env vars are present.
   - Do not configure both a Django admin `SocialApp` and env-based Google OAuth settings for the same provider at the same time.
+  - If the error mentions multiple Google SocialApp records, remove duplicate Google `SocialApp` rows in admin and keep only one.
   - If only one of the Google env vars is set, startup should fail fast with `ImproperlyConfigured`.
 
 ### Order created but fulfillment/email failed
