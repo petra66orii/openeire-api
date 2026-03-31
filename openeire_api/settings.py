@@ -494,23 +494,40 @@ FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_OAUTH_SECRET = os.getenv("GOOGLE_OAUTH_SECRET") or os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_OAUTH_KEY = os.getenv("GOOGLE_OAUTH_KEY", "")
 
 REST_USE_JWT = True
 # JWT_AUTH_COOKIE = 'my-app-auth'
 # JWT_AUTH_REFRESH_COOKIE = 'my-app-refresh-token'
 
 # Social Auth Configuration
-SOCIALACCOUNT_PROVIDERS = {
-    'google': {
-        'SCOPE': [
-            'profile',
-            'email',
-        ],
-        'AUTH_PARAMS': {
-            'access_type': 'online',
-        },
-        'VERIFIED_EMAIL': True,
+google_provider_settings = {
+    'SCOPE': [
+        'profile',
+        'email',
+    ],
+    'AUTH_PARAMS': {
+        'access_type': 'online',
+    },
+    'VERIFIED_EMAIL': True,
+}
+
+if GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_SECRET:
+    google_provider_settings['APP'] = {
+        'client_id': GOOGLE_OAUTH_CLIENT_ID,
+        'secret': GOOGLE_OAUTH_SECRET,
+        'key': GOOGLE_OAUTH_KEY,
     }
+elif GOOGLE_OAUTH_CLIENT_ID or GOOGLE_OAUTH_SECRET:
+    raise ImproperlyConfigured(
+        "Google OAuth configuration is incomplete. Set both GOOGLE_OAUTH_CLIENT_ID "
+        "and GOOGLE_OAUTH_SECRET (or GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)."
+    )
+
+SOCIALACCOUNT_PROVIDERS = {
+    'google': google_provider_settings,
 }
 
 # Disable email verification for social accounts (Google already verifies them)
