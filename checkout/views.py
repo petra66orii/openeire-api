@@ -47,6 +47,7 @@ from .tracking import (
     tracked_shipments,
     update_order_from_prodigi_payload,
 )
+from openeire_api.throttling import SharedScopedRateThrottle
 
 # Set the Stripe secret key
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -763,6 +764,8 @@ class OrderHistoryView(generics.ListAPIView):
 class ProdigiCallbackView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "prodigi_callback"
 
     def post(self, request):
         if not callback_token_is_valid(request.query_params.get("token")):
@@ -787,46 +790,51 @@ class ProdigiCallbackView(APIView):
         prodigi_order_id = str(prodigi_order.get("id") or "").strip()
         merchant_reference = str(prodigi_order.get("merchantReference") or "").strip()
 
-        order = None
-        if prodigi_order_id:
-            order = Order.objects.filter(prodigi_order_id=prodigi_order_id).first()
-        if order is None and merchant_reference:
-            order = Order.objects.filter(order_number=merchant_reference).first()
-        if order is None:
-            logger.warning(
-                "Prodigi callback ignored because no local order matched (prodigi_order_id=%s merchant_reference=%s)",
-                prodigi_order_id or "n/a",
-                merchant_reference or "n/a",
-            )
-            return Response(status=status.HTTP_200_OK)
+        with transaction.atomic():
+            order = None
+            if prodigi_order_id:
+                order = Order.objects.select_for_update().filter(prodigi_order_id=prodigi_order_id).first()
+            if order is None and merchant_reference:
+                order = Order.objects.select_for_update().filter(order_number=merchant_reference).first()
+            if order is None:
+                logger.warning(
+                    "Prodigi callback ignored because no local order matched (prodigi_order_id=%s merchant_reference=%s)",
+                    prodigi_order_id or "n/a",
+                    merchant_reference or "n/a",
+                )
+                return Response(status=status.HTTP_200_OK)
 
-        shipments = update_order_from_prodigi_payload(order, prodigi_order)
-        tracking_signature = build_tracking_signature(shipments)
-
-        if not tracking_signature:
-            logger.info(
-                "Prodigi callback updated order without tracking info (order=%s)",
-                order.order_number,
+            shipments = update_order_from_prodigi_payload(
+                order,
+                prodigi_order,
+                mark_callback_received=True,
             )
-            return Response(status=status.HTTP_200_OK)
+            tracking_signature = build_tracking_signature(shipments)
 
-        if order.tracking_email_signature == tracking_signature:
-            logger.info(
-                "Prodigi tracking email already sent for current shipment state (order=%s)",
-                order.order_number,
-            )
-            return Response(status=status.HTTP_200_OK)
+            if not tracking_signature:
+                logger.info(
+                    "Prodigi callback updated order without tracking info (order=%s)",
+                    order.order_number,
+                )
+                return Response(status=status.HTTP_200_OK)
 
-        tracked = tracked_shipments(shipments)
-        try:
-            if send_tracking_email(order, tracked):
-                order.tracking_email_signature = tracking_signature
-                order.tracking_email_sent_at = timezone.now()
-                order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
-        except Exception:
-            logger.exception(
-                "Failed to send tracking email after Prodigi callback (order=%s)",
-                order.order_number,
-            )
+            if order.tracking_email_signature == tracking_signature:
+                logger.info(
+                    "Prodigi tracking email already sent for current shipment state (order=%s)",
+                    order.order_number,
+                )
+                return Response(status=status.HTTP_200_OK)
+
+            tracked = tracked_shipments(shipments)
+            try:
+                if send_tracking_email(order, tracked):
+                    order.tracking_email_signature = tracking_signature
+                    order.tracking_email_sent_at = timezone.now()
+                    order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
+            except Exception:
+                logger.exception(
+                    "Failed to send tracking email after Prodigi callback (order=%s)",
+                    order.order_number,
+                )
 
         return Response(status=status.HTTP_200_OK)

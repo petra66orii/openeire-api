@@ -168,6 +168,7 @@ REST_FRAMEWORK = {
         'license_request': '10/hour',
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
+        'prodigi_callback': '30/minute',
     },
 }
 

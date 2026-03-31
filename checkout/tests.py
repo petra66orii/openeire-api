@@ -1044,6 +1044,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(order.prodigi_order_id, "ord_prodigi_123")
         self.assertEqual(order.prodigi_status, "InProduction")
         self.assertEqual(order.prodigi_shipments, [])
+        self.assertIsNone(order.prodigi_last_callback_at)
 
 
 @override_settings(
@@ -1102,6 +1103,7 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.prodigi_status, "Shipped")
         self.assertEqual(len(self.order.prodigi_shipments), 1)
+        self.assertIsNotNone(self.order.prodigi_last_callback_at)
         self.assertTrue(self.order.tracking_email_signature)
         self.assertIsNotNone(self.order.tracking_email_sent_at)
         self.assertEqual(len(mail.outbox), 1)

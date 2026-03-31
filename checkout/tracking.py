@@ -91,7 +91,7 @@ def build_tracking_signature(shipments: Iterable[dict]) -> Optional[str]:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def update_order_from_prodigi_payload(order, prodigi_order_payload: dict):
+def update_order_from_prodigi_payload(order, prodigi_order_payload: dict, *, mark_callback_received: bool = False):
     shipments = normalize_prodigi_shipments(prodigi_order_payload.get("shipments"))
     status_payload = prodigi_order_payload.get("status")
     prodigi_stage = ""
@@ -112,8 +112,9 @@ def update_order_from_prodigi_payload(order, prodigi_order_payload: dict):
         order.prodigi_shipments = shipments
         update_fields.append("prodigi_shipments")
 
-    order.prodigi_last_callback_at = timezone.now()
-    update_fields.append("prodigi_last_callback_at")
+    if mark_callback_received:
+        order.prodigi_last_callback_at = timezone.now()
+        update_fields.append("prodigi_last_callback_at")
 
     if update_fields:
         order.save(update_fields=update_fields)
