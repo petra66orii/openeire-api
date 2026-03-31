@@ -47,6 +47,12 @@ class Order(models.Model):
     order_total = models.DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
     total_price = models.DecimalField(max_digits=10, decimal_places=2, null=False, default=0)
     stripe_pid = models.CharField(max_length=254, null=False, blank=False, default='')
+    prodigi_order_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    prodigi_status = models.CharField(max_length=64, null=True, blank=True)
+    prodigi_shipments = models.JSONField(default=list, blank=True)
+    prodigi_last_callback_at = models.DateTimeField(null=True, blank=True)
+    tracking_email_sent_at = models.DateTimeField(null=True, blank=True)
+    tracking_email_signature = models.CharField(max_length=64, null=True, blank=True)
 
     def _generate_order_number(self):
         """

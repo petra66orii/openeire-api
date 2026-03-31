@@ -32,7 +32,8 @@ from products.models import (
 )
 from .models import Order, ProductShipping
 from .address_validation import validate_physical_shipping_address
-from .prodigi import create_prodigi_order, _get_prodigi_asset_url
+from .prodigi import create_prodigi_order, _get_prodigi_asset_url, _get_prodigi_callback_url
+from .tracking import callback_token_is_valid
 from . import views as checkout_views
 from .serializers import OrderSerializer
 
@@ -345,6 +346,31 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             "https://media.openeire.ie/digital_products/photos/high-res.jpg",
         )
 
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="prodigi-secret",
+    )
+    def test_prodigi_callback_url_requires_explicit_base_url_and_token(self):
+        self.assertEqual(
+            _get_prodigi_callback_url(),
+            "https://api.example.com/api/checkout/prodigi/callback/?token=prodigi-secret",
+        )
+
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="",
+    )
+    def test_prodigi_callback_url_is_disabled_without_token(self):
+        self.assertIsNone(_get_prodigi_callback_url())
+
+    @override_settings(PRODIGI_CALLBACK_TOKEN="prodigi-secret")
+    def test_callback_token_validation_accepts_matching_token(self):
+        self.assertTrue(callback_token_is_valid("prodigi-secret"))
+
+    @override_settings(PRODIGI_CALLBACK_TOKEN="")
+    def test_callback_token_validation_fails_closed_when_unconfigured(self):
+        self.assertFalse(callback_token_is_valid("anything"))
+
     @patch("checkout.prodigi.requests.post")
     def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
         mock_response = Mock()
@@ -587,12 +613,26 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             high_res_file=high_res,
             price=Decimal("25.00"),
             is_active=True,
+            is_printable=True,
         )
         self.variant = ProductVariant.objects.create(
             photo=self.photo,
             material="eco_canvas",
             size="12x18",
             price=Decimal("99.00"),
+        )
+        self.template = PrintTemplate.objects.create(
+            material="eco_canvas",
+            size="12x18",
+            production_cost=Decimal("40.00"),
+            sku_suffix="CAN-12x18",
+            prodigi_sku="PRODIGI-CAN-12x18",
+        )
+        ProductShipping.objects.create(
+            product=self.template,
+            country="IE",
+            method="budget",
+            cost=Decimal("8.45"),
         )
         self.user = get_user_model().objects.create_user(
             username="consumerbuyer",
@@ -938,6 +978,196 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         event = StripeWebhookEvent.objects.get(stripe_event_id="evt_non_printable_physical")
         self.assertEqual(event.status, "FAILED")
         self.assertIn("Physical product", event.error_message)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_stores_prodigi_order_metadata_for_physical_orders(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        cart = [
+            {
+                "product_id": self.variant.id,
+                "product_type": "physical",
+                "quantity": 1,
+                "options": {},
+            }
+        ]
+        mock_construct.return_value = {
+            "id": "evt_physical_prodigi_metadata",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_physical_prodigi_metadata",
+                    "receipt_email": "buyer@example.com",
+                    "metadata": {
+                        "cart": json.dumps(cart),
+                        "username": "Guest",
+                        "save_info": "false",
+                        "shipping_cost": "8.45",
+                        "shipping_method": "budget",
+                    },
+                    "shipping": {
+                        "name": "Buyer",
+                        "phone": "+3530000000",
+                        "address": {
+                            "country": "IE",
+                            "city": "Galway",
+                            "line1": "1 Test Street",
+                            "line2": "",
+                            "postal_code": "H62 X254",
+                            "state": "Galway",
+                        },
+                    },
+                }
+            },
+        }
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_prodigi_123",
+                "status": {"stage": "InProduction"},
+                "merchantReference": "",
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.prodigi_order_id, "ord_prodigi_123")
+        self.assertEqual(order.prodigi_status, "InProduction")
+        self.assertEqual(order.prodigi_shipments, [])
+        self.assertIsNone(order.prodigi_last_callback_at)
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="orders@example.com",
+    PRODIGI_CALLBACK_TOKEN="prodigi-secret",
+)
+class ProdigiTrackingCallbackTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.url = reverse("prodigi_callback")
+        self.order = Order.objects.create(
+            first_name="Buyer",
+            email="buyer@example.com",
+            stripe_pid="pi_prodigi_tracking",
+            prodigi_order_id="ord_prodigi_123",
+        )
+
+    def _payload(
+        self,
+        *,
+        shipment_tracking_url="https://tracking.example.com/track/123",
+        shipment_tracking_number="TRACK123",
+    ):
+        return {
+            "specversion": "1.0",
+            "type": "OrderUpdated",
+            "subject": "ord_prodigi_123",
+            "data": {
+                "id": "ord_prodigi_123",
+                "merchantReference": self.order.order_number,
+                "status": {"stage": "Shipped"},
+                "shipments": [
+                    {
+                        "id": "shp_123",
+                        "status": "Shipped",
+                        "dispatchDate": "2026-03-31T10:00:00Z",
+                        "carrier": {"name": "DHL", "service": "Express"},
+                        "tracking": {
+                            "number": shipment_tracking_number,
+                            "url": shipment_tracking_url,
+                        },
+                    }
+                ],
+            },
+        }
+
+    def test_callback_stores_tracking_and_sends_email_once(self):
+        response = self.client.post(
+            f"{self.url}?token=prodigi-secret",
+            data=self._payload(),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_status, "Shipped")
+        self.assertEqual(len(self.order.prodigi_shipments), 1)
+        self.assertIsNotNone(self.order.prodigi_last_callback_at)
+        self.assertTrue(self.order.tracking_email_signature)
+        self.assertIsNotNone(self.order.tracking_email_sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("TRACK123", mail.outbox[0].body)
+        self.assertIn("https://tracking.example.com/track/123", mail.outbox[0].body)
+
+        second_response = self.client.post(
+            f"{self.url}?token=prodigi-secret",
+            data=self._payload(),
+            content_type="application/json",
+        )
+
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_callback_does_not_email_without_tracking(self):
+        payload = self._payload(shipment_tracking_url="", shipment_tracking_number="")
+
+        response = self.client.post(
+            f"{self.url}?token=prodigi-secret",
+            data=payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_status, "Shipped")
+        self.assertEqual(len(self.order.prodigi_shipments), 1)
+        self.assertFalse(self.order.tracking_email_signature)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_callback_rejects_invalid_token(self):
+        response = self.client.post(
+            f"{self.url}?token=wrong-token",
+            data=self._payload(),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_shipments, [])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_callback_accepts_nested_data_order_payload_shape(self):
+        payload = {
+            "specversion": "1.0",
+            "type": "OrderUpdated",
+            "subject": "ord_prodigi_123",
+            "data": {
+                "order": self._payload()["data"],
+            },
+        }
+
+        response = self.client.post(
+            f"{self.url}?token=prodigi-secret",
+            data=payload,
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_status, "Shipped")
+        self.assertEqual(self.order.prodigi_shipments[0]["tracking_number"], "TRACK123")
+        self.assertEqual(len(mail.outbox), 1)
 
 
 @override_settings(

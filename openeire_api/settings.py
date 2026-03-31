@@ -168,6 +168,7 @@ REST_FRAMEWORK = {
         'license_request': '10/hour',
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
+        'prodigi_callback': '30/minute',
     },
 }
 
@@ -480,6 +481,8 @@ STRIPE_TIMEOUT_SECONDS = int(os.getenv('STRIPE_TIMEOUT_SECONDS', '10'))
 STRIPE_MAX_NETWORK_RETRIES = int(os.getenv('STRIPE_MAX_NETWORK_RETRIES', '2'))
 PRODIGI_CONNECT_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_CONNECT_TIMEOUT_SECONDS', '5'))
 PRODIGI_READ_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_READ_TIMEOUT_SECONDS', '20'))
+PRODIGI_CALLBACK_BASE_URL = os.getenv("PRODIGI_CALLBACK_BASE_URL")
+PRODIGI_CALLBACK_TOKEN = os.getenv("PRODIGI_CALLBACK_TOKEN", "")
 FREE_SHIPPING_ENABLED = env_bool(
     os.getenv("FREE_SHIPPING_ENABLED"),
     default=False,
