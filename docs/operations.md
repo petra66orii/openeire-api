@@ -119,7 +119,7 @@ Operational practice:
 - Cause: invalid/missing `STRIPE_WEBHOOK_SECRET` or forwarded raw-body issues.
 - Fix: verify webhook secret and ensure raw request body reaches Django unchanged.
 
-### Google social login returns 500 or `SocialApp.DoesNotExist`
+### Google social login returns 503 or `SocialApp.DoesNotExist`
 - Cause: Google OAuth is enabled in code, but `allauth` cannot find a configured provider app.
 - Fix:
   1. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_SECRET` in the runtime environment.

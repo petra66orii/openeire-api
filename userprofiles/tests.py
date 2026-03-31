@@ -4,6 +4,8 @@ from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from allauth.socialaccount.models import SocialApp
+from dj_rest_auth.registration.views import SocialLoginView
 from rest_framework_simplejwt.tokens import AccessToken
 from unittest.mock import patch
 from checkout.models import Order
@@ -395,3 +397,38 @@ class HttpOnlyJwtCookieAuthTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.json())
         self.assertIn("refresh", response.json())
+
+
+@override_settings(SECURE_SSL_REDIRECT=False)
+class GoogleLoginMisconfigurationTests(TestCase):
+    def setUp(self):
+        self.url = reverse("google_login")
+
+    @patch.object(SocialLoginView, "post", side_effect=SocialApp.DoesNotExist())
+    def test_google_login_returns_503_when_provider_app_missing(self, _mock_post):
+        response = self.client.post(self.url, data={})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Google login is not configured on the server."},
+        )
+
+    @patch.object(
+        SocialLoginView,
+        "post",
+        side_effect=SocialApp.MultipleObjectsReturned(),
+    )
+    def test_google_login_returns_503_when_provider_app_is_duplicated(self, _mock_post):
+        response = self.client.post(self.url, data={})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": (
+                    "Google login is misconfigured on the server. "
+                    "Configure either a Google SocialApp or env-based Google OAuth settings, not both."
+                )
+            },
+        )

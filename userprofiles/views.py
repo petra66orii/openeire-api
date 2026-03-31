@@ -1,7 +1,6 @@
 import logging
 import secrets
 from django.conf import settings
-from django.core.exceptions import MultipleObjectsReturned
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
@@ -543,7 +542,7 @@ class GoogleLogin(SocialLoginView):
                 {"detail": "Google login is not configured on the server."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except MultipleObjectsReturned:
+        except SocialApp.MultipleObjectsReturned:
             logger.exception(
                 "Google login attempted with duplicate allauth app configuration. "
                 "settings_app_present=%s",
