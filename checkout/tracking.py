@@ -1,5 +1,4 @@
 import hashlib
-import hmac
 import json
 import logging
 from typing import Iterable, List, Optional
@@ -10,13 +9,6 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
-
-
-def callback_token_is_valid(provided_token: Optional[str]) -> bool:
-    expected_token = getattr(settings, "PRODIGI_CALLBACK_TOKEN", "")
-    if not expected_token:
-        return False
-    return hmac.compare_digest(str(provided_token or ""), str(expected_token))
 
 
 def normalize_prodigi_shipments(shipments_payload: object) -> List[dict]:

@@ -58,7 +58,7 @@ Recommended operator checks:
 - Re-deliver Stripe webhook events from Stripe dashboard when needed.
 - Verify `LicenseRequest` status transitions and audit logs in admin.
 - For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
-- Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin and `PRODIGI_CALLBACK_TOKEN` is configured. Tracking callbacks are intentionally disabled unless both are present.
+- Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin. Tracking callbacks are disabled unless it is set.
 - Check `Order.prodigi_status`, `Order.prodigi_shipments`, and `tracking_email_sent_at` when investigating shipping/tracking issues.
 
 ## Logging and Monitoring
@@ -145,20 +145,19 @@ Operational practice:
   3. Keep `SITE_URL` set to a real public origin as fallback, but expect production fulfillment to prefer storage-generated signed URLs.
 
 ### Prodigi shipment tracking email did not send
-- Cause: Prodigi callback not configured, callback rejected, callback arrived before tracking was available, or email delivery failed.
+- Cause: Prodigi callback not configured, callback content type rejected, callback arrived before tracking was available, Prodigi lookup failed, or email delivery failed.
 - Fix:
   1. Verify `PRODIGI_CALLBACK_BASE_URL` resolves publicly to `/api/checkout/prodigi/callback/`.
-  2. Confirm `PRODIGI_CALLBACK_TOKEN` is configured and the callback URL includes the same token. If the token is missing, the API will not attach a callback URL to Prodigi orders.
-  3. Treat `PRODIGI_CALLBACK_TOKEN` as a high-entropy shared secret and rotate it if callback URLs or proxy logs may have exposed query strings.
-  4. Where possible, configure proxy/CDN access logs to avoid storing full callback query strings.
-  5. Check the order in admin or shell for:
+  2. Confirm Prodigi callbacks are hitting the backend without `415 Unsupported Media Type`; callbacks are expected as JSON CloudEvents.
+  3. Check the order in admin or shell for:
      - `prodigi_order_id`
      - `prodigi_status`
      - `prodigi_shipments`
      - `tracking_email_sent_at`
      - `tracking_email_signature`
-  6. If `prodigi_shipments` is present but has no tracking URL/number yet, no customer email should be sent yet.
-  7. If tracking exists but no email was sent, inspect SMTP/email logs and the application logs for `Failed to send tracking email after Prodigi callback`.
+  4. If `prodigi_shipments` is present but has no tracking URL/number yet, no customer email should be sent yet.
+  5. If tracking exists but no email was sent, inspect SMTP/email logs and the application logs for `Failed to send tracking email after Prodigi callback`.
+  6. If callbacks arrive but local status remains stale, inspect logs for `Prodigi callback could not verify order against Prodigi API`.
 
 ### Digital downloads denied unexpectedly
 - Cause: missing purchase linkage or wrong user context.

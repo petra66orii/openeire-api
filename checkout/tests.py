@@ -33,7 +33,6 @@ from products.models import (
 from .models import Order, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, _get_prodigi_asset_url, _get_prodigi_callback_url
-from .tracking import callback_token_is_valid
 from . import views as checkout_views
 from .serializers import OrderSerializer
 
@@ -346,30 +345,16 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             "https://media.openeire.ie/digital_products/photos/high-res.jpg",
         )
 
-    @override_settings(
-        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
-        PRODIGI_CALLBACK_TOKEN="prodigi-secret",
-    )
-    def test_prodigi_callback_url_requires_explicit_base_url_and_token(self):
+    @override_settings(PRODIGI_CALLBACK_BASE_URL="https://api.example.com")
+    def test_prodigi_callback_url_uses_explicit_base_url(self):
         self.assertEqual(
             _get_prodigi_callback_url(),
-            "https://api.example.com/api/checkout/prodigi/callback/?token=prodigi-secret",
+            "https://api.example.com/api/checkout/prodigi/callback/",
         )
 
-    @override_settings(
-        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
-        PRODIGI_CALLBACK_TOKEN="",
-    )
-    def test_prodigi_callback_url_is_disabled_without_token(self):
+    @override_settings(PRODIGI_CALLBACK_BASE_URL="")
+    def test_prodigi_callback_url_is_disabled_without_base_url(self):
         self.assertIsNone(_get_prodigi_callback_url())
-
-    @override_settings(PRODIGI_CALLBACK_TOKEN="prodigi-secret")
-    def test_callback_token_validation_accepts_matching_token(self):
-        self.assertTrue(callback_token_is_valid("prodigi-secret"))
-
-    @override_settings(PRODIGI_CALLBACK_TOKEN="")
-    def test_callback_token_validation_fails_closed_when_unconfigured(self):
-        self.assertFalse(callback_token_is_valid("anything"))
 
     @patch("checkout.prodigi.requests.post")
     def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
@@ -1050,7 +1035,6 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="orders@example.com",
-    PRODIGI_CALLBACK_TOKEN="prodigi-secret",
 )
 class ProdigiTrackingCallbackTests(TestCase):
     def setUp(self):
@@ -1092,11 +1076,13 @@ class ProdigiTrackingCallbackTests(TestCase):
             },
         }
 
-    def test_callback_stores_tracking_and_sends_email_once(self):
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_stores_tracking_and_sends_email_once(self, mock_fetch_prodigi_order):
+        mock_fetch_prodigi_order.return_value = self._payload()["data"]
         response = self.client.post(
-            f"{self.url}?token=prodigi-secret",
-            data=self._payload(),
-            content_type="application/json",
+            self.url,
+            data=json.dumps(self._payload()),
+            content_type="application/cloudevents+json",
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1111,21 +1097,23 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.assertIn("https://tracking.example.com/track/123", mail.outbox[0].body)
 
         second_response = self.client.post(
-            f"{self.url}?token=prodigi-secret",
-            data=self._payload(),
-            content_type="application/json",
+            self.url,
+            data=json.dumps(self._payload()),
+            content_type="application/cloudevents+json",
         )
 
         self.assertEqual(second_response.status_code, 200)
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_callback_does_not_email_without_tracking(self):
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_does_not_email_without_tracking(self, mock_fetch_prodigi_order):
         payload = self._payload(shipment_tracking_url="", shipment_tracking_number="")
+        mock_fetch_prodigi_order.return_value = payload["data"]
 
         response = self.client.post(
-            f"{self.url}?token=prodigi-secret",
-            data=payload,
-            content_type="application/json",
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/cloudevents+json",
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1135,19 +1123,21 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.assertFalse(self.order.tracking_email_signature)
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_callback_rejects_invalid_token(self):
+    @patch("checkout.views.fetch_prodigi_order", side_effect=RuntimeError("lookup failed"))
+    def test_callback_returns_502_when_prodigi_lookup_fails(self, _mock_fetch_prodigi_order):
         response = self.client.post(
-            f"{self.url}?token=wrong-token",
-            data=self._payload(),
-            content_type="application/json",
+            self.url,
+            data=json.dumps(self._payload()),
+            content_type="application/cloudevents+json",
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 502)
         self.order.refresh_from_db()
         self.assertEqual(self.order.prodigi_shipments, [])
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_callback_accepts_nested_data_order_payload_shape(self):
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_accepts_nested_data_order_payload_shape(self, mock_fetch_prodigi_order):
         payload = {
             "specversion": "1.0",
             "type": "OrderUpdated",
@@ -1156,11 +1146,12 @@ class ProdigiTrackingCallbackTests(TestCase):
                 "order": self._payload()["data"],
             },
         }
+        mock_fetch_prodigi_order.return_value = payload["data"]["order"]
 
         response = self.client.post(
-            f"{self.url}?token=prodigi-secret",
-            data=payload,
-            content_type="application/json",
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/cloudevents+json",
         )
 
         self.assertEqual(response.status_code, 200)

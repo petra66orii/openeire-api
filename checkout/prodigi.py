@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 import requests
@@ -8,6 +8,26 @@ from django.conf import settings
 from django.urls import reverse
 
 logger = logging.getLogger(__name__)
+
+
+def _prodigi_base_url() -> str:
+    is_sandbox = os.environ.get("PRODIGI_SANDBOX", "True") == "True"
+    return "https://api.sandbox.prodigi.com/v4.0/" if is_sandbox else "https://api.prodigi.com/v4.0/"
+
+
+def _prodigi_headers(order_number: Optional[str] = None) -> Dict[str, str]:
+    api_key = os.environ.get("PRODIGI_API_KEY")
+    if not api_key:
+        if order_number:
+            logger.error("Prodigi API key missing; cannot fulfill order %s", order_number)
+        else:
+            logger.error("Prodigi API key missing; cannot verify callback against Prodigi.")
+        raise RuntimeError("Prodigi fulfillment is unavailable right now.")
+
+    return {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
 
 
 def _request_timeout() -> Tuple[float, float]:
@@ -87,43 +107,74 @@ def _get_prodigi_asset_url(product, *, site_url: str) -> str:
 
 
 def _get_prodigi_callback_url() -> Optional[str]:
-    base_url = getattr(settings, "PRODIGI_CALLBACK_BASE_URL", None) or os.environ.get(
-        "PRODIGI_CALLBACK_BASE_URL"
-    )
+    base_url = getattr(settings, "PRODIGI_CALLBACK_BASE_URL", None)
     if not base_url:
         return None
 
-    callback_token = getattr(settings, "PRODIGI_CALLBACK_TOKEN", "")
-    if not callback_token:
-        logger.warning(
-            "Prodigi callback token is not configured; callback URL will not be attached."
-        )
-        return None
-
     callback_path = reverse("prodigi_callback")
-    callback_url = urljoin(f"{str(base_url).rstrip('/')}/", callback_path.lstrip("/"))
-    separator = "&" if "?" in callback_url else "?"
-    return f"{callback_url}{separator}token={callback_token}"
+    return urljoin(f"{str(base_url).rstrip('/')}/", callback_path.lstrip("/"))
+
+
+def fetch_prodigi_order(prodigi_order_id: str) -> dict:
+    normalized_order_id = str(prodigi_order_id or "").strip()
+    if not normalized_order_id:
+        raise RuntimeError("Prodigi callback did not include an order id.")
+
+    url = f"{_prodigi_base_url()}orders/{normalized_order_id}"
+
+    try:
+        response = requests.get(
+            url,
+            headers=_prodigi_headers(),
+            timeout=_request_timeout(),
+        )
+    except requests.Timeout:
+        logger.error("Prodigi order lookup timed out (prodigi_order_id=%s)", normalized_order_id)
+        raise RuntimeError("Prodigi order lookup timed out.") from None
+    except requests.RequestException:
+        logger.exception("Prodigi order lookup failed (prodigi_order_id=%s)", normalized_order_id)
+        raise RuntimeError("Prodigi order lookup failed.") from None
+
+    if 200 <= response.status_code < 300:
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning(
+                "Prodigi order lookup returned non-JSON success response (prodigi_order_id=%s, status=%s)",
+                normalized_order_id,
+                response.status_code,
+            )
+            raise RuntimeError("Prodigi order lookup returned an invalid response.") from None
+
+        if isinstance(data, dict):
+            order_payload = data.get("order")
+            if isinstance(order_payload, dict):
+                return order_payload
+            return data
+
+        raise RuntimeError("Prodigi order lookup returned an invalid response.")
+
+    outcome, trace_parent, failure_codes = _parse_prodigi_error(response)
+    logger.warning(
+        "Prodigi order lookup failed (prodigi_order_id=%s, status=%s, outcome=%s, trace_parent=%s, failure_codes=%s)",
+        normalized_order_id,
+        response.status_code,
+        outcome or "unknown",
+        trace_parent or "n/a",
+        ",".join(failure_codes) if failure_codes else "none",
+    )
+    raise RuntimeError(
+        f"Prodigi order lookup failed (status={response.status_code}, outcome={outcome or 'unknown'})."
+    )
 
 
 def create_prodigi_order(order):
     """
     Formats an OpenEire order and sends it to the Prodigi API.
     """
-    is_sandbox = os.environ.get("PRODIGI_SANDBOX", "True") == "True"
-    base_url = "https://api.sandbox.prodigi.com/v4.0/" if is_sandbox else "https://api.prodigi.com/v4.0/"
-    url = f"{base_url}orders"
-    api_key = os.environ.get("PRODIGI_API_KEY")
+    url = f"{_prodigi_base_url()}orders"
     site_url = os.environ.get("SITE_URL", "http://127.0.0.1:8000")
-
-    if not api_key:
-        logger.error("Prodigi API key missing; cannot fulfill order %s", order.order_number)
-        raise RuntimeError("Prodigi fulfillment is unavailable right now.")
-
-    headers = {
-        "X-API-Key": api_key,
-        "Content-Type": "application/json",
-    }
+    headers = _prodigi_headers(order.order_number)
 
     items_payload = []
     physical_items_seen = 0
