@@ -15,6 +15,7 @@ from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
+from rest_framework.parsers import JSONParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from products.models import (
@@ -37,12 +38,11 @@ from userprofiles.models import UserProfile
 from .models import Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer
 from .address_validation import validate_physical_shipping_address
-from .prodigi import create_prodigi_order 
+from .prodigi import create_prodigi_order, fetch_prodigi_order
 from .order_claiming import claim_guest_orders_for_user
 from .shipping import calculate_physical_shipping_quote, get_free_shipping_threshold
 from .tracking import (
     build_tracking_signature,
-    callback_token_is_valid,
     send_tracking_email,
     tracked_shipments,
     update_order_from_prodigi_payload,
@@ -761,33 +761,51 @@ class OrderHistoryView(generics.ListAPIView):
         return Order.objects.filter(user_profile=self.request.user.userprofile).order_by('-date')
 
 
+class CloudEventJSONParser(JSONParser):
+    media_type = "application/cloudevents+json"
+
+
 class ProdigiCallbackView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = "prodigi_callback"
+    parser_classes = [JSONParser, CloudEventJSONParser]
 
     def post(self, request):
-        if not callback_token_is_valid(request.query_params.get("token")):
-            logger.warning("Prodigi callback rejected due to invalid token.")
-            return Response(status=status.HTTP_403_FORBIDDEN)
-
         payload = request.data if isinstance(request.data, dict) else {}
-        prodigi_order = None
+        prodigi_order_hint = None
         data_payload = payload.get("data")
         if isinstance(data_payload, dict):
             nested_order = data_payload.get("order")
             if isinstance(nested_order, dict):
-                prodigi_order = nested_order
+                prodigi_order_hint = nested_order
             else:
-                prodigi_order = data_payload
+                prodigi_order_hint = data_payload
         elif isinstance(payload.get("order"), dict):
-            prodigi_order = payload.get("order")
-        if not isinstance(prodigi_order, dict):
+            prodigi_order_hint = payload.get("order")
+        if not isinstance(prodigi_order_hint, dict):
             logger.warning("Prodigi callback received invalid payload shape.")
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        prodigi_order_id = str(prodigi_order.get("id") or "").strip()
+        prodigi_order_id = str(
+            prodigi_order_hint.get("id")
+            or payload.get("subject")
+            or ""
+        ).strip()
+        if not prodigi_order_id:
+            logger.warning("Prodigi callback received payload without order id.")
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            prodigi_order = fetch_prodigi_order(prodigi_order_id)
+        except RuntimeError:
+            logger.exception(
+                "Prodigi callback could not verify order against Prodigi API (prodigi_order_id=%s)",
+                prodigi_order_id,
+            )
+            return Response(status=status.HTTP_502_BAD_GATEWAY)
+
         merchant_reference = str(prodigi_order.get("merchantReference") or "").strip()
 
         with transaction.atomic():
