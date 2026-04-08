@@ -1035,6 +1035,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="orders@example.com",
+    SECURE_SSL_REDIRECT=False,
 )
 class ProdigiTrackingCallbackTests(TestCase):
     def setUp(self):
@@ -1103,6 +1104,24 @@ class ProdigiTrackingCallbackTests(TestCase):
         )
 
         self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_accepts_plain_json_payload(self, mock_fetch_prodigi_order):
+        payload = self._payload()
+        mock_fetch_prodigi_order.return_value = payload["data"]
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_status, "Shipped")
+        self.assertEqual(len(self.order.prodigi_shipments), 1)
+        self.assertEqual(self.order.prodigi_shipments[0]["tracking_number"], "TRACK123")
         self.assertEqual(len(mail.outbox), 1)
 
     @patch("checkout.views.fetch_prodigi_order")
