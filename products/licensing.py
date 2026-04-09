@@ -14,6 +14,10 @@ from .pdf_generator import generate_licence_schedule_pdf, generate_licence_certi
 DEFAULT_TOKEN_DAYS = int(getattr(settings, "LICENCE_DELIVERY_TOKEN_DAYS", 7))
 
 
+def get_licensing_from_email():
+    return getattr(settings, "LICENSING_FROM_EMAIL", settings.DEFAULT_FROM_EMAIL)
+
+
 def get_asset_file_field(asset):
     if hasattr(asset, "high_res_file") and asset.high_res_file:
         return asset.high_res_file
@@ -114,7 +118,7 @@ def send_licence_delivery_email(license_request, documents, download_url, token_
     email = EmailMessage(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_licensing_from_email(),
         to=[license_request.email],
     )
 
@@ -179,7 +183,7 @@ def send_licence_quote_email(license_request):
     email = EmailMessage(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_licensing_from_email(),
         to=[license_request.email],
     )
     email.send(fail_silently=False)
@@ -205,7 +209,7 @@ def send_licence_initial_draft_email(license_request):
     email = EmailMessage(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_licensing_from_email(),
         to=[license_request.email],
     )
     email.send(fail_silently=False)
@@ -268,7 +272,7 @@ def send_licence_admin_notification_email(license_request):
     email = EmailMessage(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_licensing_from_email(),
         to=recipients,
     )
     email.send(fail_silently=False)
