@@ -409,7 +409,7 @@ class LicenseRequestTests(APITestCase):
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
-        DEFAULT_FROM_EMAIL='licensing@example.com',
+        DEFAULT_FROM_EMAIL='studio@example.com',
         LICENSING_FROM_EMAIL='licensing@example.com',
         LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
         SECURE_SSL_REDIRECT=False,
