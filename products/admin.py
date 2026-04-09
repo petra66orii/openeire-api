@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.safestring import mark_safe
 
 from checkout.models import ProductShipping
-from .licensing import send_licence_quote_email
+from .licensing import get_licensing_from_email, send_licence_quote_email
 from .models import (
     Photo,
     Video,
@@ -497,7 +497,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     "Kind regards,\n"
                     "OpenEire Studios\n"
                 ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
+                from_email=get_licensing_from_email(),
                 recipient_list=[obj.email],
                 fail_silently=False,
             )

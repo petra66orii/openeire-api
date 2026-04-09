@@ -32,7 +32,7 @@ from .models import (
     Video,
     generate_variants_for_photo,
 )
-from .licensing import send_licence_quote_email
+from .licensing import send_licence_admin_notification_email, send_licence_quote_email
 
 
 class LicenseRequestTests(APITestCase):
@@ -409,8 +409,10 @@ class LicenseRequestTests(APITestCase):
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
-        DEFAULT_FROM_EMAIL='licensing@example.com',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
         LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+        SECURE_SSL_REDIRECT=False,
     )
     def test_license_request_sends_admin_notification_email(self):
         response = self.client.post(self.url, self._payload(), format="json")
@@ -419,6 +421,7 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ['admin@example.com'])
+        self.assertEqual(sent.from_email, 'licensing@example.com')
         self.assertIn("New licence request", sent.subject)
         self.assertIn("Test Client", sent.body)
         self.assertIn("test@example.com", sent.body)
@@ -428,6 +431,7 @@ class LicenseRequestTests(APITestCase):
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
         DEFAULT_FROM_EMAIL='licensing@example.com',
         LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+        SECURE_SSL_REDIRECT=False,
     )
     @patch("products.views.send_licence_admin_notification_email", side_effect=OSError("smtp timeout"))
     def test_license_request_persists_when_admin_notification_fails(self, mock_notify):
@@ -441,6 +445,7 @@ class LicenseRequestTests(APITestCase):
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
         DEFAULT_FROM_EMAIL='licensing@example.com',
         LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+        SECURE_SSL_REDIRECT=False,
     )
     def test_license_request_multiple_assets_sends_admin_notification_per_created_request(self):
         photo_two = self._create_photo(is_active=True)
@@ -567,7 +572,11 @@ class LicenseRequestTests(APITestCase):
         self.assertIn("licence draft", mail.outbox[0].subject.lower())
         self.assertIn("This is your initial draft licence response.", mail.outbox[0].body)
 
-    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
     def test_quote_email_sent_with_payment_link_and_fee(self):
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
@@ -594,8 +603,38 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["quote@example.com"])
+        self.assertEqual(sent.from_email, "licensing@example.com")
         self.assertIn("https://buy.stripe.com/test-link", sent.body)
         self.assertIn("EUR 250.00", sent.body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+        LICENCE_ADMIN_NOTIFICATION_RECIPIENTS=['admin@example.com'],
+    )
+    def test_license_admin_notification_uses_licensing_sender_when_configured(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Admin Client",
+            company="Admin Co",
+            email="admin-client@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="SUBMITTED",
+            territory="IRELAND",
+            permitted_media="WEB_SOCIAL",
+            exclusivity="NON_EXCLUSIVE",
+            reach_caps="NONE",
+        )
+
+        sent = send_licence_admin_notification_email(req)
+
+        self.assertTrue(sent)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].from_email, "licensing@example.com")
 
     def test_license_download_token_not_burned_if_file_unavailable(self):
         req = LicenseRequest.objects.create(

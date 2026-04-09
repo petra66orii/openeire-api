@@ -35,6 +35,10 @@ Set values for the variables used by settings and integrations:
   - `R2_CUSTOM_DOMAIN`
 - Email:
   - `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`
+  - `DEFAULT_FROM_EMAIL`
+  - `LICENSING_FROM_EMAIL` (optional, falls back to `DEFAULT_FROM_EMAIL`)
+  - `LICENSOR_CONTACT_EMAIL` (optional, falls back to `LICENSING_FROM_EMAIL`)
+  - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
 - Stripe:
   - `STRIPE_PUBLIC_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 - Prodigi:
