@@ -15,7 +15,20 @@ class BlogPostListSerializer(TaggitSerializer, serializers.ModelSerializer):
 
     class Meta:
         model = BlogPost
-        fields = ['id', 'title', 'slug', 'author', 'featured_image', 'excerpt', 'created_at', 'tags', 'likes_count']
+        fields = [
+            'id',
+            'title',
+            'slug',
+            'author',
+            'featured_image',
+            'excerpt',
+            'meta_title',
+            'meta_description',
+            'canonical_url',
+            'created_at',
+            'tags',
+            'likes_count',
+        ]
 
     def get_excerpt(self, obj):
         # Defense in depth for legacy rows that predate server-side sanitization.
@@ -32,18 +45,35 @@ class BlogPostDetailSerializer(TaggitSerializer, serializers.ModelSerializer):
     has_liked = serializers.SerializerMethodField()
     related_posts = serializers.SerializerMethodField()
     content = serializers.SerializerMethodField()
+    excerpt = serializers.SerializerMethodField()
 
     class Meta:
         model = BlogPost
         fields = [
-            'id', 'title', 'slug', 'author', 'featured_image', 'content', 
-            'created_at', 'updated_at', 'tags', 'likes_count', 'has_liked',
-            'related_posts' 
+            'id',
+            'title',
+            'slug',
+            'author',
+            'featured_image',
+            'content',
+            'excerpt',
+            'meta_title',
+            'meta_description',
+            'canonical_url',
+            'created_at',
+            'updated_at',
+            'tags',
+            'likes_count',
+            'has_liked',
+            'related_posts',
         ]
 
     def get_content(self, obj):
         # Defense in depth for legacy rows that predate server-side sanitization.
         return sanitize_blog_html(obj.content)
+
+    def get_excerpt(self, obj):
+        return sanitize_blog_plain_text(obj.excerpt)
 
     def get_has_liked(self, obj):
         user = self.context.get('request').user
