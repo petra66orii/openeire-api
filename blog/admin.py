@@ -24,6 +24,7 @@ class BlogPostAdmin(SummernoteModelAdmin):
         'author',
         'featured_image',
         'excerpt',
+        'tags',
         'meta_title',
         'meta_description',
         'canonical_url',
