@@ -78,6 +78,63 @@ class BlogSanitizationTests(APITestCase):
 
         self.assertEqual(post.excerpt, 'Quick summary')
 
+    def test_blog_post_generates_slug_only_when_blank(self):
+        post = self._create_post(
+            title='SEO Slug Post',
+            content='<p>Body</p>',
+        )
+
+        self.assertEqual(post.slug, 'seo-slug-post')
+
+        post.title = 'Updated SEO Slug Post'
+        post.save()
+
+        self.assertEqual(post.slug, 'seo-slug-post')
+
+    def test_blog_list_exposes_seo_fields(self):
+        post = self._create_post(
+            title='SEO List Post',
+            content='<p>Body</p>',
+            excerpt='List excerpt',
+        )
+        post.meta_title = 'List Meta Title'
+        post.meta_description = 'List meta description'
+        post.canonical_url = 'https://openeire.ie/blog/seo-list-post/'
+        post.save()
+
+        response = self.client.get(reverse('blog_post_list'))
+
+        self.assertEqual(response.status_code, 200)
+        results = self._list_results(response)
+        self.assertEqual(results[0]['meta_title'], 'List Meta Title')
+        self.assertEqual(results[0]['meta_description'], 'List meta description')
+        self.assertEqual(
+            results[0]['canonical_url'],
+            'https://openeire.ie/blog/seo-list-post/',
+        )
+
+    def test_blog_detail_exposes_seo_fields_and_excerpt(self):
+        post = self._create_post(
+            title='SEO Detail Post',
+            content='<p>Body</p>',
+            excerpt='Detail excerpt',
+        )
+        post.meta_title = 'Detail Meta Title'
+        post.meta_description = 'Detail meta description'
+        post.canonical_url = 'https://openeire.ie/blog/seo-detail-post/'
+        post.save()
+
+        response = self.client.get(reverse('blog_post_detail', args=[post.slug]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['excerpt'], 'Detail excerpt')
+        self.assertEqual(response.data['meta_title'], 'Detail Meta Title')
+        self.assertEqual(response.data['meta_description'], 'Detail meta description')
+        self.assertEqual(
+            response.data['canonical_url'],
+            'https://openeire.ie/blog/seo-detail-post/',
+        )
+
     def test_comment_save_sanitizes_html_and_scripts(self):
         post = self._create_post(
             title='Comment Sanitization',

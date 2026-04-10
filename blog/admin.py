@@ -18,6 +18,19 @@ class BlogPostAdmin(SummernoteModelAdmin):
     summernote_fields = ('content',)
     readonly_fields = ('likes_count_display',) 
     exclude = ('likes',) 
+    fields = (
+        'title',
+        'slug',
+        'author',
+        'featured_image',
+        'excerpt',
+        'meta_title',
+        'meta_description',
+        'canonical_url',
+        'content',
+        'status',
+        'likes_count_display',
+    )
 
     def likes_count_display(self, obj):
         return obj.number_of_likes()
