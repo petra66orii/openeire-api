@@ -78,6 +78,22 @@ class BlogSanitizationTests(APITestCase):
 
         self.assertEqual(post.excerpt, 'Quick summary')
 
+    def test_blog_post_preserves_safe_summernote_rich_text_formatting(self):
+        post = self._create_post(
+            title='Summernote Formatting',
+            content=(
+                '<p style="text-align:center">'
+                '<span style="color:#c98f3f;text-decoration:underline">Styled</span>'
+                '</p>'
+                '<table><tr><td colspan="2">Cell</td></tr></table>'
+            ),
+        )
+
+        self.assertIn('style="text-align:center;"', post.content)
+        self.assertIn('style="color:#c98f3f;text-decoration:underline;"', post.content)
+        self.assertIn('<table>', post.content)
+        self.assertIn('<td colspan="2">Cell</td>', post.content)
+
     def test_blog_post_generates_slug_only_when_blank(self):
         post = self._create_post(
             title='SEO Slug Post',
