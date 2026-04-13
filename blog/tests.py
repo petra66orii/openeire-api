@@ -94,6 +94,16 @@ class BlogSanitizationTests(APITestCase):
         self.assertIn('<table>', post.content)
         self.assertIn('<td colspan="2">Cell</td>', post.content)
 
+    def test_blog_post_decodes_entity_encoded_html_before_sanitizing(self):
+        post = self._create_post(
+            title='Encoded Summernote HTML',
+            content='&lt;p&gt;Encoded paragraph&lt;/p&gt;&lt;h2&gt;Heading&lt;/h2&gt;',
+        )
+
+        self.assertIn('<p>Encoded paragraph</p>', post.content)
+        self.assertIn('<h2>Heading</h2>', post.content)
+        self.assertNotIn('&lt;p&gt;', post.content)
+
     def test_blog_post_generates_slug_only_when_blank(self):
         post = self._create_post(
             title='SEO Slug Post',
@@ -177,6 +187,20 @@ class BlogSanitizationTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['content'], '<p>Visible</p>')
+
+    def test_blog_detail_decodes_legacy_entity_encoded_html_on_read(self):
+        post = self._create_post(
+            title='Legacy Encoded Content Post',
+            content='<p>Initial</p>',
+        )
+        BlogPost.objects.filter(pk=post.pk).update(
+            content='&lt;p&gt;Visible&lt;/p&gt;&lt;h2&gt;Heading&lt;/h2&gt;'
+        )
+
+        response = self.client.get(reverse('blog_post_detail', args=[post.slug]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['content'], '<p>Visible</p><h2>Heading</h2>')
 
     def test_blog_list_sanitizes_legacy_unsanitized_excerpt_on_read(self):
         post = self._create_post(

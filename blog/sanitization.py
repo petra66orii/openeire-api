@@ -1,3 +1,4 @@
+import html
 import re
 from urllib.parse import urlparse
 
@@ -145,7 +146,8 @@ def _img_attribute_filter(tag, name, value):
 def sanitize_blog_html(value):
     if value is None:
         return None
-    text = _strip_script_style_blocks(str(value))
+    text = html.unescape(str(value))
+    text = _strip_script_style_blocks(text)
     attributes = dict(BLOG_ALLOWED_ATTRIBUTES)
     attributes["img"] = _img_attribute_filter
     css_sanitizer = CSSSanitizer(
@@ -166,7 +168,8 @@ def sanitize_blog_html(value):
 def sanitize_blog_plain_text(value, max_len=None):
     if value is None:
         return None
-    text = _strip_script_style_blocks(str(value))
+    text = html.unescape(str(value))
+    text = _strip_script_style_blocks(text)
     cleaned = bleach.clean(
         text,
         tags=[],
