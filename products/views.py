@@ -663,7 +663,10 @@ class PersonalAssetDownloadView(APIView):
             ).update(used_at=used_at)
 
         if updated != 1:
-            file_field.close()
+            try:
+                file_field.close()
+            except Exception:
+                pass
             raise Http404("Download link has expired or was already used.")
 
         filename = (get_asset_file_name(asset) or "").rsplit("/", 1)[-1]

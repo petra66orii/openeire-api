@@ -32,6 +32,7 @@ from products.licensing import (
     send_licence_delivery_email,
 )
 from products.file_access import get_asset_file_name
+from products.file_access import open_asset_file
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
@@ -437,8 +438,16 @@ class StripeWebhookView(APIView):
             return
 
         asset = license_request.asset
-        if not get_asset_file_name(asset):
-            raise RuntimeError(f"No high-res file found attached to asset {asset}")
+        asset_file_name = get_asset_file_name(asset)
+        if not asset_file_name:
+            raise RuntimeError(f"No deliverable asset file is attached to asset {asset}")
+        asset_file = open_asset_file(asset, "rb")
+        if not asset_file:
+            raise RuntimeError(f"Deliverable asset file is unavailable for asset {asset}")
+        try:
+            asset_file.close()
+        except Exception:
+            pass
 
         issued_at = timezone.now()
 

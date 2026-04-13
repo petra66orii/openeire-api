@@ -855,6 +855,50 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("external-video.mp4", response["Content-Disposition"])
 
+    def test_secure_video_download_falls_back_to_r2_key_when_uploaded_file_is_stale(self):
+        user = User.objects.create_user(
+            username="stalevideobuyer",
+            email="stalevideobuyer@example.com",
+            password="testpass123",
+        )
+        thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        stale_upload = SimpleUploadedFile("stale-upload.mp4", b"stale-video", content_type="video/mp4")
+        video_key = self._write_private_asset(
+            Path("digital_products/videos/fallback-video.mp4"),
+            b"video-bytes-from-r2",
+        )
+        video = Video.objects.create(
+            title="Fallback Video",
+            description="Uses uploaded file when available, R2 key otherwise",
+            collection="Test Collection",
+            thumbnail_image=thumbnail,
+            video_file=stale_upload,
+            video_file_key=video_key,
+            price=Decimal("24.00"),
+            is_active=True,
+        )
+        video.video_file.name = "digital_products/videos/missing-upload.mp4"
+        video.save(update_fields=["video_file"])
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_r2_video_download_fallback_test",
+        )
+        OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("24.00"),
+            content_type=ContentType.objects.get_for_model(Video),
+            object_id=video.id,
+            details={"license": "hd"},
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get(reverse("secure-download", args=["video", video.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("fallback-video.mp4", response["Content-Disposition"])
+
     def test_licence_download_supports_video_r2_object_key(self):
         video_key = self._write_private_asset(
             Path("digital_products/videos/licensed-video.mp4"),

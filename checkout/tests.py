@@ -569,6 +569,27 @@ class StripeWebhookLicenseTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, "SUCCESS")
 
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_license_payment_does_not_deliver_when_asset_file_is_unavailable(self, mock_construct):
+        self.photo.high_res_file.storage.delete(self.photo.high_res_file.name)
+        mock_construct.return_value = self._event_payload(event_id="evt_missing_asset")
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.license_request.refresh_from_db()
+        self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
+        self.assertEqual(LicenceDocument.objects.filter(license_request=self.license_request).count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+        event = StripeWebhookEvent.objects.get(stripe_event_id="evt_missing_asset")
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("Deliverable asset file", event.error_message)
+
 
 @override_settings(
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
