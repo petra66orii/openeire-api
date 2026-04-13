@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import LicenceDocument, LicenceDeliveryToken
+from .file_access import get_asset_file_name, open_asset_file
 from .pdf_generator import generate_licence_schedule_pdf, generate_licence_certificate_pdf
 
 

@@ -9,6 +9,8 @@ from xml.sax.saxutils import escape as xml_escape
 from django.conf import settings
 from django.utils import timezone
 
+from .file_access import get_asset_file_name, open_asset_file
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -121,7 +123,11 @@ def _asset_details(license_request):
     return asset_type, asset_id, asset_label
 
 
-def _compute_asset_sha256(file_field):
+def _compute_asset_sha256(asset):
+    filename = get_asset_file_name(asset)
+    if not filename:
+        return "Unavailable"
+    file_field = open_asset_file(asset, "rb")
     if not file_field:
         return "Unavailable"
     try:
@@ -131,9 +137,16 @@ def _compute_asset_sha256(file_field):
         pass
     sha256 = hashlib.sha256()
     try:
-        file_field.open("rb")
-        for chunk in file_field.chunks():
-            sha256.update(chunk)
+        chunk_iter = file_field.chunks() if hasattr(file_field, "chunks") else None
+        if chunk_iter is not None:
+            for chunk in chunk_iter:
+                sha256.update(chunk)
+        else:
+            while True:
+                chunk = file_field.read(1024 * 1024)
+                if not chunk:
+                    break
+                sha256.update(chunk)
         return sha256.hexdigest()
     except Exception:
         return "Unavailable"
@@ -191,16 +204,10 @@ def _compute_expiry_date(license_request, issued_at):
 
 def _build_asset_table(license_request):
     asset = license_request.asset
-    file_field = None
-    if hasattr(asset, "high_res_file") and asset.high_res_file:
-        file_field = asset.high_res_file
-    elif hasattr(asset, "video_file") and asset.video_file:
-        file_field = asset.video_file
-
-    filename = Path(file_field.name).name if file_field else "Not specified"
+    filename = Path(get_asset_file_name(asset) or "").name or "Not specified"
     file_format = filename.split(".")[-1].upper() if "." in filename else "Not specified"
     resolution = getattr(asset, "resolution", None) or "Not specified"
-    asset_hash = _compute_asset_sha256(file_field)
+    asset_hash = _compute_asset_sha256(asset)
 
     return [
         [

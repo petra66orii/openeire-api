@@ -1,7 +1,9 @@
 import re
 import uuid
 from decimal import Decimal
+from pathlib import Path
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from datetime import timedelta
 from django.db import models
@@ -97,7 +99,13 @@ class Video(models.Model):
     # PRIVATE: Uploads exclusively to the Private Vault!
     video_file = models.FileField(
         upload_to="digital_products/videos/", 
-        storage=PrivateAssetStorage()
+        storage=PrivateAssetStorage(),
+        blank=True,
+    )
+    video_file_key = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Existing private R2 object key, e.g. digital_products/videos/my-video.mp4",
     )
     
     price = models.DecimalField(max_digits=6, decimal_places=2)
@@ -107,6 +115,44 @@ class Video(models.Model):
     tags = models.CharField(max_length=254, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
+
+    def clean(self):
+        super().clean()
+        self.video_file_key = (self.video_file_key or "").strip()
+        if not self.video_file and not self.video_file_key:
+            raise ValidationError(
+                {
+                    "video_file": "Upload a video file or provide an existing R2 object key.",
+                    "video_file_key": "Upload a video file or provide an existing R2 object key.",
+                }
+            )
+
+    @property
+    def video_asset_name(self):
+        if self.video_file and self.video_file.name:
+            try:
+                if self.video_file.storage.exists(self.video_file.name):
+                    return self.video_file.name
+            except Exception:
+                return self.video_file.name
+        return self.video_file_key or ""
+
+    @property
+    def video_asset_filename(self):
+        if not self.video_asset_name:
+            return ""
+        return Path(self.video_asset_name).name
+
+    def open_video_asset(self, mode="rb"):
+        if self.video_file and self.video_file.name:
+            try:
+                self.video_file.open(mode)
+                return self.video_file
+            except Exception:
+                pass
+        if self.video_file_key:
+            return PrivateAssetStorage().open(self.video_file_key, mode)
+        return None
 
     def __str__(self):
         return self.title
