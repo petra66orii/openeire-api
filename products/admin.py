@@ -191,6 +191,23 @@ class ProductVariantAdminForm(forms.ModelForm):
             self.fields['price'].help_text = existing_help + get_price_autofill_script()
 
 
+class VideoAdminForm(forms.ModelForm):
+    class Meta:
+        model = Video
+        fields = '__all__'
+
+    def clean(self):
+        cleaned_data = super().clean()
+        video_file = cleaned_data.get('video_file')
+        video_file_key = (cleaned_data.get('video_file_key') or '').strip()
+        cleaned_data['video_file_key'] = video_file_key
+        if not video_file and not video_file_key:
+            raise forms.ValidationError(
+                "Upload a video file or provide an existing R2 object key."
+            )
+        return cleaned_data
+
+
 class LicenseRequestAdminForm(forms.ModelForm):
     internal_note = forms.CharField(
         required=False,
@@ -287,6 +304,7 @@ class PhotoAdmin(admin.ModelAdmin):
 
 # @admin.register(Video)
 class VideoAdmin(admin.ModelAdmin):
+    form = VideoAdminForm
     list_display = ('title', 'collection', 'resolution', 'frame_rate', 'price')
     list_filter = ('collection', 'resolution')
     search_fields = ('title', 'description', 'tags')
@@ -297,7 +315,8 @@ class VideoAdmin(admin.ModelAdmin):
             'fields': ('title', 'description', 'collection', 'tags')
         }),
         ('Media', {
-            'fields': ('thumbnail_image', 'video_file')
+            'fields': ('thumbnail_image', 'video_file', 'video_file_key'),
+            'description': 'Use either a normal upload or an existing private R2 object key for the master video file.',
         }),
         ('Technical Specs', {
             'fields': ('duration', 'resolution', 'frame_rate')

@@ -28,10 +28,10 @@ from .models import (
     PersonalDownloadToken,
 )
 from .licensing import (
-    get_asset_file_field,
     send_licence_admin_notification_email,
     send_licence_initial_draft_email,
 )
+from .file_access import get_asset_file_name, open_asset_file
 from .personal_licence import (
     get_personal_licence_summary,
     get_personal_licence_text,
@@ -591,22 +591,18 @@ class ProtectedDownloadView(APIView):
 
         # 3. Fetch the product and stream the private file.
         product = get_object_or_404(model_class, id=product_id)
-        
-        file_handle = None
-        if product_type == 'photo':
-            file_handle = product.high_res_file
-        elif product_type == 'video':
 
-            file_handle = product.video_file
-
+        file_handle = open_asset_file(product, "rb")
         if not file_handle:
             raise Http404("File not attached to product")
-        try:
-            file_handle.open("rb")
-        except Exception:
-            raise Http404("File not available")
 
-        filename = file_handle.name.rsplit("/", 1)[-1]
+        filename = (get_asset_file_name(product) or "").rsplit("/", 1)[-1]
+        if not filename:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
+            raise Http404("File not available")
         return FileResponse(file_handle, as_attachment=True, filename=filename)
 
 
@@ -624,19 +620,20 @@ class LicenceAssetDownloadView(APIView):
 
             license_request = token_obj.license_request
             asset = license_request.asset
-            file_field = get_asset_file_field(asset)
+            file_field = open_asset_file(asset, "rb")
             if not file_field:
                 raise Http404("File not attached to asset")
-
-            try:
-                file_field.open("rb")
-            except Exception:
-                raise Http404("File not available")
 
             token_obj.used_at = timezone.now()
             token_obj.save(update_fields=["used_at"])
 
-        filename = file_field.name.rsplit("/", 1)[-1]
+        filename = (get_asset_file_name(asset) or "").rsplit("/", 1)[-1]
+        if not filename:
+            try:
+                file_field.close()
+            except Exception:
+                pass
+            raise Http404("File not available")
         return FileResponse(file_field, as_attachment=True, filename=filename)
 
 
@@ -653,14 +650,9 @@ class PersonalAssetDownloadView(APIView):
 
         order_item = token_obj.order_item
         asset = order_item.product
-        file_field = get_asset_file_field(asset)
+        file_field = open_asset_file(asset, "rb")
         if not file_field:
             raise Http404("File not attached to asset")
-
-        try:
-            file_field.open("rb")
-        except Exception:
-            raise Http404("File not available")
 
         used_at = timezone.now()
         with transaction.atomic():
@@ -674,5 +666,11 @@ class PersonalAssetDownloadView(APIView):
             file_field.close()
             raise Http404("Download link has expired or was already used.")
 
-        filename = file_field.name.rsplit("/", 1)[-1]
+        filename = (get_asset_file_name(asset) or "").rsplit("/", 1)[-1]
+        if not filename:
+            try:
+                file_field.close()
+            except Exception:
+                pass
+            raise Http404("File not available")
         return FileResponse(file_field, as_attachment=True, filename=filename)

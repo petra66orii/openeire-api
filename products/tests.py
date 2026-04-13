@@ -80,6 +80,12 @@ class LicenseRequestTests(APITestCase):
             is_active=is_active,
         )
 
+    def _write_private_asset(self, relative_path, content):
+        asset_path = Path(self.media_root) / relative_path
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(content)
+        return str(relative_path).replace("\\", "/")
+
     def _payload(self, asset_id=None, message=None, reach_caps=None):
         return {
             "client_name": "Test Client",
@@ -808,6 +814,84 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data["product_type"], "video")
         self.assertNotIn("video_file", response.data)
         self.assertEqual(response.data["default_purchase_flow"], "PERSONAL_CHECKOUT")
+
+    def test_secure_video_download_supports_existing_r2_object_key(self):
+        user = User.objects.create_user(
+            username="r2videobuyer",
+            email="r2videobuyer@example.com",
+            password="testpass123",
+        )
+        video_key = self._write_private_asset(
+            Path("digital_products/videos/external-video.mp4"),
+            b"video-bytes-from-r2",
+        )
+        thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        video = Video.objects.create(
+            title="External Video",
+            description="Uses existing R2 object key",
+            collection="Test Collection",
+            thumbnail_image=thumbnail,
+            video_file_key=video_key,
+            price=Decimal("24.00"),
+            is_active=True,
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_r2_video_download_test",
+        )
+        OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("24.00"),
+            content_type=ContentType.objects.get_for_model(Video),
+            object_id=video.id,
+            details={"license": "hd"},
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get(reverse("secure-download", args=["video", video.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("external-video.mp4", response["Content-Disposition"])
+
+    def test_licence_download_supports_video_r2_object_key(self):
+        video_key = self._write_private_asset(
+            Path("digital_products/videos/licensed-video.mp4"),
+            b"licensed-video-bytes",
+        )
+        thumbnail = SimpleUploadedFile("licensed-thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        video = Video.objects.create(
+            title="Licensed External Video",
+            description="Commercial licensed video",
+            collection="Test Collection",
+            thumbnail_image=thumbnail,
+            video_file_key=video_key,
+            price=Decimal("24.00"),
+            is_active=True,
+        )
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(video),
+            object_id=video.id,
+            client_name="Licensed Video Client",
+            company="Video Co",
+            email="licensed-video@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="DELIVERED",
+        )
+        token = LicenceDeliveryToken.objects.create(
+            license_request=req,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+        response = self.client.get(reverse("license-asset-download", args=[str(token.token)]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("licensed-video.mp4", response["Content-Disposition"])
+        token.refresh_from_db()
+        self.assertIsNotNone(token.used_at)
 
     def test_physical_gallery_items_are_not_serialized_as_digital_photos(self):
         self.photo.is_printable = True

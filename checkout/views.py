@@ -30,8 +30,8 @@ from products.licensing import (
     ensure_licence_documents,
     ensure_delivery_token,
     send_licence_delivery_email,
-    get_asset_file_field,
 )
+from products.file_access import get_asset_file_name
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
@@ -437,8 +437,7 @@ class StripeWebhookView(APIView):
             return
 
         asset = license_request.asset
-        file_field = get_asset_file_field(asset)
-        if not file_field:
+        if not get_asset_file_name(asset):
             raise RuntimeError(f"No high-res file found attached to asset {asset}")
 
         issued_at = timezone.now()
