@@ -739,7 +739,8 @@ class LicenseRequestTests(APITestCase):
         token.refresh_from_db()
         self.assertIsNone(token.used_at)
 
-    def test_personal_download_token_streams_asset_and_burns_token(self):
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_personal_download_token_streams_asset_and_burns_token(self, _mock_presigned_url):
         user = User.objects.create_user(
             username="personaltokendownload",
             email="personaltokendownload@example.com",
@@ -767,8 +768,8 @@ class LicenseRequestTests(APITestCase):
 
         response = self.client.get(url)
 
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(response["Location"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment;", response["Content-Disposition"])
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
 
@@ -872,7 +873,8 @@ class LicenseRequestTests(APITestCase):
             )
         )
 
-    def test_secure_video_download_supports_existing_r2_object_key(self):
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_secure_video_download_supports_existing_r2_object_key(self, _mock_presigned_url):
         user = User.objects.create_user(
             username="r2videobuyer",
             email="r2videobuyer@example.com",
@@ -909,10 +911,14 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("external-video.mp4", response["Location"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("external-video.mp4", response["Content-Disposition"])
 
-    def test_secure_video_download_falls_back_to_r2_key_when_uploaded_file_is_stale(self):
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_secure_video_download_falls_back_to_r2_key_when_uploaded_file_is_stale(
+        self,
+        _mock_presigned_url,
+    ):
         user = User.objects.create_user(
             username="stalevideobuyer",
             email="stalevideobuyer@example.com",
@@ -953,8 +959,8 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("fallback-video.mp4", response["Location"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("fallback-video.mp4", response["Content-Disposition"])
 
     def test_secure_video_download_prefers_r2_key_when_both_master_sources_exist(self):
         user = User.objects.create_user(
@@ -1045,7 +1051,8 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response["Location"], "https://r2.example.com/private-video-download")
         mock_presigned_url.assert_called_once()
 
-    def test_licence_download_supports_video_r2_object_key(self):
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_licence_download_supports_video_r2_object_key(self, _mock_presigned_url):
         video_key = self._write_private_asset(
             Path("digital_products/videos/licensed-video.mp4"),
             b"licensed-video-bytes",
@@ -1078,8 +1085,8 @@ class LicenseRequestTests(APITestCase):
 
         response = self.client.get(reverse("license-asset-download", args=[str(token.token)]))
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("licensed-video.mp4", response["Location"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("licensed-video.mp4", response["Content-Disposition"])
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
 
