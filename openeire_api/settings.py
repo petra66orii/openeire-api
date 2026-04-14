@@ -61,6 +61,16 @@ R2_CUSTOM_DOMAIN = os.getenv('R2_CUSTOM_DOMAIN')
 R2_PRIVATE_BUCKET_NAME = os.getenv('R2_PRIVATE_BUCKET_NAME')
 R2_PRIVATE_ACCESS_KEY_ID = os.getenv('R2_PRIVATE_ACCESS_KEY_ID', R2_ACCESS_KEY_ID)
 R2_PRIVATE_SECRET_ACCESS_KEY = os.getenv('R2_PRIVATE_SECRET_ACCESS_KEY', R2_SECRET_ACCESS_KEY)
+R2_VIDEO_MASTER_PREFIX = os.getenv('R2_VIDEO_MASTER_PREFIX', 'digital_products/videos/')
+R2_VIDEO_PREVIEW_PREFIX = os.getenv('R2_VIDEO_PREVIEW_PREFIX', 'previews/videos/')
+R2_MULTIPART_MIN_PART_SIZE = int(os.getenv('R2_MULTIPART_MIN_PART_SIZE', str(10 * 1024 * 1024)))
+R2_MULTIPART_MAX_FILE_SIZE = int(os.getenv('R2_MULTIPART_MAX_FILE_SIZE', str(50 * 1024 * 1024 * 1024)))
+R2_MULTIPART_DEFAULT_CONCURRENCY = int(os.getenv('R2_MULTIPART_DEFAULT_CONCURRENCY', '4'))
+R2_MULTIPART_PART_URL_EXPIRY_SECONDS = int(os.getenv('R2_MULTIPART_PART_URL_EXPIRY_SECONDS', '3600'))
+R2_MULTIPART_ALLOWED_VIDEO_TYPES = os.getenv(
+    'R2_MULTIPART_ALLOWED_VIDEO_TYPES',
+    'video/mp4,video/quicktime,video/webm,video/x-m4v',
+)
 
 ALLOWED_HOSTS = [
     "127.0.0.1",
@@ -386,6 +396,8 @@ FRONTEND_ORIGIN = _frontend_origin_from_url(FRONTEND_URL)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
     "https://openeire.onrender.com",
 ]
 
@@ -398,6 +410,8 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
     "https://openeire.ie",
     "https://openeire.online",
     "https://openeire.onrender.com",

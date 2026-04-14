@@ -64,3 +64,14 @@ class IsAIWorkerAuthorized(permissions.BasePermission):
                 return False
 
         return True
+
+
+class IsStaffUser(permissions.BasePermission):
+    """
+    Allows access only to authenticated staff users.
+    """
+    message = "Staff access required."
+
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and user.is_staff)

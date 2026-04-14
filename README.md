@@ -110,6 +110,13 @@ Storage (R2/S3):
 - `R2_PRIVATE_BUCKET_NAME`
 - `R2_PRIVATE_ACCESS_KEY_ID`
 - `R2_PRIVATE_SECRET_ACCESS_KEY`
+- `R2_VIDEO_MASTER_PREFIX`
+- `R2_VIDEO_PREVIEW_PREFIX`
+- `R2_MULTIPART_MIN_PART_SIZE`
+- `R2_MULTIPART_MAX_FILE_SIZE`
+- `R2_MULTIPART_DEFAULT_CONCURRENCY`
+- `R2_MULTIPART_PART_URL_EXPIRY_SECONDS`
+- `R2_MULTIPART_ALLOWED_VIDEO_TYPES`
 
 Email:
 - `EMAIL_HOST_USER`
@@ -198,6 +205,25 @@ Prodigi fulfillment note:
 - Prodigi order creation sets a callback URL when `PRODIGI_CALLBACK_BASE_URL` is configured.
 - Callback payloads are verified by fetching the referenced order back from Prodigi before shipment updates are trusted locally.
 - When a callback includes shipment tracking details, the API stores the shipment metadata on the order and emails the customer once per unique tracking update.
+
+## Staff Multipart Video Uploads
+- Staff-only upload endpoints live under `/api/uploads/videos/`.
+- The browser uploads large video parts directly to Cloudflare R2 using presigned part URLs; Django never proxies the file bytes.
+- Private downloadable masters go to the private bucket prefix in `R2_VIDEO_MASTER_PREFIX` (default `digital_products/videos/`).
+- Public watermarked preview clips go to the public bucket prefix in `R2_VIDEO_PREVIEW_PREFIX` (default `previews/videos/`).
+- Upload completion can either:
+  - attach directly to an existing `Video`
+  - or remain a completed pending upload session for manual follow-up
+
+Local setup:
+1. Set both the public and private R2 credentials in `.env`.
+2. Run migrations so `VideoUploadSession` and `Video.preview_video_key` exist.
+3. Log in as a Django staff user before using the React upload route.
+
+Production setup:
+1. Ensure the public R2 bucket is readable for preview clips and mapped to `R2_CUSTOM_DOMAIN` when used.
+2. Ensure the private R2 bucket credentials allow multipart upload lifecycle calls for master assets.
+3. Keep the private bucket non-public; secure downloads continue to use the existing authenticated/tokenized backend flow.
 
 ## Maintainer
 - Project/team owner: [Miss Bott](https://github.com/petra66orii)

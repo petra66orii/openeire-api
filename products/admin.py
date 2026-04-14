@@ -17,6 +17,7 @@ from .licensing import get_licensing_from_email, send_licence_quote_email
 from .models import (
     Photo,
     Video,
+    VideoUploadSession,
     ProductVariant,
     ProductReview,
     PrintTemplate,
@@ -200,7 +201,9 @@ class VideoAdminForm(forms.ModelForm):
         cleaned_data = super().clean()
         video_file = cleaned_data.get('video_file')
         video_file_key = (cleaned_data.get('video_file_key') or '').strip()
+        preview_video_key = (cleaned_data.get('preview_video_key') or '').strip()
         cleaned_data['video_file_key'] = video_file_key
+        cleaned_data['preview_video_key'] = preview_video_key
         if not video_file and not video_file_key:
             raise forms.ValidationError(
                 "Upload a video file or provide an existing R2 object key."
@@ -315,8 +318,8 @@ class VideoAdmin(admin.ModelAdmin):
             'fields': ('title', 'description', 'collection', 'tags')
         }),
         ('Media', {
-            'fields': ('thumbnail_image', 'video_file', 'video_file_key'),
-            'description': 'Use either a normal upload or an existing private R2 object key for the master video file.',
+            'fields': ('thumbnail_image', 'preview_video_key', 'video_file', 'video_file_key'),
+            'description': 'Use preview_video_key for the public watermarked clip. Use either a normal upload or an existing private R2 object key for the master video file.',
         }),
         ('Technical Specs', {
             'fields': ('duration', 'resolution', 'frame_rate')
@@ -916,4 +919,38 @@ custom_admin_site.register(LicenceOffer, LicenceOfferAdmin)
 custom_admin_site.register(LicenseRequestAuditLog, LicenseRequestAuditLogAdmin)
 custom_admin_site.register(LicenceDocument, LicenceDocumentAdmin)
 custom_admin_site.register(LicenceDeliveryToken, LicenceDeliveryTokenAdmin)
+
+
+class VideoUploadSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        "original_filename",
+        "purpose",
+        "status",
+        "target_video",
+        "created_by",
+        "created_at",
+        "completed_at",
+    )
+    list_filter = ("purpose", "status", "created_at")
+    search_fields = ("original_filename", "object_key", "upload_id", "target_video__title")
+    readonly_fields = (
+        "created_by",
+        "target_video",
+        "original_filename",
+        "object_key",
+        "upload_id",
+        "purpose",
+        "status",
+        "file_size",
+        "content_type",
+        "part_size",
+        "error_message",
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "aborted_at",
+    )
+
+
+custom_admin_site.register(VideoUploadSession, VideoUploadSessionAdmin)
 

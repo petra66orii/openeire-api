@@ -148,6 +148,7 @@ class VideoListSerializer(serializers.ModelSerializer):
     product_type = serializers.CharField(default='video', read_only=True)
     purchase_flows = serializers.SerializerMethodField()
     default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
+    preview_video_url = serializers.CharField(read_only=True)
     
     class Meta:
         model = Video
@@ -156,6 +157,7 @@ class VideoListSerializer(serializers.ModelSerializer):
             'title',
             'description',
             'thumbnail_image',
+            'preview_video_url',
             'collection',
             'price',
             'product_type',
@@ -355,13 +357,15 @@ class VideoDetailSerializer(serializers.ModelSerializer):
     default_purchase_flow = serializers.CharField(default=PERSONAL_CHECKOUT_FLOW, read_only=True)
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
+    preview_video_url = serializers.CharField(read_only=True)
     
     related_products = serializers.SerializerMethodField()
 
     class Meta:
         model = Video
         fields = (
-            'id', 'title', 'description', 'collection', 'thumbnail_image', 
+            'id', 'title', 'description', 'collection', 'thumbnail_image',
+            'preview_video_url',
             'price', 'tags', 'created_at',
             'product_type', 'average_rating', 'review_count',
             'duration', 'resolution', 'frame_rate',
