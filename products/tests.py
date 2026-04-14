@@ -962,7 +962,11 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("fallback-video.mp4", response["Content-Disposition"])
 
-    def test_secure_video_download_prefers_r2_key_when_both_master_sources_exist(self):
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_secure_video_download_prefers_r2_key_when_both_master_sources_exist(
+        self,
+        _mock_presigned_url,
+    ):
         user = User.objects.create_user(
             username="preferredkeybuyer",
             email="preferredkeybuyer@example.com",
@@ -1005,8 +1009,8 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("key-preferred-video.mp4", response["Location"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("key-preferred-video.mp4", response["Content-Disposition"])
 
     @patch("products.views.generate_r2_presigned_url")
     def test_secure_video_download_redirects_to_presigned_r2_url(self, mock_presigned_url):
