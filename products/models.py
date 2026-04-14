@@ -138,13 +138,15 @@ class Video(models.Model):
 
     @property
     def video_asset_name(self):
+        if self.video_file_key:
+            return self.video_file_key
         if self.video_file and self.video_file.name:
             try:
                 if self.video_file.storage.exists(self.video_file.name):
                     return self.video_file.name
             except Exception:
                 return self.video_file.name
-        return self.video_file_key or ""
+        return ""
 
     @property
     def video_asset_filename(self):
@@ -166,14 +168,17 @@ class Video(models.Model):
             return urljoin(f"{media_url.rstrip('/')}/", key.lstrip("/"))
 
     def open_video_asset(self, mode="rb"):
+        if self.video_file_key:
+            try:
+                return PrivateAssetStorage().open(self.video_file_key, mode)
+            except Exception:
+                pass
         if self.video_file and self.video_file.name:
             try:
                 self.video_file.open(mode)
                 return self.video_file
             except Exception:
                 pass
-        if self.video_file_key:
-            return PrivateAssetStorage().open(self.video_file_key, mode)
         return None
 
     def __str__(self):
