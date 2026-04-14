@@ -3,7 +3,7 @@ import random
 from smtplib import SMTPException
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
-from django.http import FileResponse, Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect
 from django.db import transaction
 from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField
 from django.contrib.contenttypes.models import ContentType
@@ -31,7 +31,8 @@ from .licensing import (
     send_licence_admin_notification_email,
     send_licence_initial_draft_email,
 )
-from .file_access import get_asset_file_name, open_asset_file
+from .file_access import asset_file_exists, get_asset_file_name, open_asset_file
+from .utils import generate_r2_presigned_url
 from .personal_licence import (
     get_personal_licence_summary,
     get_personal_licence_text,
@@ -54,6 +55,18 @@ from .serializers import (
 from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 logger = logging.getLogger(__name__)
+
+
+def _redirect_to_private_asset_if_supported(asset, file_key, filename):
+    if not file_key or not asset_file_exists(asset):
+        return None
+    presigned_url = generate_r2_presigned_url(
+        file_key,
+        download_filename=filename,
+    )
+    if not presigned_url:
+        return None
+    return HttpResponseRedirect(presigned_url)
 
 
 class RequestGalleryAccessView(APIView):
@@ -592,6 +605,15 @@ class ProtectedDownloadView(APIView):
         # 3. Fetch the product and stream the private file.
         product = get_object_or_404(model_class, id=product_id)
 
+        asset_file_name = get_asset_file_name(product)
+        redirect_response = _redirect_to_private_asset_if_supported(
+            product,
+            asset_file_name,
+            (asset_file_name or "").rsplit("/", 1)[-1],
+        )
+        if redirect_response is not None:
+            return redirect_response
+
         file_handle = open_asset_file(product, "rb")
         if not file_handle:
             raise Http404("File not attached to product")
@@ -620,6 +642,17 @@ class LicenceAssetDownloadView(APIView):
 
             license_request = token_obj.license_request
             asset = license_request.asset
+            asset_file_name = get_asset_file_name(asset)
+            redirect_response = _redirect_to_private_asset_if_supported(
+                asset,
+                asset_file_name,
+                (asset_file_name or "").rsplit("/", 1)[-1],
+            )
+            if redirect_response is not None:
+                token_obj.used_at = timezone.now()
+                token_obj.save(update_fields=["used_at"])
+                return redirect_response
+
             file_field = open_asset_file(asset, "rb")
             if not file_field:
                 raise Http404("File not attached to asset")
@@ -650,6 +683,25 @@ class PersonalAssetDownloadView(APIView):
 
         order_item = token_obj.order_item
         asset = order_item.product
+        asset_file_name = get_asset_file_name(asset)
+        redirect_response = _redirect_to_private_asset_if_supported(
+            asset,
+            asset_file_name,
+            (asset_file_name or "").rsplit("/", 1)[-1],
+        )
+        if redirect_response is not None:
+            used_at = timezone.now()
+            with transaction.atomic():
+                updated = PersonalDownloadToken.objects.filter(
+                    pk=token_obj.pk,
+                    used_at__isnull=True,
+                    expires_at__gt=used_at,
+                ).update(used_at=used_at)
+
+            if updated != 1:
+                raise Http404("Download link has expired or was already used.")
+            return redirect_response
+
         file_field = open_asset_file(asset, "rb")
         if not file_field:
             raise Http404("File not attached to asset")
