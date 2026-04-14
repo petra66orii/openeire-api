@@ -1,6 +1,10 @@
+from urllib.parse import urljoin
+
+from django.conf import settings
 from rest_framework import serializers
 from .models import Order, OrderItem
 from products.models import Photo, Video, ProductVariant
+from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_url, get_personal_terms_version
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
@@ -230,7 +234,11 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return None
-        path = reverse('secure-download', args=[obj.content_type.model, obj.object_id])
+        token_obj = ensure_personal_download_token(obj)
+        path = reverse('personal-asset-download', args=[str(token_obj.token)])
+        base_url = getattr(settings, "PERSONAL_DOWNLOAD_BASE_URL", None)
+        if base_url:
+            return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
         return request.build_absolute_uri(path)
 
     def get_personal_terms_version(self, obj):

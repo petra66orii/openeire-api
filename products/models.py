@@ -605,7 +605,7 @@ class PersonalDownloadToken(models.Model):
     @property
     def is_valid(self):
         now = timezone.now()
-        return self.used_at is None and now < self.expires_at
+        return now < self.expires_at
 
     def __str__(self):
         return f"Token for OrderItem {self.order_item_id}"

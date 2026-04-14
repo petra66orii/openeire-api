@@ -30,7 +30,7 @@ from products.models import (
     PersonalDownloadToken,
     generate_variants_for_photo,
 )
-from .models import Order, ProductShipping
+from .models import Order, OrderItem, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, _get_prodigi_asset_url, _get_prodigi_callback_url
 from . import views as checkout_views
@@ -1885,6 +1885,40 @@ class OrderHistoryClaimingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["order_number"], claimed_order.order_number)
+
+    def test_order_history_exposes_personal_download_token_url_for_digital_items(self):
+        photo = Photo.objects.create(
+            title="History Download Photo",
+            description="Digital asset",
+            collection="Test Collection",
+            preview_image=SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg"),
+            high_res_file=SimpleUploadedFile("high_res.jpg", b"highres", content_type="image/jpeg"),
+            price=Decimal("10.00"),
+            is_active=True,
+        )
+        order = Order.objects.create(
+            email=self.user.email,
+            user_profile=self.user.userprofile,
+            stripe_pid="pi_history_digital_order",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=photo.id,
+            details={"license": "hd"},
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.order_history_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        download_url = response.data[0]["items"][0]["download_url"]
+        token = PersonalDownloadToken.objects.get(order_item=order_item)
+        self.assertTrue(download_url.endswith(f"/api/personal-download/{token.token}/"))
 
 
 @override_settings(

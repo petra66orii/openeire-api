@@ -740,7 +740,7 @@ class LicenseRequestTests(APITestCase):
         self.assertIsNone(token.used_at)
 
     @patch("products.views.generate_r2_presigned_url", return_value=None)
-    def test_personal_download_token_streams_asset_and_burns_token(self, _mock_presigned_url):
+    def test_personal_download_token_streams_asset_and_remains_valid_until_expiry(self, _mock_presigned_url):
         user = User.objects.create_user(
             username="personaltokendownload",
             email="personaltokendownload@example.com",
@@ -773,8 +773,13 @@ class LicenseRequestTests(APITestCase):
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
 
+        second_response = self.client.get(url)
+
+        self.assertEqual(second_response.status_code, 200)
+        self.assertIn("attachment;", second_response["Content-Disposition"])
+
     @patch("products.views.generate_r2_presigned_url")
-    def test_personal_download_token_redirects_to_presigned_r2_url_and_burns_token(
+    def test_personal_download_token_redirects_to_presigned_r2_url_until_expiry(
         self, mock_presigned_url
     ):
         mock_presigned_url.return_value = "https://r2.example.com/private-download"
@@ -810,6 +815,11 @@ class LicenseRequestTests(APITestCase):
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
         mock_presigned_url.assert_called_once()
+
+        second_response = self.client.get(url)
+
+        self.assertEqual(second_response.status_code, 302)
+        self.assertEqual(second_response["Location"], "https://r2.example.com/private-download")
 
     def test_physical_product_page_uses_physical_purchase_flow(self):
         self.photo.is_printable = True
