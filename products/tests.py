@@ -30,9 +30,11 @@ from .models import (
     PrintTemplate,
     ProductVariant,
     Video,
+    VideoUploadSession,
     generate_variants_for_photo,
 )
 from .licensing import send_licence_admin_notification_email, send_licence_quote_email
+from .uploads import build_object_key, sanitize_upload_filename
 
 
 class LicenseRequestTests(APITestCase):
@@ -815,6 +817,23 @@ class LicenseRequestTests(APITestCase):
         self.assertNotIn("video_file", response.data)
         self.assertEqual(response.data["default_purchase_flow"], "PERSONAL_CHECKOUT")
 
+    def test_video_detail_exposes_preview_video_url(self):
+        video = self._create_video(is_active=True)
+        video.preview_video_key = "previews/videos/test-preview.mp4"
+        video.save(update_fields=["preview_video_key"])
+        access = GalleryAccess.objects.create(email="video-preview@example.com")
+        url = reverse("video_detail", args=[video.id])
+
+        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("preview_video_url", response.data)
+        self.assertTrue(
+            response.data["preview_video_url"].endswith(
+                "/media/previews/videos/test-preview.mp4"
+            )
+        )
+
     def test_secure_video_download_supports_existing_r2_object_key(self):
         user = User.objects.create_user(
             username="r2videobuyer",
@@ -1001,3 +1020,277 @@ class LicenseRequestTests(APITestCase):
         self.assertNotIn(non_printable_photo.id, related_ids)
         for item in response.data["related_products"]:
             self.assertIsNotNone(item["starting_price"])
+
+
+class VideoUploadAPITests(APITestCase):
+    def setUp(self):
+        self.staff_user = User.objects.create_user(
+            username="staffuploader",
+            email="staff@example.com",
+            password="StrongPass123!",
+            is_staff=True,
+        )
+        self.regular_user = User.objects.create_user(
+            username="regularuploader",
+            email="regular@example.com",
+            password="StrongPass123!",
+        )
+        thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        self.video = Video.objects.create(
+            title="Uploader Target",
+            description="Staff upload target",
+            collection="Ireland",
+            thumbnail_image=thumbnail,
+            video_file_key="digital_products/videos/existing-master.mp4",
+            price=Decimal("40.00"),
+            is_active=True,
+        )
+        self.start_url = reverse("video-upload-start")
+        self.part_url = reverse("video-upload-part-url")
+        self.complete_url = reverse("video-upload-complete")
+        self.abort_url = reverse("video-upload-abort")
+        self.targets_url = reverse("video-upload-targets")
+
+    @patch("products.upload_views.start_multipart_upload")
+    def test_start_upload_requires_staff(self, mock_start):
+        mock_start.return_value = {
+            "upload_id": "upload-123",
+            "object_key": "digital_products/videos/upload-123-test.mp4",
+            "bucket_name": "private-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        payload = {
+            "filename": "test.mp4",
+            "content_type": "video/mp4",
+            "file_size": 500000000,
+            "purpose": "master",
+        }
+
+        response = self.client.post(self.start_url, payload, format="json")
+        self.assertEqual(response.status_code, 401)
+
+        self.client.force_authenticate(user=self.regular_user)
+        response = self.client.post(self.start_url, payload, format="json")
+        self.assertEqual(response.status_code, 403)
+        mock_start.assert_not_called()
+
+    @patch("products.upload_views.start_multipart_upload")
+    def test_start_upload_creates_pending_session_for_staff(self, mock_start):
+        mock_start.return_value = {
+            "upload_id": "upload-123",
+            "object_key": "digital_products/videos/upload-123-test.mp4",
+            "bucket_name": "private-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            self.start_url,
+            {
+                "filename": "test.mp4",
+                "content_type": "video/mp4",
+                "file_size": 500000000,
+                "purpose": "master",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        session = VideoUploadSession.objects.get(upload_id="upload-123")
+        self.assertEqual(session.created_by, self.staff_user)
+        self.assertIsNone(session.target_video)
+        self.assertEqual(session.status, VideoUploadSession.STATUS_INITIATED)
+
+    @patch("products.upload_views.start_multipart_upload")
+    def test_start_upload_rejects_invalid_content_type(self, mock_start):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            self.start_url,
+            {
+                "filename": "test.exe",
+                "content_type": "application/octet-stream",
+                "file_size": 500000000,
+                "purpose": "master",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("content_type", response.data)
+        mock_start.assert_not_called()
+
+    @patch("products.upload_views.start_multipart_upload")
+    @patch("products.upload_views.complete_multipart_upload")
+    def test_complete_upload_attaches_master_to_video(self, mock_complete, mock_start):
+        mock_start.return_value = {
+            "upload_id": "upload-master",
+            "object_key": "digital_products/videos/upload-master.mp4",
+            "bucket_name": "private-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        self.client.force_authenticate(user=self.staff_user)
+        self.client.post(
+            self.start_url,
+            {
+                "filename": "master.mp4",
+                "content_type": "video/mp4",
+                "file_size": 500000000,
+                "purpose": "master",
+                "target_video_id": self.video.id,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            self.complete_url,
+            {
+                "upload_id": "upload-master",
+                "object_key": "digital_products/videos/upload-master.mp4",
+                "parts": [{"part_number": 1, "etag": "\"etag-1\""}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.video.refresh_from_db()
+        self.assertEqual(self.video.video_file_key, "digital_products/videos/upload-master.mp4")
+        session = VideoUploadSession.objects.get(upload_id="upload-master")
+        self.assertEqual(session.status, VideoUploadSession.STATUS_COMPLETED)
+        mock_complete.assert_called_once()
+
+    @patch("products.upload_views.start_multipart_upload")
+    @patch("products.upload_views.complete_multipart_upload")
+    def test_complete_upload_attaches_preview_to_video(self, mock_complete, mock_start):
+        mock_start.return_value = {
+            "upload_id": "upload-preview",
+            "object_key": "previews/videos/upload-preview.mp4",
+            "bucket_name": "public-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        self.client.force_authenticate(user=self.staff_user)
+        self.client.post(
+            self.start_url,
+            {
+                "filename": "preview.mp4",
+                "content_type": "video/mp4",
+                "file_size": 120000000,
+                "purpose": "preview",
+                "target_video_id": self.video.id,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            self.complete_url,
+            {
+                "upload_id": "upload-preview",
+                "object_key": "previews/videos/upload-preview.mp4",
+                "parts": [{"part_number": 1, "etag": "\"etag-1\""}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.video.refresh_from_db()
+        self.assertEqual(self.video.preview_video_key, "previews/videos/upload-preview.mp4")
+        mock_complete.assert_called_once()
+
+    @patch("products.upload_views.start_multipart_upload")
+    @patch("products.upload_views.abort_multipart_upload")
+    def test_abort_upload_marks_session_aborted(self, mock_abort, mock_start):
+        mock_start.return_value = {
+            "upload_id": "upload-abort",
+            "object_key": "digital_products/videos/upload-abort.mp4",
+            "bucket_name": "private-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        self.client.force_authenticate(user=self.staff_user)
+        self.client.post(
+            self.start_url,
+            {
+                "filename": "abort.mp4",
+                "content_type": "video/mp4",
+                "file_size": 120000000,
+                "purpose": "master",
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            self.abort_url,
+            {
+                "upload_id": "upload-abort",
+                "object_key": "digital_products/videos/upload-abort.mp4",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        session = VideoUploadSession.objects.get(upload_id="upload-abort")
+        self.assertEqual(session.status, VideoUploadSession.STATUS_ABORTED)
+        mock_abort.assert_called_once()
+
+    def test_targets_endpoint_is_staff_only(self):
+        self.client.force_authenticate(user=self.regular_user)
+        response = self.client.get(self.targets_url)
+        self.assertEqual(response.status_code, 403)
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get(self.targets_url, {"query": "Uploader"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.video.id)
+
+    @patch("products.upload_views.generate_part_upload_url")
+    def test_part_url_accepts_provider_upload_ids_longer_than_255_chars(self, mock_part_url):
+        long_upload_id = "u" * 300
+        VideoUploadSession.objects.create(
+            created_by=self.staff_user,
+            target_video=self.video,
+            original_filename="large-master.mp4",
+            object_key="digital_products/videos/large-master.mp4",
+            upload_id=long_upload_id,
+            purpose=VideoUploadSession.PURPOSE_MASTER,
+            status=VideoUploadSession.STATUS_INITIATED,
+            file_size=600000000,
+            content_type="video/mp4",
+            part_size=10 * 1024 * 1024,
+        )
+        mock_part_url.return_value = "https://example.com/part-upload"
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            self.part_url,
+            {
+                "upload_id": long_upload_id,
+                "object_key": "digital_products/videos/large-master.mp4",
+                "part_number": 1,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["url"], "https://example.com/part-upload")
+
+
+class VideoUploadKeyFormattingTests(APITestCase):
+    def test_sanitize_upload_filename_preserves_readable_slug(self):
+        sanitized = sanitize_upload_filename("Fanore Beach Waves 0001.MP4")
+        self.assertEqual(sanitized, "fanore-beach-waves-0001.mp4")
+
+    def test_build_object_key_keeps_filename_readable_with_short_suffix(self):
+        object_key = build_object_key(
+            filename="Fanore Beach Waves 0001.MP4",
+            purpose=VideoUploadSession.PURPOSE_MASTER,
+        )
+
+        self.assertRegex(
+            object_key,
+            r"^digital_products/videos/fanore-beach-waves-0001-[0-9a-f]{8}\.mp4$",
+        )

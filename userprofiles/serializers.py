@@ -77,6 +77,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source='user.first_name')
     last_name = serializers.CharField(source='user.last_name')
     email = serializers.EmailField(source='user.email')
+    is_staff = serializers.BooleanField(source='user.is_staff', read_only=True)
     
     # Use the special serializer field for the country
     country = CountryField(source='default_country', name_only=True)
@@ -88,6 +89,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'email',
+            'is_staff',
             'default_phone_number',
             'default_street_address1',
             'default_street_address2',

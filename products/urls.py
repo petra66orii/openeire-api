@@ -17,8 +17,20 @@ from .views import (
     PersonalAssetDownloadView,
     LicenseRequestCreateView
 )
+from .upload_views import (
+    AbortVideoMultipartUploadView,
+    CompleteVideoMultipartUploadView,
+    StaffVideoTargetListView,
+    StartVideoMultipartUploadView,
+    VideoMultipartPartUrlView,
+)
 
 urlpatterns = [
+    path('uploads/videos/targets/', StaffVideoTargetListView.as_view(), name='video-upload-targets'),
+    path('uploads/videos/start/', StartVideoMultipartUploadView.as_view(), name='video-upload-start'),
+    path('uploads/videos/part-url/', VideoMultipartPartUrlView.as_view(), name='video-upload-part-url'),
+    path('uploads/videos/complete/', CompleteVideoMultipartUploadView.as_view(), name='video-upload-complete'),
+    path('uploads/videos/abort/', AbortVideoMultipartUploadView.as_view(), name='video-upload-abort'),
     path('licence/personal-use/', PersonalUseLicenceTextView.as_view(), name='personal-licence-text'),
     path('products/download/<str:product_type>/<int:product_id>/', ProtectedDownloadView.as_view(), name='secure-download'),
     path('license/download/<uuid:token>/', LicenceAssetDownloadView.as_view(), name='license-asset-download'),

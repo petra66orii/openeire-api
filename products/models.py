@@ -2,6 +2,7 @@ import re
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urljoin
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
@@ -14,7 +15,9 @@ from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.core.files.storage import default_storage
 from django.utils.html import strip_tags
+from django.conf import settings
 
 from .storage import PrivateAssetStorage
 
@@ -107,6 +110,11 @@ class Video(models.Model):
         blank=True,
         help_text="Existing private R2 object key, e.g. digital_products/videos/my-video.mp4",
     )
+    preview_video_key = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Public preview clip object key, e.g. previews/videos/my-video-preview.mp4",
+    )
     
     price = models.DecimalField(max_digits=6, decimal_places=2)
     duration = models.PositiveIntegerField(help_text="Duration in seconds", null=True, blank=True)
@@ -119,6 +127,7 @@ class Video(models.Model):
     def clean(self):
         super().clean()
         self.video_file_key = (self.video_file_key or "").strip()
+        self.preview_video_key = (self.preview_video_key or "").strip()
         if not self.video_file and not self.video_file_key:
             raise ValidationError(
                 {
@@ -143,6 +152,19 @@ class Video(models.Model):
             return ""
         return Path(self.video_asset_name).name
 
+    @property
+    def preview_video_url(self):
+        key = (self.preview_video_key or "").strip()
+        if not key:
+            return ""
+        if key.startswith(("http://", "https://")):
+            return key
+        try:
+            return default_storage.url(key)
+        except Exception:
+            media_url = getattr(settings, "MEDIA_URL", "/media/")
+            return urljoin(f"{media_url.rstrip('/')}/", key.lstrip("/"))
+
     def open_video_asset(self, mode="rb"):
         if self.video_file and self.video_file.name:
             try:
@@ -156,6 +178,68 @@ class Video(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class VideoUploadSession(models.Model):
+    MAX_UPLOAD_ID_LENGTH = 1024
+
+    PURPOSE_MASTER = "master"
+    PURPOSE_PREVIEW = "preview"
+    PURPOSE_CHOICES = [
+        (PURPOSE_MASTER, "Master"),
+        (PURPOSE_PREVIEW, "Preview"),
+    ]
+
+    STATUS_INITIATED = "initiated"
+    STATUS_COMPLETED = "completed"
+    STATUS_ABORTED = "aborted"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_INITIATED, "Initiated"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_ABORTED, "Aborted"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="video_upload_sessions",
+    )
+    target_video = models.ForeignKey(
+        Video,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="upload_sessions",
+    )
+    original_filename = models.CharField(max_length=255)
+    object_key = models.CharField(max_length=500, unique=True)
+    upload_id = models.CharField(max_length=MAX_UPLOAD_ID_LENGTH, unique=True)
+    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_INITIATED,
+    )
+    file_size = models.PositiveBigIntegerField()
+    content_type = models.CharField(max_length=100)
+    part_size = models.PositiveBigIntegerField()
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    aborted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["created_by", "status"], name="vidupl_creator_status_idx"),
+            models.Index(fields=["purpose", "status"], name="vidupl_purpose_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.original_filename} ({self.purpose}, {self.status})"
     
 class LicenseRequest(models.Model):
     STATUS_CHOICES = [
