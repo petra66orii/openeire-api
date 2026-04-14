@@ -1103,6 +1103,44 @@ class VideoUploadAPITests(APITestCase):
         self.assertIsNone(session.target_video)
         self.assertEqual(session.status, VideoUploadSession.STATUS_INITIATED)
 
+    @patch("products.upload_views.abort_multipart_upload")
+    @patch("products.upload_views.VideoUploadSession.objects.create")
+    @patch("products.upload_views.start_multipart_upload")
+    def test_start_upload_aborts_remote_upload_if_session_persist_fails(
+        self,
+        mock_start,
+        mock_create,
+        mock_abort,
+    ):
+        mock_start.return_value = {
+            "upload_id": "upload-start-cleanup",
+            "object_key": "digital_products/videos/upload-start-cleanup.mp4",
+            "bucket_name": "private-bucket",
+            "part_size": 10 * 1024 * 1024,
+            "max_concurrency": 4,
+        }
+        mock_create.side_effect = RuntimeError("db write failed")
+        self.client.force_authenticate(user=self.staff_user)
+        self.client.raise_request_exception = False
+
+        response = self.client.post(
+            self.start_url,
+            {
+                "filename": "test.mp4",
+                "content_type": "video/mp4",
+                "file_size": 500000000,
+                "purpose": "master",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        mock_abort.assert_called_once_with(
+            purpose="master",
+            upload_id="upload-start-cleanup",
+            object_key="digital_products/videos/upload-start-cleanup.mp4",
+        )
+
     @patch("products.upload_views.start_multipart_upload")
     def test_start_upload_rejects_invalid_content_type(self, mock_start):
         self.client.force_authenticate(user=self.staff_user)
@@ -1277,6 +1315,63 @@ class VideoUploadAPITests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["url"], "https://example.com/part-upload")
+
+    @patch("products.upload_views.complete_multipart_upload")
+    def test_complete_rejects_non_initiated_session_without_remote_call(self, mock_complete):
+        session = VideoUploadSession.objects.create(
+            created_by=self.staff_user,
+            target_video=self.video,
+            original_filename="large-master.mp4",
+            object_key="digital_products/videos/large-master.mp4",
+            upload_id="upload-completing",
+            purpose=VideoUploadSession.PURPOSE_MASTER,
+            status=VideoUploadSession.STATUS_COMPLETING,
+            file_size=600000000,
+            content_type="video/mp4",
+            part_size=10 * 1024 * 1024,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            self.complete_url,
+            {
+                "upload_id": session.upload_id,
+                "object_key": session.object_key,
+                "parts": [{"part_number": 1, "etag": "\"etag-1\""}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        mock_complete.assert_not_called()
+
+    @patch("products.upload_views.abort_multipart_upload")
+    def test_abort_rejects_non_initiated_session_without_remote_call(self, mock_abort):
+        session = VideoUploadSession.objects.create(
+            created_by=self.staff_user,
+            target_video=self.video,
+            original_filename="large-master.mp4",
+            object_key="digital_products/videos/large-master.mp4",
+            upload_id="upload-aborting",
+            purpose=VideoUploadSession.PURPOSE_MASTER,
+            status=VideoUploadSession.STATUS_ABORTING,
+            file_size=600000000,
+            content_type="video/mp4",
+            part_size=10 * 1024 * 1024,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            self.abort_url,
+            {
+                "upload_id": session.upload_id,
+                "object_key": session.object_key,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        mock_abort.assert_not_called()
 
 
 class VideoUploadKeyFormattingTests(APITestCase):

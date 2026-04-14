@@ -65,18 +65,38 @@ class StartVideoMultipartUploadView(APIView):
             purpose=validated["purpose"],
         )
 
-        VideoUploadSession.objects.create(
-            created_by=request.user,
-            target_video=target_video,
-            original_filename=validated["filename"],
-            object_key=upload_details["object_key"],
-            upload_id=upload_details["upload_id"],
-            purpose=validated["purpose"],
-            status=VideoUploadSession.STATUS_INITIATED,
-            file_size=validated["file_size"],
-            content_type=validated["content_type"],
-            part_size=upload_details["part_size"],
-        )
+        try:
+            VideoUploadSession.objects.create(
+                created_by=request.user,
+                target_video=target_video,
+                original_filename=validated["filename"],
+                object_key=upload_details["object_key"],
+                upload_id=upload_details["upload_id"],
+                purpose=validated["purpose"],
+                status=VideoUploadSession.STATUS_INITIATED,
+                file_size=validated["file_size"],
+                content_type=validated["content_type"],
+                part_size=upload_details["part_size"],
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist multipart upload session. upload_id=%s object_key=%s",
+                upload_details["upload_id"],
+                upload_details["object_key"],
+            )
+            try:
+                abort_multipart_upload(
+                    purpose=validated["purpose"],
+                    upload_id=upload_details["upload_id"],
+                    object_key=upload_details["object_key"],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to clean up orphaned multipart upload after session create failure. upload_id=%s object_key=%s",
+                    upload_details["upload_id"],
+                    upload_details["object_key"],
+                )
+            raise
 
         return Response(
             {
@@ -130,21 +150,27 @@ class CompleteVideoMultipartUploadView(APIView):
             object_key=serializer.validated_data["object_key"],
         )
 
-        if session.status == VideoUploadSession.STATUS_COMPLETED:
-            return Response(
-                {
-                    "success": True,
-                    "object_key": session.object_key,
-                    "status": session.status,
-                    "video_id": session.target_video_id,
-                },
-                status=status.HTTP_200_OK,
-            )
-        if session.status != VideoUploadSession.STATUS_INITIATED:
-            return Response(
-                {"detail": "Multipart upload is not active."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        with transaction.atomic():
+            session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+            if session.status == VideoUploadSession.STATUS_COMPLETED:
+                return Response(
+                    {
+                        "success": True,
+                        "object_key": session.object_key,
+                        "status": session.status,
+                        "video_id": session.target_video_id,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            if session.status != VideoUploadSession.STATUS_INITIATED:
+                return Response(
+                    {"detail": "Multipart upload is not active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            session.status = VideoUploadSession.STATUS_COMPLETING
+            session.error_message = ""
+            session.save(update_fields=["status", "error_message", "updated_at"])
 
         try:
             complete_multipart_upload(
@@ -159,9 +185,12 @@ class CompleteVideoMultipartUploadView(APIView):
                 session.upload_id,
                 session.object_key,
             )
-            session.status = VideoUploadSession.STATUS_FAILED
-            session.error_message = "Failed to complete multipart upload."
-            session.save(update_fields=["status", "error_message", "updated_at"])
+            with transaction.atomic():
+                session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+                if session.status == VideoUploadSession.STATUS_COMPLETING:
+                    session.status = VideoUploadSession.STATUS_FAILED
+                    session.error_message = "Failed to complete multipart upload."
+                    session.save(update_fields=["status", "error_message", "updated_at"])
             return Response(
                 {"detail": "Failed to complete multipart upload."},
                 status=status.HTTP_502_BAD_GATEWAY,
@@ -169,6 +198,23 @@ class CompleteVideoMultipartUploadView(APIView):
 
         with transaction.atomic():
             session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+            if session.status == VideoUploadSession.STATUS_COMPLETED:
+                return Response(
+                    {
+                        "success": True,
+                        "object_key": session.object_key,
+                        "status": session.status,
+                        "video_id": session.target_video_id,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            if session.status != VideoUploadSession.STATUS_COMPLETING:
+                return Response(
+                    {"detail": "Multipart upload is not active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             session.status = VideoUploadSession.STATUS_COMPLETED
             session.error_message = ""
             session.completed_at = timezone.now()
@@ -208,13 +254,24 @@ class AbortVideoMultipartUploadView(APIView):
             object_key=serializer.validated_data["object_key"],
         )
 
-        if session.status == VideoUploadSession.STATUS_ABORTED:
-            return Response({"success": True, "status": session.status}, status=status.HTTP_200_OK)
-        if session.status == VideoUploadSession.STATUS_COMPLETED:
-            return Response(
-                {"detail": "Completed uploads cannot be aborted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        with transaction.atomic():
+            session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+            if session.status == VideoUploadSession.STATUS_ABORTED:
+                return Response({"success": True, "status": session.status}, status=status.HTTP_200_OK)
+            if session.status == VideoUploadSession.STATUS_COMPLETED:
+                return Response(
+                    {"detail": "Completed uploads cannot be aborted."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if session.status != VideoUploadSession.STATUS_INITIATED:
+                return Response(
+                    {"detail": "Multipart upload is not active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            session.status = VideoUploadSession.STATUS_ABORTING
+            session.error_message = ""
+            session.save(update_fields=["status", "error_message", "updated_at"])
 
         try:
             abort_multipart_upload(
@@ -228,16 +285,30 @@ class AbortVideoMultipartUploadView(APIView):
                 session.upload_id,
                 session.object_key,
             )
-            session.status = VideoUploadSession.STATUS_FAILED
-            session.error_message = "Failed to abort multipart upload."
-            session.save(update_fields=["status", "error_message", "updated_at"])
+            with transaction.atomic():
+                session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+                if session.status == VideoUploadSession.STATUS_ABORTING:
+                    session.status = VideoUploadSession.STATUS_FAILED
+                    session.error_message = "Failed to abort multipart upload."
+                    session.save(update_fields=["status", "error_message", "updated_at"])
             return Response(
                 {"detail": "Failed to abort multipart upload."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        session.status = VideoUploadSession.STATUS_ABORTED
-        session.error_message = ""
-        session.aborted_at = timezone.now()
-        session.save(update_fields=["status", "error_message", "aborted_at", "updated_at"])
-        return Response({"success": True, "status": session.status}, status=status.HTTP_200_OK)
+        with transaction.atomic():
+            session = VideoUploadSession.objects.select_for_update().get(pk=session.pk)
+            if session.status == VideoUploadSession.STATUS_ABORTED:
+                return Response({"success": True, "status": session.status}, status=status.HTTP_200_OK)
+
+            if session.status != VideoUploadSession.STATUS_ABORTING:
+                return Response(
+                    {"detail": "Multipart upload is not active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            session.status = VideoUploadSession.STATUS_ABORTED
+            session.error_message = ""
+            session.aborted_at = timezone.now()
+            session.save(update_fields=["status", "error_message", "aborted_at", "updated_at"])
+            return Response({"success": True, "status": session.status}, status=status.HTTP_200_OK)

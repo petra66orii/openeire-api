@@ -194,8 +194,12 @@ class VideoUploadSession(models.Model):
     STATUS_COMPLETED = "completed"
     STATUS_ABORTED = "aborted"
     STATUS_FAILED = "failed"
+    STATUS_COMPLETING = "completing"
+    STATUS_ABORTING = "aborting"
     STATUS_CHOICES = [
         (STATUS_INITIATED, "Initiated"),
+        (STATUS_COMPLETING, "Completing"),
+        (STATUS_ABORTING, "Aborting"),
         (STATUS_COMPLETED, "Completed"),
         (STATUS_ABORTED, "Aborted"),
         (STATUS_FAILED, "Failed"),
