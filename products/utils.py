@@ -1,12 +1,20 @@
 import boto3
 import logging
+from pathlib import Path
+from urllib.parse import quote
 from botocore.config import Config
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
-def generate_r2_presigned_url(file_key, expiration=172800):
+def _build_content_disposition(filename):
+    candidate = Path(str(filename or "download")).name.replace('"', "")
+    encoded = quote(candidate)
+    return f"attachment; filename=\"{candidate}\"; filename*=UTF-8''{encoded}"
+
+
+def generate_r2_presigned_url(file_key, expiration=172800, download_filename=None):
     """
     Generates a pre-signed URL for a Cloudflare R2 object.
     Defaults to 48 hours (172800 seconds) expiration.
@@ -34,7 +42,12 @@ def generate_r2_presigned_url(file_key, expiration=172800):
             'get_object',
             Params={
                 'Bucket': settings.R2_PRIVATE_BUCKET_NAME,
-                'Key': file_key
+                'Key': file_key,
+                **(
+                    {"ResponseContentDisposition": _build_content_disposition(download_filename)}
+                    if download_filename
+                    else {}
+                ),
             },
             ExpiresIn=expiration
         )

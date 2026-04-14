@@ -1,3 +1,6 @@
+from .storage import PrivateAssetStorage
+
+
 def get_asset_file_name(asset):
     if hasattr(asset, "high_res_file") and asset.high_res_file:
         return asset.high_res_file.name
@@ -6,6 +9,29 @@ def get_asset_file_name(asset):
     if hasattr(asset, "video_file") and asset.video_file:
         return asset.video_file.name
     return None
+
+
+def asset_file_exists(asset):
+    if hasattr(asset, "high_res_file") and asset.high_res_file:
+        try:
+            return asset.high_res_file.storage.exists(asset.high_res_file.name)
+        except Exception:
+            return False
+
+    video_file_key = getattr(asset, "video_file_key", "") or ""
+    if video_file_key:
+        try:
+            return PrivateAssetStorage().exists(video_file_key)
+        except Exception:
+            return False
+
+    if hasattr(asset, "video_file") and asset.video_file:
+        try:
+            return asset.video_file.storage.exists(asset.video_file.name)
+        except Exception:
+            return False
+
+    return False
 
 
 def open_asset_file(asset, mode="rb"):

@@ -767,10 +767,48 @@ class LicenseRequestTests(APITestCase):
 
         response = self.client.get(url)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response["Location"])
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
+
+    @patch("products.views.generate_r2_presigned_url")
+    def test_personal_download_token_redirects_to_presigned_r2_url_and_burns_token(
+        self, mock_presigned_url
+    ):
+        mock_presigned_url.return_value = "https://r2.example.com/private-download"
+        user = User.objects.create_user(
+            username="personaltokenredirect",
+            email="personaltokenredirect@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_redirect",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        url = reverse("personal-asset-download", args=[str(token.token)])
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "https://r2.example.com/private-download")
+        token.refresh_from_db()
+        self.assertIsNotNone(token.used_at)
+        mock_presigned_url.assert_called_once()
 
     def test_physical_product_page_uses_physical_purchase_flow(self):
         self.photo.is_printable = True
@@ -871,8 +909,8 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("external-video.mp4", response["Content-Disposition"])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("external-video.mp4", response["Location"])
 
     def test_secure_video_download_falls_back_to_r2_key_when_uploaded_file_is_stale(self):
         user = User.objects.create_user(
@@ -915,8 +953,8 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("fallback-video.mp4", response["Content-Disposition"])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("fallback-video.mp4", response["Location"])
 
     def test_secure_video_download_prefers_r2_key_when_both_master_sources_exist(self):
         user = User.objects.create_user(
@@ -961,8 +999,51 @@ class LicenseRequestTests(APITestCase):
         self.client.force_authenticate(user=user)
         response = self.client.get(reverse("secure-download", args=["video", video.id]))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("key-preferred-video.mp4", response["Content-Disposition"])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("key-preferred-video.mp4", response["Location"])
+
+    @patch("products.views.generate_r2_presigned_url")
+    def test_secure_video_download_redirects_to_presigned_r2_url(self, mock_presigned_url):
+        mock_presigned_url.return_value = "https://r2.example.com/private-video-download"
+        user = User.objects.create_user(
+            username="redirectvideobuyer",
+            email="redirectvideobuyer@example.com",
+            password="testpass123",
+        )
+        video_key = self._write_private_asset(
+            Path("digital_products/videos/redirect-video.mp4"),
+            b"video-bytes-from-r2",
+        )
+        thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
+        video = Video.objects.create(
+            title="Redirect Video",
+            description="Uses presigned R2 redirects for delivery",
+            collection="Test Collection",
+            thumbnail_image=thumbnail,
+            video_file_key=video_key,
+            price=Decimal("24.00"),
+            is_active=True,
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_r2_video_redirect_test",
+        )
+        OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("24.00"),
+            content_type=ContentType.objects.get_for_model(Video),
+            object_id=video.id,
+            details={"license": "hd"},
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get(reverse("secure-download", args=["video", video.id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "https://r2.example.com/private-video-download")
+        mock_presigned_url.assert_called_once()
 
     def test_licence_download_supports_video_r2_object_key(self):
         video_key = self._write_private_asset(
@@ -997,8 +1078,8 @@ class LicenseRequestTests(APITestCase):
 
         response = self.client.get(reverse("license-asset-download", args=[str(token.token)]))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("licensed-video.mp4", response["Content-Disposition"])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("licensed-video.mp4", response["Location"])
         token.refresh_from_db()
         self.assertIsNotNone(token.used_at)
 
