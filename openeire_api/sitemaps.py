@@ -46,6 +46,7 @@ class StaticPageSitemap(FrontendAbsoluteUrlSitemap):
 
     pages = (
         {"path": "/", "priority": 1.0},
+        {"path": "/art-prints", "priority": 0.9},
         {"path": "/gallery", "priority": 0.8},
         {"path": "/gallery/physical", "priority": 0.8},
         {"path": "/blog", "priority": 0.8},

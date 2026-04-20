@@ -9,7 +9,7 @@ from blog.models import BlogPost
 from products.models import Photo, PrintTemplate
 
 
-@override_settings(FRONTEND_URL="https://openeire.ie")
+@override_settings(FRONTEND_URL="https://openeire.ie", SECURE_SSL_REDIRECT=False)
 class SiteMetadataTests(TestCase):
     def test_robots_txt_disallows_all_crawling(self):
         response = self.client.get(reverse("robots_txt"))
@@ -17,7 +17,11 @@ class SiteMetadataTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "text/plain; charset=utf-8")
         self.assertIn("User-agent: *", response.content.decode())
-        self.assertIn("Disallow: /", response.content.decode())
+        self.assertIn("Allow: /", response.content.decode())
+        self.assertIn("Disallow: /api/", response.content.decode())
+        self.assertIn("Disallow: /accounts/", response.content.decode())
+        self.assertIn("Disallow: /admin/", response.content.decode())
+        self.assertIn("Disallow: /summernote/", response.content.decode())
         self.assertIn("/sitemap.xml", response.content.decode())
 
     def test_sitemap_index_lists_content_sections(self):
@@ -36,6 +40,7 @@ class SiteMetadataTests(TestCase):
         self.assertEqual(response.status_code, 200)
         content = response.content.decode()
         self.assertIn("https://openeire.ie/", content)
+        self.assertIn("https://openeire.ie/art-prints", content)
         self.assertIn("https://openeire.ie/blog", content)
         self.assertIn("https://openeire.ie/gallery/physical", content)
         self.assertNotIn("https://openeire.ie/gallery/photo/", content)
