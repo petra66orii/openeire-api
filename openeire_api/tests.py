@@ -1,4 +1,6 @@
+import os
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -7,18 +9,32 @@ from django.urls import reverse
 
 from blog.models import BlogPost
 from products.models import Photo, PrintTemplate
+from .site_paths import get_admin_path
 
 
-@override_settings(FRONTEND_URL="https://openeire.ie")
+@override_settings(FRONTEND_URL="https://openeire.ie", SECURE_SSL_REDIRECT=False)
 class SiteMetadataTests(TestCase):
-    def test_robots_txt_disallows_all_crawling(self):
+    def test_robots_txt_disallows_public_utility_routes(self):
         response = self.client.get(reverse("robots_txt"))
+        admin_path = get_admin_path()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "text/plain; charset=utf-8")
         self.assertIn("User-agent: *", response.content.decode())
-        self.assertIn("Disallow: /", response.content.decode())
+        self.assertIn("Allow: /", response.content.decode())
+        self.assertIn("Disallow: /api/", response.content.decode())
+        self.assertIn("Disallow: /accounts/", response.content.decode())
+        self.assertIn(f"Disallow: /{admin_path}", response.content.decode())
+        self.assertIn("Disallow: /summernote/", response.content.decode())
         self.assertIn("/sitemap.xml", response.content.decode())
+
+    def test_robots_txt_uses_configured_admin_path(self):
+        with patch.dict(os.environ, {"DJANGO_ADMIN_URL": "secure-admin/"}, clear=False):
+            response = self.client.get(reverse("robots_txt"))
+
+        content = response.content.decode()
+        self.assertIn("Disallow: /secure-admin/", content)
+        self.assertNotIn("Disallow: /admin/", content)
 
     def test_sitemap_index_lists_content_sections(self):
         response = self.client.get(reverse("sitemap_index"))
@@ -36,6 +52,7 @@ class SiteMetadataTests(TestCase):
         self.assertEqual(response.status_code, 200)
         content = response.content.decode()
         self.assertIn("https://openeire.ie/", content)
+        self.assertIn("https://openeire.ie/art-prints", content)
         self.assertIn("https://openeire.ie/blog", content)
         self.assertIn("https://openeire.ie/gallery/physical", content)
         self.assertNotIn("https://openeire.ie/gallery/photo/", content)

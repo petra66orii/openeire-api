@@ -1,15 +1,15 @@
-import os
 from django.contrib import admin
 from django.contrib.sitemaps.views import index, sitemap
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from .admin import custom_admin_site
+from .site_paths import get_admin_path
 from .site_views import robots_txt
 from .sitemaps import sitemaps
 from userprofiles.views import GoogleLogin
 
-ADMIN_URL = os.getenv('DJANGO_ADMIN_URL', 'admin/')
+ADMIN_URL = get_admin_path()
 
 urlpatterns = [
     path('robots.txt', robots_txt, name='robots_txt'),
