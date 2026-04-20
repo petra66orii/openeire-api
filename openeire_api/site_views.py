@@ -1,12 +1,15 @@
 from django.http import HttpResponse
 
+from .site_paths import get_admin_path
+
 
 def robots_txt(request):
     sitemap_url = request.build_absolute_uri("/sitemap.xml")
+    admin_path = get_admin_path()
     disallowed_paths = [
         "/api/",
         "/accounts/",
-        "/admin/",
+        f"/{admin_path}",
         "/summernote/",
     ]
     content = "\n".join(
