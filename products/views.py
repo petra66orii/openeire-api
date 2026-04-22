@@ -70,9 +70,11 @@ def _agreed_snapshot_for_queue(req, offer=None):
     return req.agreed_scope_snapshot or {}
 
 
-def _build_agreed_scope_summary(snapshot, payload):
+def _build_agreed_scope_summary(snapshot, payload, currency="EUR"):
+    project_type = snapshot.get("project_type_display") or payload["project_type"]
+    currency = (currency or "EUR").strip() or "EUR"
     scope_parts = [
-        payload["project_type"],
+        project_type,
         f"media: {snapshot.get('permitted_media_display') or payload['permitted_media']}",
         f"territory: {snapshot.get('territory_display') or payload['territory']}",
         f"duration: {snapshot.get('duration_display') or payload['duration']}",
@@ -83,7 +85,7 @@ def _build_agreed_scope_summary(snapshot, payload):
         scope_parts.append(f"reach caps: {reach_caps}")
     quoted_price = snapshot.get('quoted_price') or payload["quoted_price"]
     if quoted_price:
-        scope_parts.append(f"fee: EUR {quoted_price}")
+        scope_parts.append(f"fee: {currency} {quoted_price}")
     return "; ".join(scope_parts)
 
 
@@ -372,6 +374,7 @@ class AILicenseDraftQueueView(APIView):
         if draft_mode == "payment_link":
             current_offer = offer or get_current_offer(req)
             agreed_snapshot = _agreed_snapshot_for_queue(req, current_offer)
+            offer_currency = current_offer.currency if current_offer and current_offer.currency else "EUR"
             payload.update(
                 {
                     "payment_link": (
@@ -380,12 +383,17 @@ class AILicenseDraftQueueView(APIView):
                         else None
                     ),
                     "offer_version": current_offer.version if current_offer else None,
+                    "offer_currency": offer_currency,
                     "offer_expires_at": (
                         _to_iso8601_utc(current_offer.expires_at)
                         if current_offer and current_offer.expires_at
                         else None
                     ),
-                    "agreed_scope_summary": _build_agreed_scope_summary(agreed_snapshot, payload),
+                    "agreed_scope_summary": _build_agreed_scope_summary(
+                        agreed_snapshot,
+                        payload,
+                        currency=offer_currency,
+                    ),
                     "approved_permitted_media": (
                         agreed_snapshot.get("permitted_media_display") or payload["permitted_media"]
                     ),

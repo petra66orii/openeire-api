@@ -117,10 +117,11 @@ def _draft_text(value):
 
 
 def _build_negotiation_email_body(license_request):
-    draft_text = _draft_text(license_request.ai_draft_response)
+    raw_draft_text = license_request.ai_draft_response or ""
+    draft_text = _draft_text(raw_draft_text)
 
     if draft_text:
-        return draft_text
+        return raw_draft_text
 
     scope_summary = "\n".join(_scope_summary_lines(license_request))
 
@@ -136,7 +137,8 @@ def _build_negotiation_email_body(license_request):
 
 
 def _build_payment_email_body(license_request, offer):
-    draft_text = _draft_text(license_request.ai_payment_draft_response)
+    raw_draft_text = license_request.ai_payment_draft_response or ""
+    draft_text = _draft_text(raw_draft_text)
     payment_link = (
         offer.stripe_payment_link_url
         if offer and offer.stripe_payment_link_url
@@ -148,7 +150,7 @@ def _build_payment_email_body(license_request, offer):
     if offer and offer.is_expired:
         raise ValueError("The current payment offer has expired. Generate a fresh offer before sending.")
     if draft_text:
-        return draft_text
+        return raw_draft_text
 
     scope_summary = "\n".join(
         _scope_summary_lines(

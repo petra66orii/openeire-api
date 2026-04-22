@@ -615,7 +615,7 @@ class LicenseRequestTests(APITestCase):
             client_name="Confirmed Client",
             company="Confirmed Co",
             email="confirmed@example.com",
-            project_type="COMMERCIAL",
+            project_type="OTHER",
             duration="1_YEAR",
             message="Confirmed request",
             status="AWAITING_CLIENT_CONFIRMATION",
@@ -623,14 +623,26 @@ class LicenseRequestTests(APITestCase):
             quoted_price=Decimal("250.00"),
             stripe_payment_link="https://buy.stripe.com/test-link",
             stripe_payment_link_id="plink_confirmed",
+            territory="WORLDWIDE",
+            permitted_media="ALL_MEDIA",
+            exclusivity="FULL",
+            reach_caps="999999",
         )
         offer = LicenceOffer.objects.create(
             license_request=obj,
             version=1,
             status="ACTIVE",
-            scope_snapshot={"quoted_price": "250.00"},
+            scope_snapshot={
+                "project_type_display": "Commercial / Advertising",
+                "permitted_media_display": "Paid Digital Ads",
+                "territory_display": "Ireland Only",
+                "duration_display": "1 Year",
+                "exclusivity_display": "Non-Exclusive",
+                "reach_caps": "50000",
+                "quoted_price": "250.00",
+            },
             quoted_price=Decimal("250.00"),
-            currency="EUR",
+            currency="USD",
             terms_version="RM-1.0",
             stripe_payment_link_id="plink_confirmed",
             stripe_payment_link_url="https://buy.stripe.com/test-link",
@@ -650,7 +662,10 @@ class LicenseRequestTests(APITestCase):
         )
         self.assertIn("agreed_scope_summary", response.data[0])
         self.assertIn("territory: Ireland Only", response.data[0]["agreed_scope_summary"])
+        self.assertTrue(response.data[0]["agreed_scope_summary"].startswith("Commercial / Advertising"))
+        self.assertIn("fee: USD 250.00", response.data[0]["agreed_scope_summary"])
         self.assertEqual(response.data[0]["approved_territory"], "Ireland Only")
+        self.assertEqual(response.data[0]["offer_currency"], "USD")
 
     @override_settings(AI_WORKER_SECRET="testsecret", SECURE_SSL_REDIRECT=False)
     def test_ai_worker_payment_link_draft_update_stores_second_draft(self):
@@ -884,6 +899,30 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(sent.from_email, "licensing@example.com")
         self.assertEqual(sent.body, draft_body)
         self.assertNotIn("buy.stripe.com", sent.body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_negotiation_email_preserves_ai_draft_whitespace_exactly(self):
+        draft_body = "\nHi Negotiation Client,\n\nBody line.\n\nKind regards,\nGerard Deely\nLicensing Manager\n"
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Negotiation Client",
+            company="Negotiation Co",
+            email="negotiation-whitespace@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="SUBMITTED",
+            ai_draft_response=draft_body,
+        )
+
+        send_licence_negotiation_email(req)
+
+        self.assertEqual(mail.outbox[0].body, draft_body)
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
