@@ -64,6 +64,29 @@ def _to_iso8601_utc(value):
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _agreed_snapshot_for_queue(req, offer=None):
+    if offer and offer.scope_snapshot:
+        return offer.scope_snapshot
+    return req.agreed_scope_snapshot or {}
+
+
+def _build_agreed_scope_summary(snapshot, payload):
+    scope_parts = [
+        payload["project_type"],
+        f"media: {snapshot.get('permitted_media_display') or payload['permitted_media']}",
+        f"territory: {snapshot.get('territory_display') or payload['territory']}",
+        f"duration: {snapshot.get('duration_display') or payload['duration']}",
+        f"exclusivity: {snapshot.get('exclusivity_display') or payload['exclusivity']}",
+    ]
+    reach_caps = snapshot.get('reach_caps') or payload["reach_caps"]
+    if reach_caps and str(reach_caps).strip().lower() != "none":
+        scope_parts.append(f"reach caps: {reach_caps}")
+    quoted_price = snapshot.get('quoted_price') or payload["quoted_price"]
+    if quoted_price:
+        scope_parts.append(f"fee: EUR {quoted_price}")
+    return "; ".join(scope_parts)
+
+
 def _redirect_to_private_asset_if_supported(asset, file_key, filename):
     if not file_key or not asset_file_exists(asset):
         return None
@@ -348,6 +371,7 @@ class AILicenseDraftQueueView(APIView):
         }
         if draft_mode == "payment_link":
             current_offer = offer or get_current_offer(req)
+            agreed_snapshot = _agreed_snapshot_for_queue(req, current_offer)
             payload.update(
                 {
                     "payment_link": (
@@ -360,6 +384,22 @@ class AILicenseDraftQueueView(APIView):
                         _to_iso8601_utc(current_offer.expires_at)
                         if current_offer and current_offer.expires_at
                         else None
+                    ),
+                    "agreed_scope_summary": _build_agreed_scope_summary(agreed_snapshot, payload),
+                    "approved_permitted_media": (
+                        agreed_snapshot.get("permitted_media_display") or payload["permitted_media"]
+                    ),
+                    "approved_territory": (
+                        agreed_snapshot.get("territory_display") or payload["territory"]
+                    ),
+                    "approved_duration": (
+                        agreed_snapshot.get("duration_display") or payload["duration"]
+                    ),
+                    "approved_exclusivity": (
+                        agreed_snapshot.get("exclusivity_display") or payload["exclusivity"]
+                    ),
+                    "approved_reach_caps": (
+                        agreed_snapshot.get("reach_caps") or payload["reach_caps"]
                     ),
                 }
             )

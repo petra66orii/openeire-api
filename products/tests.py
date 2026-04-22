@@ -648,6 +648,9 @@ class LicenseRequestTests(APITestCase):
             response.data[0]["offer_expires_at"],
             expires_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         )
+        self.assertIn("agreed_scope_summary", response.data[0])
+        self.assertIn("territory: Ireland Only", response.data[0]["agreed_scope_summary"])
+        self.assertEqual(response.data[0]["approved_territory"], "Ireland Only")
 
     @override_settings(AI_WORKER_SECRET="testsecret", SECURE_SSL_REDIRECT=False)
     def test_ai_worker_payment_link_draft_update_stores_second_draft(self):
@@ -846,7 +849,15 @@ class LicenseRequestTests(APITestCase):
         DEFAULT_FROM_EMAIL='studio@example.com',
         LICENSING_FROM_EMAIL='licensing@example.com',
     )
-    def test_negotiation_email_sent_without_stripe_link(self):
+    def test_negotiation_email_sent_uses_verbatim_ai_draft_body(self):
+        draft_body = (
+            "Hi Negotiation Client,\n\n"
+            "Thank you for your follow-up. We can extend the proposed licence to EU territory "
+            "subject to the revised fee outlined below.\n\n"
+            "Kind regards,\n"
+            "Gerard Deely\n"
+            "Licensing Manager"
+        )
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
             object_id=self.photo.id,
@@ -858,7 +869,7 @@ class LicenseRequestTests(APITestCase):
             message="Need a licence",
             status="SUBMITTED",
             quoted_price=Decimal("250.00"),
-            ai_draft_response="We can offer the requested scope at the quoted fee below.",
+            ai_draft_response=draft_body,
             territory="IRELAND",
             permitted_media="WEB_SOCIAL",
             exclusivity="NON_EXCLUSIVE",
@@ -871,7 +882,7 @@ class LicenseRequestTests(APITestCase):
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["negotiation@example.com"])
         self.assertEqual(sent.from_email, "licensing@example.com")
-        self.assertIn("EUR 250.00", sent.body)
+        self.assertEqual(sent.body, draft_body)
         self.assertNotIn("buy.stripe.com", sent.body)
 
     @override_settings(
@@ -879,7 +890,17 @@ class LicenseRequestTests(APITestCase):
         DEFAULT_FROM_EMAIL='studio@example.com',
         LICENSING_FROM_EMAIL='licensing@example.com',
     )
-    def test_quote_email_sent_with_payment_link_and_fee(self):
+    def test_quote_email_sent_uses_verbatim_ai_payment_draft_body(self):
+        draft_body = (
+            "Hi Test Client,\n\n"
+            "Thank you for confirming the revised scope for EU paid digital usage. "
+            "The agreed licensing fee is EUR 250.00.\n\n"
+            "Please complete payment using this secure link: https://buy.stripe.com/test-link\n"
+            "This payment link remains valid until 2026-04-25T23:59:59Z.\n\n"
+            "Kind regards,\n"
+            "Gerard Deely\n"
+            "Licensing Manager"
+        )
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
             object_id=self.photo.id,
@@ -897,7 +918,19 @@ class LicenseRequestTests(APITestCase):
             permitted_media="WEB_SOCIAL",
             exclusivity="NON_EXCLUSIVE",
             reach_caps="NONE",
-            ai_draft_response="Draft reviewed by human.",
+            ai_payment_draft_response=draft_body,
+        )
+        LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_test",
+            stripe_payment_link_url="https://buy.stripe.com/test-link",
+            expires_at=timezone.now() + timedelta(days=7),
         )
 
         send_licence_quote_email(req)
@@ -906,8 +939,7 @@ class LicenseRequestTests(APITestCase):
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["quote@example.com"])
         self.assertEqual(sent.from_email, "licensing@example.com")
-        self.assertIn("https://buy.stripe.com/test-link", sent.body)
-        self.assertIn("EUR 250.00", sent.body)
+        self.assertEqual(sent.body, draft_body)
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -1116,6 +1148,14 @@ class LicenseRequestTests(APITestCase):
         LICENSING_FROM_EMAIL='licensing@example.com',
     )
     def test_send_payment_email_transitions_to_payment_pending(self):
+        draft_body = (
+            "Hi Payment Email Client,\n\n"
+            "Thank you for confirming the agreed scope. The licensing fee is EUR 250.00.\n\n"
+            "Please use this secure payment link to complete payment: https://buy.stripe.com/payment-email\n\n"
+            "Kind regards,\n"
+            "Gerard Deely\n"
+            "Licensing Manager"
+        )
         req = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
             object_id=self.photo.id,
@@ -1130,7 +1170,7 @@ class LicenseRequestTests(APITestCase):
             client_confirmed_at=timezone.now(),
             stripe_payment_link="https://buy.stripe.com/payment-email",
             stripe_payment_link_id="plink_email",
-            ai_payment_draft_response="Please use the secure link below to complete payment.",
+            ai_payment_draft_response=draft_body,
         )
         LicenceOffer.objects.create(
             license_request=req,
@@ -1151,7 +1191,7 @@ class LicenseRequestTests(APITestCase):
         self.assertIsNotNone(req.payment_email_sent_at)
         self.assertEqual(req.last_payment_email_body, mail.outbox[0].body)
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("https://buy.stripe.com/payment-email", mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].body, draft_body)
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
