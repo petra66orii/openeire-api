@@ -117,19 +117,13 @@ def _draft_text(value):
 
 
 def _build_negotiation_email_body(license_request):
-    draft_text = _draft_text(license_request.ai_draft_response)
-    scope_summary = "\n".join(_scope_summary_lines(license_request))
+    raw_draft_text = license_request.ai_draft_response or ""
+    draft_text = _draft_text(raw_draft_text)
 
     if draft_text:
-        return (
-            f"Hi {license_request.client_name},\n\n"
-            f"{draft_text}\n\n"
-            "Current Scope Summary:\n"
-            f"{scope_summary}\n\n"
-            "If you would like to proceed or need any refinements, reply to this email.\n\n"
-            "Kind regards,\n"
-            "OpenEire Studios\n"
-        )
+        return raw_draft_text
+
+    scope_summary = "\n".join(_scope_summary_lines(license_request))
 
     return (
         f"Hi {license_request.client_name},\n\n"
@@ -143,13 +137,8 @@ def _build_negotiation_email_body(license_request):
 
 
 def _build_payment_email_body(license_request, offer):
-    draft_text = _draft_text(license_request.ai_payment_draft_response)
-    scope_summary = "\n".join(
-        _scope_summary_lines(
-            license_request,
-            snapshot=(offer.scope_snapshot if offer and offer.scope_snapshot else license_request.agreed_scope_snapshot),
-        )
-    )
+    raw_draft_text = license_request.ai_payment_draft_response or ""
+    draft_text = _draft_text(raw_draft_text)
     payment_link = (
         offer.stripe_payment_link_url
         if offer and offer.stripe_payment_link_url
@@ -160,12 +149,17 @@ def _build_payment_email_body(license_request, offer):
         raise ValueError("License request does not have a Stripe payment link.")
     if offer and offer.is_expired:
         raise ValueError("The current payment offer has expired. Generate a fresh offer before sending.")
+    if draft_text:
+        return raw_draft_text
+
+    scope_summary = "\n".join(
+        _scope_summary_lines(
+            license_request,
+            snapshot=(offer.scope_snapshot if offer and offer.scope_snapshot else license_request.agreed_scope_snapshot),
+        )
+    )
 
     intro = (
-        f"Hi {license_request.client_name},\n\n"
-        f"{draft_text}\n\n"
-        if draft_text
-        else
         f"Hi {license_request.client_name},\n\n"
         "Your Rights-Managed licence request has been confirmed by our team.\n\n"
     )
