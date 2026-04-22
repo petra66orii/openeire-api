@@ -261,6 +261,11 @@ class LicenseRequestSerializer(serializers.ModelSerializer):
 
 
 class AIDraftUpdateSerializer(serializers.Serializer):
+    draft_mode = serializers.ChoiceField(
+        choices=("negotiation", "payment_link"),
+        required=False,
+        default="negotiation",
+    )
     draft_text = serializers.CharField(
         max_length=AI_DRAFT_MAX_CHARS,
         allow_blank=False,

@@ -28,8 +28,8 @@ from .models import (
     PersonalDownloadToken,
 )
 from .licensing import (
+    get_current_offer,
     send_licence_admin_notification_email,
-    send_licence_initial_draft_email,
 )
 from .file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from .utils import generate_r2_presigned_url
@@ -55,6 +55,12 @@ from .serializers import (
 from .permissions import IsDigitalGalleryAuthorized, IsAIWorkerAuthorized
 
 logger = logging.getLogger(__name__)
+
+
+def _to_iso8601_utc(value):
+    if not value:
+        return None
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _redirect_to_private_asset_if_supported(asset, file_key, filename):
@@ -320,13 +326,56 @@ class AILicenseDraftQueueView(APIView):
     authentication_classes = [] 
     permission_classes = [IsAIWorkerAuthorized]
 
-    def get(self, request):
-        # Find requests that don't have an AI draft yet
-        base_qs = LicenseRequest.objects.filter(
-            Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact=""),
-            status__in=['SUBMITTED', 'NEEDS_INFO']
-        ).order_by('created_at')
+    NEGOTIATION_STATUSES = ['SUBMITTED', 'NEEDS_INFO', 'APPROVED', 'AWAITING_CLIENT_CONFIRMATION']
+    PAYMENT_DRAFT_STATUSES = ['AWAITING_CLIENT_CONFIRMATION', 'PAYMENT_PENDING']
 
+    def _serialize_queue_item(self, req, draft_mode, offer=None):
+        payload = {
+            "id": req.id,
+            "draft_mode": draft_mode,
+            "client_name": req.client_name,
+            "company": req.company or "N/A",
+            "project_type": req.get_project_type_display(),
+            "duration": req.get_duration_display(),
+            "territory": req.get_territory_display() if req.territory else "Not Specified",
+            "permitted_media": req.get_permitted_media_display() if req.permitted_media else "Not Specified",
+            "exclusivity": req.get_exclusivity_display() if req.exclusivity else "Not Specified",
+            "reach_caps": req.reach_caps or "None",
+            "message": req.message or "No additional details provided.",
+            "asset_name": str(req.asset),
+            "quoted_price": str(req.quoted_price) if req.quoted_price is not None else None,
+        }
+        if draft_mode == "payment_link":
+            current_offer = offer or get_current_offer(req)
+            payload.update(
+                {
+                    "payment_link": (
+                        current_offer.stripe_payment_link_url
+                        if current_offer and current_offer.stripe_payment_link_url
+                        else None
+                    ),
+                    "offer_version": current_offer.version if current_offer else None,
+                    "offer_expires_at": (
+                        _to_iso8601_utc(current_offer.expires_at)
+                        if current_offer and current_offer.expires_at
+                        else None
+                    ),
+                }
+            )
+        return payload
+
+    def get(self, request):
+        negotiation_qs = LicenseRequest.objects.filter(
+            Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact=""),
+            client_confirmed_at__isnull=True,
+            status__in=self.NEGOTIATION_STATUSES,
+        ).order_by('created_at')
+        payment_candidates = LicenseRequest.objects.filter(
+            Q(ai_payment_draft_response__isnull=True) | Q(ai_payment_draft_response__exact=""),
+            status__in=self.PAYMENT_DRAFT_STATUSES,
+        ).filter(
+            Q(client_confirmed_at__isnull=False) | Q(status='PAYMENT_PENDING')
+        ).order_by('created_at')
         default_limit = getattr(settings, 'AI_WORKER_MAX_BATCH', 25)
         hard_max = getattr(settings, 'AI_WORKER_MAX_BATCH_HARD', 100)
         try:
@@ -335,22 +384,21 @@ class AILicenseDraftQueueView(APIView):
             limit = default_limit
         limit = max(1, min(limit, hard_max))
 
-        pending = base_qs[:limit]
-        data = []
-        for req in pending:
-            data.append({
-                "id": req.id,
-                "client_name": req.client_name,
-                "company": req.company or "N/A",
-                "project_type": req.get_project_type_display(),
-                "duration": req.get_duration_display(),
-                "territory": req.get_territory_display() if req.territory else "Not Specified",
-                "permitted_media": req.get_permitted_media_display() if req.permitted_media else "Not Specified",
-                "exclusivity": req.get_exclusivity_display() if req.exclusivity else "Not Specified",
-                "reach_caps": req.reach_caps or "None",
-                "message": req.message or "No additional details provided.",
-                "asset_name": str(req.asset)
-            })
+        pending = []
+        for req in negotiation_qs[:hard_max]:
+            pending.append((req.created_at, self._serialize_queue_item(req, "negotiation")))
+        for req in payment_candidates[:hard_max]:
+            current_offer = get_current_offer(req)
+            if not current_offer or not current_offer.stripe_payment_link_url:
+                logger.warning(
+                    "Skipping payment-link draft queue item for license request %s because no valid current offer/link exists.",
+                    req.id,
+                )
+                continue
+            pending.append((req.created_at, self._serialize_queue_item(req, "payment_link", offer=current_offer)))
+
+        pending.sort(key=lambda item: item[0])
+        data = [payload for _, payload in pending[:limit]]
         return Response(data, status=status.HTTP_200_OK)
 
 class AILicenseDraftUpdateView(APIView):
@@ -361,47 +409,70 @@ class AILicenseDraftUpdateView(APIView):
     def post(self, request, pk):
         serializer = AIDraftUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        draft_mode = serializer.validated_data["draft_mode"]
         draft_text = serializer.validated_data["draft_text"]
-        allowed_statuses = ['SUBMITTED', 'NEEDS_INFO']
-
-        with transaction.atomic():
-            updated = LicenseRequest.objects.filter(
-                pk=pk,
-                status__in=allowed_statuses
-            ).filter(
-                Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact="")
-            ).update(ai_draft_response=draft_text)
+        if draft_mode == "payment_link":
+            allowed_statuses = ['AWAITING_CLIENT_CONFIRMATION', 'PAYMENT_PENDING']
+            req_obj = LicenseRequest.objects.filter(pk=pk).first()
+            updated = 0
+            if req_obj and req_obj.status in allowed_statuses:
+                current_offer = get_current_offer(req_obj)
+                if (
+                    current_offer
+                    and current_offer.stripe_payment_link_url
+                    and (req_obj.client_confirmed_at or req_obj.status == 'PAYMENT_PENDING')
+                    and not (req_obj.ai_payment_draft_response or "").strip()
+                ):
+                    req_obj.ai_payment_draft_response = draft_text
+                    req_obj.save(update_fields=['ai_payment_draft_response', 'updated_at'])
+                    updated = 1
+        else:
+            allowed_statuses = ['SUBMITTED', 'NEEDS_INFO', 'APPROVED', 'AWAITING_CLIENT_CONFIRMATION']
+            with transaction.atomic():
+                updated = LicenseRequest.objects.filter(
+                    pk=pk,
+                    client_confirmed_at__isnull=True,
+                    status__in=allowed_statuses
+                ).filter(
+                    Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact="")
+                ).update(ai_draft_response=draft_text)
 
         if updated == 1:
-            if getattr(settings, "LICENCE_SEND_INITIAL_DRAFT_EMAIL", False):
-                req_obj = LicenseRequest.objects.filter(pk=pk).only(
-                    "id",
-                    "client_name",
-                    "email",
-                    "ai_draft_response",
-                    "content_type_id",
-                    "object_id",
-                ).first()
-                if req_obj:
-                    try:
-                        send_licence_initial_draft_email(req_obj)
-                    except Exception as e:
-                        return Response(
-                            {
-                                "status": "Draft saved, but initial draft email failed.",
-                                "email_error": str(e),
-                            },
-                            status=status.HTTP_200_OK,
-                        )
-            return Response({"status": "Draft successfully saved"}, status=status.HTTP_200_OK)
+            return Response(
+                {"status": "Draft successfully saved", "draft_mode": draft_mode},
+                status=status.HTTP_200_OK,
+            )
 
-        req_obj = LicenseRequest.objects.filter(pk=pk).only('status', 'ai_draft_response').first()
+        req_obj = LicenseRequest.objects.filter(pk=pk).only(
+            'status',
+            'ai_draft_response',
+            'ai_payment_draft_response',
+            'client_confirmed_at',
+        ).first()
         if not req_obj:
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         if req_obj.status not in allowed_statuses:
             return Response(
                 {"error": "Draft updates are not allowed for this status."},
                 status=status.HTTP_409_CONFLICT
+            )
+        if draft_mode == "payment_link":
+            current_offer = get_current_offer(req_obj)
+            if (
+                not current_offer
+                or not current_offer.stripe_payment_link_url
+                or (
+                    not req_obj.client_confirmed_at and req_obj.status != 'PAYMENT_PENDING'
+                )
+            ):
+                return Response(
+                    {"error": "Payment-link draft updates require a confirmed request with a valid non-expired payment offer."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+        if draft_mode == "negotiation" and req_obj.client_confirmed_at:
+            return Response(
+                {"error": "Negotiation drafts are not allowed once client confirmation has been recorded."},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             {"error": "Draft already exists for this request."},

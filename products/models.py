@@ -256,6 +256,7 @@ class LicenseRequest(models.Model):
         ('SUBMITTED', 'Submitted'),
         ('NEEDS_INFO', 'Needs Info'),
         ('APPROVED', 'Approved'),
+        ('AWAITING_CLIENT_CONFIRMATION', 'Awaiting Client Confirmation'),
         ('PAYMENT_PENDING', 'Payment Pending'),
         ('PAID', 'Paid'),
         ('DELIVERED', 'Delivered'),
@@ -333,7 +334,7 @@ class LicenseRequest(models.Model):
     reach_caps = models.CharField(max_length=255, default='NONE', null=True, blank=True)
     
     # Tracking
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='SUBMITTED')
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default='SUBMITTED')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     paid_at = models.DateTimeField(blank=True, null=True)
@@ -347,6 +348,13 @@ class LicenseRequest(models.Model):
         max_length=AI_DRAFT_MAX_CHARS,
         help_text="AI generated draft response"
     )
+    ai_payment_draft_response = models.TextField(
+        blank=True,
+        null=True,
+        max_length=AI_DRAFT_MAX_CHARS,
+        help_text="AI generated payment email draft response"
+    )
+    agreed_scope_snapshot = models.JSONField(blank=True, null=True)
     quoted_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -356,6 +364,11 @@ class LicenseRequest(models.Model):
     )
     stripe_payment_link = models.URLField(blank=True, null=True)
     stripe_payment_link_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    negotiation_sent_at = models.DateTimeField(blank=True, null=True)
+    client_confirmed_at = models.DateTimeField(blank=True, null=True)
+    payment_email_sent_at = models.DateTimeField(blank=True, null=True)
+    last_negotiation_email_body = models.TextField(blank=True, default="")
+    last_payment_email_body = models.TextField(blank=True, default="")
 
     _status_change_actor = None
     _status_change_note = ""
@@ -491,6 +504,7 @@ class LicenceOffer(models.Model):
     stripe_payment_intent_id = models.CharField(max_length=255, blank=True, null=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
     paid_at = models.DateTimeField(blank=True, null=True)
     superseded_at = models.DateTimeField(blank=True, null=True)
 
@@ -505,6 +519,12 @@ class LicenceOffer(models.Model):
 
     def __str__(self):
         return f"Offer v{self.version} for LicenseRequest {self.license_request_id}"
+
+    @property
+    def is_expired(self):
+        if self.expires_at is None:
+            return False
+        return timezone.now() >= self.expires_at
 
 
 class LicenseRequestAuditLog(models.Model):

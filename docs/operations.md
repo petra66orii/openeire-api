@@ -42,6 +42,25 @@ An internal AI worker can poll/update licensing drafts through protected endpoin
 - `GET /api/internal/draft-queue/`
 - `POST /api/internal/draft-update/<pk>/`
 
+Commercial licensing flow summary:
+- `SUBMITTED` / `NEEDS_INFO` / `APPROVED`: pre-negotiation review and scope refinement
+- Negotiation draft generated and reviewed in admin
+- Negotiation email sent from admin
+- `AWAITING_CLIENT_CONFIRMATION`: waiting for explicit client agreement outside the system
+- Admin marks client confirmed, which freezes the agreed commercial scope snapshot
+- Admin explicitly generates a Stripe-backed payment offer only after confirmation
+- Payment offers expire and must be regenerated before a payment email can be drafted/sent again
+- Payment email draft is generated from the current valid offer and receives the offer expiry timestamp from the draft queue payload
+- Payment email sent from admin
+- `PAYMENT_PENDING`: waiting for Stripe checkout completion
+- Stripe webhook transitions request to `PAID`, generates licence documents, emails delivery package, then transitions to `DELIVERED`
+
+Operator guardrails:
+- Use `Reset Client Confirmation` before editing scope or quoted price after client agreement has been frozen.
+- Use `Regenerate Payment Offer` when the prior confirmed offer has expired or a fresh Stripe link is needed.
+- Expired offers are treated as non-sendable in admin and are not queued for `payment_link` AI drafting.
+- Payment links are time-limited, the expiry is communicated in the payment email, and expired offers must be regenerated before sending.
+
 Operational requirements:
 - Set strong `AI_WORKER_SECRET`.
 - Optionally set `AI_WORKER_IP_ALLOWLIST` and `AI_WORKER_TRUSTED_PROXY_IPS`.
