@@ -10,19 +10,25 @@ from django.core.cache import cache, caches
 from django.core.cache.backends.base import InvalidCacheBackendError
 from django.core import mail
 from django.conf import settings
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.forms.models import model_to_dict
 from django.db.models.signals import post_save
 from django.contrib.auth.models import User
 from django.urls import reverse
-from django.test import override_settings
+from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from django.contrib.contenttypes.models import ContentType
 from checkout.models import Order, OrderItem
 from openeire_api.throttling import SharedScopedRateThrottle
+from openeire_api.admin import custom_admin_site
+from .admin import LicenseRequestAdmin, LicenseRequestAdminForm
 from .models import (
     LicenseRequest,
+    LicenceOffer,
     LicenceDeliveryToken,
     PersonalDownloadToken,
     GalleryAccess,
@@ -33,7 +39,11 @@ from .models import (
     VideoUploadSession,
     generate_variants_for_photo,
 )
-from .licensing import send_licence_admin_notification_email, send_licence_quote_email
+from .licensing import (
+    send_licence_admin_notification_email,
+    send_licence_negotiation_email,
+    send_licence_quote_email,
+)
 from .uploads import build_object_key, sanitize_upload_filename
 
 
@@ -54,6 +64,8 @@ class LicenseRequestTests(APITestCase):
 
         self.photo = self._create_photo(is_active=True)
         self.url = reverse('license-request-create')
+        self.factory = RequestFactory()
+        self.license_admin = LicenseRequestAdmin(LicenseRequest, custom_admin_site)
 
     def _create_photo(self, is_active=True, is_printable=False):
         preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
@@ -100,6 +112,18 @@ class LicenseRequestTests(APITestCase):
             "asset_type": "photo",
             "asset_id": asset_id if asset_id is not None else self.photo.id,
         }
+
+    def _admin_request(self, path="/admin/products/licenserequest/"):
+        request = self.factory.post(path, data={})
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.session.save()
+        request.user = User.objects.create_superuser(
+            username=f"admin-{uuid.uuid4().hex[:8]}",
+            email=f"admin-{uuid.uuid4().hex[:8]}@example.com",
+            password="StrongPass123!",
+        )
+        request._messages = FallbackStorage(request)
+        return request
 
     def test_license_request_throttled_after_10(self):
         for i in range(10):
@@ -531,6 +555,7 @@ class LicenseRequestTests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 403)
 
+    @override_settings(SECURE_SSL_REDIRECT=False)
     def test_ai_worker_queue_allows_valid_token(self):
         url = reverse("ai-draft-queue")
         content_type = ContentType.objects.get_for_model(self.photo)
@@ -549,13 +574,15 @@ class LicenseRequestTests(APITestCase):
             response = self.client.get(url, HTTP_AUTHORIZATION="Bearer testsecret")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["draft_mode"], "negotiation")
+        self.assertNotIn("offer_expires_at", response.data[0])
 
     @override_settings(
         AI_WORKER_SECRET="testsecret",
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
-        LICENCE_SEND_INITIAL_DRAFT_EMAIL=True,
+        SECURE_SSL_REDIRECT=False,
     )
-    def test_ai_worker_draft_update_sends_initial_draft_email(self):
+    def test_ai_worker_draft_update_stores_negotiation_draft_without_sending_email(self):
         obj = LicenseRequest.objects.create(
             content_type=ContentType.objects.get_for_model(self.photo),
             object_id=self.photo.id,
@@ -575,10 +602,277 @@ class LicenseRequestTests(APITestCase):
             HTTP_AUTHORIZATION="Bearer testsecret",
         )
         self.assertEqual(response.status_code, 200)
+        obj.refresh_from_db()
+        self.assertEqual(obj.ai_draft_response, "This is your initial draft licence response.")
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(AI_WORKER_SECRET="testsecret", SECURE_SSL_REDIRECT=False)
+    def test_ai_worker_queue_exposes_payment_link_draft_mode(self):
+        expires_at = timezone.now() + timedelta(days=7)
+        obj = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Confirmed Client",
+            company="Confirmed Co",
+            email="confirmed@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Confirmed request",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            client_confirmed_at=timezone.now(),
+            quoted_price=Decimal("250.00"),
+            stripe_payment_link="https://buy.stripe.com/test-link",
+            stripe_payment_link_id="plink_confirmed",
+        )
+        offer = LicenceOffer.objects.create(
+            license_request=obj,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_confirmed",
+            stripe_payment_link_url="https://buy.stripe.com/test-link",
+            expires_at=expires_at,
+        )
+
+        response = self.client.get(reverse("ai-draft-queue"), HTTP_AUTHORIZATION="Bearer testsecret")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["draft_mode"], "payment_link")
+        self.assertEqual(response.data[0]["payment_link"], "https://buy.stripe.com/test-link")
+        self.assertEqual(response.data[0]["offer_version"], offer.version)
+        self.assertEqual(
+            response.data[0]["offer_expires_at"],
+            expires_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        )
+
+    @override_settings(AI_WORKER_SECRET="testsecret", SECURE_SSL_REDIRECT=False)
+    def test_ai_worker_payment_link_draft_update_stores_second_draft(self):
+        obj = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Payment Draft Client",
+            company="Payment Draft Co",
+            email="payment-draft@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Payment request",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            client_confirmed_at=timezone.now(),
+            quoted_price=Decimal("250.00"),
+            stripe_payment_link="https://buy.stripe.com/payment-link",
+            stripe_payment_link_id="plink_payment",
+        )
+        LicenceOffer.objects.create(
+            license_request=obj,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_payment",
+            stripe_payment_link_url="https://buy.stripe.com/payment-link",
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+
+        response = self.client.post(
+            reverse("ai-draft-update", args=[obj.id]),
+            {"draft_mode": "payment_link", "draft_text": "Here is your secure payment link."},
+            format="json",
+            HTTP_AUTHORIZATION="Bearer testsecret",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        obj.refresh_from_db()
+        self.assertEqual(obj.ai_payment_draft_response, "Here is your secure payment link.")
+
+    def test_mark_client_confirmed_freezes_agreed_scope_snapshot(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Freeze Client",
+            company="Freeze Co",
+            email="freeze@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            negotiation_sent_at=timezone.now(),
+            quoted_price=Decimal("250.00"),
+            territory="IRELAND",
+            permitted_media="WEB_SOCIAL",
+            exclusivity="NON_EXCLUSIVE",
+            reach_caps="500k impressions",
+        )
+
+        self.license_admin.mark_client_confirmed(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        self.assertIsNotNone(req.client_confirmed_at)
+        self.assertIsNotNone(req.agreed_scope_snapshot)
+        self.assertEqual(req.agreed_scope_snapshot["asset_id"], self.photo.id)
+        self.assertEqual(req.agreed_scope_snapshot["project_type"], "COMMERCIAL")
+        self.assertEqual(req.agreed_scope_snapshot["quoted_price"], "250.00")
+        self.assertEqual(req.agreed_scope_snapshot["reach_caps"], "500k impressions")
+
+    def test_scope_fields_locked_once_client_confirmed(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Locked Scope Client",
+            company="Locked Scope Co",
+            email="locked-scope@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+            agreed_scope_snapshot={"quoted_price": "250.00"},
+        )
+
+        form_data = model_to_dict(req)
+        form_data.update(
+            {
+                "content_type": req.content_type_id,
+                "object_id": req.object_id,
+                "quoted_price": "275.00",
+                "internal_note": "",
+            }
+        )
+        form = LicenseRequestAdminForm(data=form_data, instance=req)
+
+        self.assertFalse(form.is_valid())
+        self.assertIn(
+            "Reset Client Confirmation",
+            form.non_field_errors()[0],
+        )
+
+    def test_reset_client_confirmation_clears_frozen_scope_and_payment_state(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Reset Client",
+            company="Reset Co",
+            email="reset@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="PAYMENT_PENDING",
+            quoted_price=Decimal("250.00"),
+            negotiation_sent_at=timezone.now(),
+            client_confirmed_at=timezone.now(),
+            agreed_scope_snapshot={"quoted_price": "250.00"},
+            payment_email_sent_at=timezone.now(),
+            ai_payment_draft_response="Please pay with the link below.",
+            last_payment_email_body="Sent body",
+            stripe_payment_link="https://buy.stripe.com/reset-link",
+            stripe_payment_link_id="plink_reset",
+        )
+        offer = LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_reset",
+            stripe_payment_link_url="https://buy.stripe.com/reset-link",
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+
+        self.license_admin.reset_client_confirmation(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        offer.refresh_from_db()
+        self.assertIsNone(req.client_confirmed_at)
+        self.assertIsNone(req.agreed_scope_snapshot)
+        self.assertIsNone(req.payment_email_sent_at)
+        self.assertIsNone(req.ai_payment_draft_response)
+        self.assertEqual(req.last_payment_email_body, "")
+        self.assertIsNone(req.stripe_payment_link)
+        self.assertIsNone(req.stripe_payment_link_id)
+        self.assertEqual(req.status, "APPROVED")
+        self.assertEqual(offer.status, "SUPERSEDED")
+
+    @override_settings(AI_WORKER_SECRET="testsecret", SECURE_SSL_REDIRECT=False)
+    def test_ai_worker_queue_skips_expired_payment_offer(self):
+        obj = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Expired Queue Client",
+            company="Expired Queue Co",
+            email="expired-queue@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            client_confirmed_at=timezone.now(),
+            quoted_price=Decimal("250.00"),
+            stripe_payment_link="https://buy.stripe.com/expired-link",
+            stripe_payment_link_id="plink_expired_queue",
+        )
+        LicenceOffer.objects.create(
+            license_request=obj,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_expired_queue",
+            stripe_payment_link_url="https://buy.stripe.com/expired-link",
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        response = self.client.get(reverse("ai-draft-queue"), HTTP_AUTHORIZATION="Bearer testsecret")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_negotiation_email_sent_without_stripe_link(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Negotiation Client",
+            company="Negotiation Co",
+            email="negotiation@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="SUBMITTED",
+            quoted_price=Decimal("250.00"),
+            ai_draft_response="We can offer the requested scope at the quoted fee below.",
+            territory="IRELAND",
+            permitted_media="WEB_SOCIAL",
+            exclusivity="NON_EXCLUSIVE",
+            reach_caps="NONE",
+        )
+
+        send_licence_negotiation_email(req)
+
         self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, ["draft@example.com"])
-        self.assertIn("licence draft", mail.outbox[0].subject.lower())
-        self.assertIn("This is your initial draft licence response.", mail.outbox[0].body)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["negotiation@example.com"])
+        self.assertEqual(sent.from_email, "licensing@example.com")
+        self.assertIn("EUR 250.00", sent.body)
+        self.assertNotIn("buy.stripe.com", sent.body)
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -614,6 +908,329 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(sent.from_email, "licensing@example.com")
         self.assertIn("https://buy.stripe.com/test-link", sent.body)
         self.assertIn("EUR 250.00", sent.body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    @patch("products.admin.stripe.Product.create")
+    @patch("products.admin.stripe.Price.create")
+    @patch("products.admin.stripe.PaymentLink.create")
+    def test_admin_save_model_does_not_auto_create_payment_offer(
+        self,
+        mock_payment_link_create,
+        mock_price_create,
+        mock_product_create,
+    ):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Save Model Client",
+            company="Save Co",
+            email="save-model@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="SUBMITTED",
+            quoted_price=Decimal("250.00"),
+        )
+        form = type(
+            "FakeForm",
+            (),
+            {
+                "cleaned_data": {"internal_note": ""},
+                "changed_data": ["quoted_price"],
+            },
+        )()
+
+        self.license_admin.save_model(self._admin_request(), req, form, change=True)
+
+        req.refresh_from_db()
+        self.assertFalse(LicenceOffer.objects.filter(license_request=req).exists())
+        self.assertIsNone(req.stripe_payment_link)
+        mock_product_create.assert_not_called()
+        mock_price_create.assert_not_called()
+        mock_payment_link_create.assert_not_called()
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+        LICENCE_OFFER_EXPIRY_DAYS=5,
+    )
+    @patch("products.admin.stripe.Product.create")
+    @patch("products.admin.stripe.Price.create")
+    @patch("products.admin.stripe.PaymentLink.create")
+    def test_generate_payment_offer_requires_explicit_admin_action(
+        self,
+        mock_payment_link_create,
+        mock_price_create,
+        mock_product_create,
+    ):
+        mock_product_create.return_value = type("StripeProduct", (), {"id": "prod_test"})()
+        mock_price_create.return_value = type("StripePrice", (), {"id": "price_test"})()
+        mock_payment_link_create.return_value = type(
+            "StripeLink",
+            (),
+            {"id": "plink_explicit", "url": "https://buy.stripe.com/explicit-link"},
+        )()
+
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Confirmed Client",
+            company="Confirmed Co",
+            email="confirmed@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+        )
+
+        self.license_admin.generate_payment_offer(self._admin_request(), LicenseRequest.objects.filter(pk=req.pk))
+
+        req.refresh_from_db()
+        offer = LicenceOffer.objects.get(license_request=req)
+        self.assertEqual(offer.version, 1)
+        self.assertEqual(req.stripe_payment_link_id, "plink_explicit")
+        self.assertEqual(req.status, "AWAITING_CLIENT_CONFIRMATION")
+        self.assertIsNotNone(req.agreed_scope_snapshot)
+        self.assertIsNotNone(offer.expires_at)
+        self.assertGreater(offer.expires_at, timezone.now() + timedelta(days=4))
+        self.assertLess(offer.expires_at, timezone.now() + timedelta(days=6))
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    @patch("products.admin.stripe.Product.create")
+    @patch("products.admin.stripe.Price.create")
+    @patch("products.admin.stripe.PaymentLink.create")
+    def test_regenerate_payment_offer_supersedes_prior_offer_and_creates_new_version(
+        self,
+        mock_payment_link_create,
+        mock_price_create,
+        mock_product_create,
+    ):
+        mock_product_create.return_value = type("StripeProduct", (), {"id": "prod_regen"})()
+        mock_price_create.return_value = type("StripePrice", (), {"id": "price_regen"})()
+        mock_payment_link_create.return_value = type(
+            "StripeLink",
+            (),
+            {"id": "plink_regen_v2", "url": "https://buy.stripe.com/regen-v2"},
+        )()
+
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Regenerate Client",
+            company="Regenerate Co",
+            email="regenerate@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+            agreed_scope_snapshot={"quoted_price": "250.00"},
+            stripe_payment_link="https://buy.stripe.com/regen-v1",
+            stripe_payment_link_id="plink_regen_v1",
+        )
+        prior_offer = LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_regen_v1",
+            stripe_payment_link_url="https://buy.stripe.com/regen-v1",
+            expires_at=timezone.now() + timedelta(days=2),
+        )
+
+        self.license_admin.regenerate_payment_offer(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        prior_offer.refresh_from_db()
+        new_offer = LicenceOffer.objects.get(license_request=req, version=2)
+        self.assertEqual(prior_offer.status, "SUPERSEDED")
+        self.assertEqual(new_offer.status, "ACTIVE")
+        self.assertEqual(new_offer.stripe_payment_link_id, "plink_regen_v2")
+        self.assertIsNotNone(new_offer.expires_at)
+        self.assertEqual(req.stripe_payment_link_id, "plink_regen_v2")
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_generate_payment_email_draft_requires_valid_non_expired_offer(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Expired Draft Client",
+            company="Expired Draft Co",
+            email="expired-draft@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+            ai_payment_draft_response="Keep this draft",
+            stripe_payment_link="https://buy.stripe.com/expired-draft",
+            stripe_payment_link_id="plink_expired_draft",
+        )
+        LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_expired_draft",
+            stripe_payment_link_url="https://buy.stripe.com/expired-draft",
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        self.license_admin.generate_payment_email_draft(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        self.assertEqual(req.ai_payment_draft_response, "Keep this draft")
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_send_payment_email_transitions_to_payment_pending(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Payment Email Client",
+            company="Payment Co",
+            email="payment-email@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+            stripe_payment_link="https://buy.stripe.com/payment-email",
+            stripe_payment_link_id="plink_email",
+            ai_payment_draft_response="Please use the secure link below to complete payment.",
+        )
+        LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_email",
+            stripe_payment_link_url="https://buy.stripe.com/payment-email",
+        )
+
+        self.license_admin.send_payment_email(self._admin_request(), LicenseRequest.objects.filter(pk=req.pk))
+
+        req.refresh_from_db()
+        self.assertEqual(req.status, "PAYMENT_PENDING")
+        self.assertIsNotNone(req.payment_email_sent_at)
+        self.assertEqual(req.last_payment_email_body, mail.outbox[0].body)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("https://buy.stripe.com/payment-email", mail.outbox[0].body)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_send_payment_email_rejects_expired_offer(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Expired Payment Client",
+            company="Expired Payment Co",
+            email="expired-payment@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="AWAITING_CLIENT_CONFIRMATION",
+            quoted_price=Decimal("250.00"),
+            client_confirmed_at=timezone.now(),
+            stripe_payment_link="https://buy.stripe.com/expired-payment",
+            stripe_payment_link_id="plink_expired_payment",
+            ai_payment_draft_response="Please use the secure link below.",
+        )
+        LicenceOffer.objects.create(
+            license_request=req,
+            version=1,
+            status="ACTIVE",
+            scope_snapshot={"quoted_price": "250.00"},
+            quoted_price=Decimal("250.00"),
+            currency="EUR",
+            terms_version="RM-1.0",
+            stripe_payment_link_id="plink_expired_payment",
+            stripe_payment_link_url="https://buy.stripe.com/expired-payment",
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        self.license_admin.send_payment_email(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(req.status, "AWAITING_CLIENT_CONFIRMATION")
+        self.assertIsNone(req.payment_email_sent_at)
+        self.assertEqual(req.last_payment_email_body, "")
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='studio@example.com',
+        LICENSING_FROM_EMAIL='licensing@example.com',
+    )
+    def test_send_negotiation_email_stores_last_sent_body(self):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="Negotiation Audit Client",
+            company="Negotiation Audit Co",
+            email="negotiation-audit@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="SUBMITTED",
+            quoted_price=Decimal("250.00"),
+            ai_draft_response="We can proceed on the revised scope below.",
+            territory="IRELAND",
+            permitted_media="WEB_SOCIAL",
+            exclusivity="NON_EXCLUSIVE",
+            reach_caps="NONE",
+        )
+
+        self.license_admin.send_negotiation_email(
+            self._admin_request(),
+            LicenseRequest.objects.filter(pk=req.pk),
+        )
+
+        req.refresh_from_db()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(req.last_negotiation_email_body, mail.outbox[0].body)
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',

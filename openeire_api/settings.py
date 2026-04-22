@@ -470,6 +470,7 @@ LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     for email in os.getenv('LICENCE_ADMIN_NOTIFICATION_RECIPIENTS', '').split(',')
     if email.strip()
 ]
+LICENCE_OFFER_EXPIRY_DAYS = int(os.getenv('LICENCE_OFFER_EXPIRY_DAYS', '7'))
 if (
     EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
     and not IS_TEST_ENV

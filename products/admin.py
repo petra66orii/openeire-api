@@ -13,7 +13,15 @@ from django.utils import timezone
 from django.utils.safestring import mark_safe
 
 from checkout.models import ProductShipping
-from .licensing import get_licensing_from_email, send_licence_quote_email
+from .licensing import (
+    get_active_offer,
+    get_current_offer,
+    get_latest_offer,
+    get_licensing_from_email,
+    build_offer_expires_at,
+    send_licence_negotiation_email,
+    send_licence_quote_email,
+)
 from .models import (
     Photo,
     Video,
@@ -245,6 +253,11 @@ class LicenseRequestAdminForm(forms.ModelForm):
                 "Scope and pricing are immutable after payment/delivery/expiry/revocation. "
                 "Create a new licence request or offer version instead."
             )
+        if self.instance.client_confirmed_at and scope_changed:
+            raise forms.ValidationError(
+                "Scope and pricing are frozen once client confirmation has been recorded. "
+                "Use the 'Reset Client Confirmation' admin action before editing scope or price."
+            )
         return cleaned_data
 # 1. Create an Inline for Variants
 class ProductVariantInline(admin.TabularInline):
@@ -339,6 +352,7 @@ class LicenceOfferInline(admin.TabularInline):
         'status',
         'quoted_price',
         'currency',
+        'expires_at',
         'stripe_payment_link_id',
         'stripe_checkout_session_id',
         'paid_at',
@@ -357,6 +371,17 @@ class LicenseRequestAuditLogInline(admin.TabularInline):
     ordering = ('-changed_at',)
 
 class LicenseRequestAdmin(admin.ModelAdmin):
+    SCOPE_FIELDS = (
+        'project_type',
+        'permitted_media',
+        'territory',
+        'duration',
+        'reach_caps',
+        'exclusivity',
+        'message',
+        'quoted_price',
+    )
+
     form = LicenseRequestAdminForm
     list_display = ('client_name', 'email', 'get_asset_link', 'project_type', 'status', 'created_at')
     list_filter = ('status', 'project_type', 'created_at')
@@ -367,13 +392,31 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         'updated_at',
         'paid_at',
         'delivered_at',
+        'negotiation_sent_at',
+        'client_confirmed_at',
+        'agreed_scope_snapshot',
+        'payment_email_sent_at',
         'stripe_payment_link_id',
         'stripe_checkout_session_id',
         'stripe_payment_intent_id',
+        'last_negotiation_email_body',
+        'last_payment_email_body',
         'licence_documents_links',
     )
     inlines = [LicenceOfferInline, LicenseRequestAuditLogInline]
-    actions = ['mark_needs_info', 'approve_requests', 'reject_requests']
+    actions = [
+        'generate_negotiation_draft',
+        'send_negotiation_email',
+        'mark_client_confirmed',
+        'reset_client_confirmation',
+        'generate_payment_offer',
+        'regenerate_payment_offer',
+        'generate_payment_email_draft',
+        'send_payment_email',
+        'mark_needs_info',
+        'approve_requests',
+        'reject_requests',
+    ]
     
     fieldsets = (
         ('Client Info', {
@@ -386,19 +429,26 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             'fields': (
                 'status',
                 'quoted_price',
+                'negotiation_sent_at',
+                'client_confirmed_at',
+                'agreed_scope_snapshot',
                 'stripe_payment_link',
                 'stripe_payment_link_id',
+                'payment_email_sent_at',
                 'stripe_checkout_session_id',
                 'stripe_payment_intent_id',
                 'paid_at',
                 'delivered_at',
                 'ai_draft_response',
+                'ai_payment_draft_response',
+                'last_negotiation_email_body',
+                'last_payment_email_body',
                 'licence_documents_links',
                 'internal_note',
             ),
             'description': (
-                'Set quote/scope and save to issue a versioned Licence Offer + Stripe Payment Link. '
-                'Any post-approval scope change creates a new offer version.'
+                'Use explicit admin actions to request drafts, send negotiation emails, '
+                'mark client confirmation, generate payment offers, and send payment emails.'
             )
         }),
         ('Timestamps', {
@@ -414,6 +464,8 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         readonly = list(super().get_readonly_fields(request, obj))
         if obj:
             readonly.extend(['content_type', 'object_id'])
+            if obj.client_confirmed_at:
+                readonly.extend(self.SCOPE_FIELDS)
         return tuple(readonly)
 
     def get_fieldsets(self, request, obj=None):
@@ -429,18 +481,25 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     'fields': (
                         'status',
                         'quoted_price',
+                        'negotiation_sent_at',
+                        'client_confirmed_at',
+                        'agreed_scope_snapshot',
                         'stripe_payment_link',
                         'stripe_payment_link_id',
+                        'payment_email_sent_at',
                         'stripe_checkout_session_id',
                         'stripe_payment_intent_id',
                         'paid_at',
                         'delivered_at',
                         'ai_draft_response',
+                        'ai_payment_draft_response',
+                        'last_negotiation_email_body',
+                        'last_payment_email_body',
                         'internal_note',
                     ),
                     'description': (
-                        'Set quote/scope and save to issue a versioned Licence Offer + Stripe Payment Link. '
-                        'Any post-approval scope change creates a new offer version.'
+                        'Use explicit admin actions to request drafts, send negotiation emails, '
+                        'mark client confirmation, generate payment offers, and send payment emails.'
                     )
                 }),
                 ('Timestamps', {
@@ -497,8 +556,10 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                 obj.get_exclusivity_display() if obj.exclusivity else None
             ),
             "reach_caps": obj.reach_caps,
+            "quoted_price": str(obj.quoted_price) if obj.quoted_price is not None else None,
             "message": obj.message,
             "asset": str(obj.asset) if obj.asset else None,
+            "asset_label": str(obj.asset) if obj.asset else None,
             "asset_id": obj.object_id,
             "asset_type": obj.content_type.model if obj.content_type_id else None,
             "client_name": obj.client_name,
@@ -527,9 +588,53 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             # Do not block admin status updates if email transport fails.
             pass
 
+    def _is_locked_request(self, obj):
+        return obj.status in {'PAID', 'DELIVERED', 'EXPIRED', 'REVOKED'}
+
+    def _ensure_agreed_scope_snapshot(self, obj):
+        if obj.agreed_scope_snapshot:
+            return obj.agreed_scope_snapshot, False
+        snapshot = self._build_scope_snapshot(obj)
+        obj.agreed_scope_snapshot = snapshot
+        obj.save(update_fields=['agreed_scope_snapshot', 'updated_at'])
+        return snapshot, True
+
+    def _clear_payment_state(self, obj, *, clear_payment_draft=True):
+        obj.stripe_payment_link = None
+        obj.stripe_payment_link_id = None
+        obj.payment_email_sent_at = None
+        obj.last_payment_email_body = ""
+        update_fields = [
+            'stripe_payment_link',
+            'stripe_payment_link_id',
+            'payment_email_sent_at',
+            'last_payment_email_body',
+            'updated_at',
+        ]
+        if clear_payment_draft:
+            obj.ai_payment_draft_response = None
+            update_fields.append('ai_payment_draft_response')
+        return update_fields
+
+    def _supersede_active_offers(self, obj):
+        active_offers = list(
+            LicenceOffer.objects.filter(license_request=obj, status='ACTIVE')
+            .order_by('-version')
+        )
+        if not active_offers:
+            return 0
+        superseded_at = timezone.now()
+        for offer in active_offers:
+            offer.status = "SUPERSEDED"
+            offer.superseded_at = superseded_at
+        LicenceOffer.objects.bulk_update(active_offers, ['status', 'superseded_at'])
+        return len(active_offers)
+
     def _issue_new_offer(self, request, obj):
         if obj.quoted_price is None or obj.quoted_price <= 0:
             raise ValueError("Quoted price must be greater than zero.")
+        if not obj.client_confirmed_at:
+            raise ValueError("Client confirmation must be recorded before creating a payment offer.")
 
         amount_in_cents = int(
             (obj.quoted_price * Decimal('100')).quantize(
@@ -541,16 +646,12 @@ class LicenseRequestAdmin(admin.ModelAdmin):
         if amount_in_cents > 99_999_999:
             raise ValueError("Quoted price exceeds Stripe limit for EUR (max EUR 999,999.99).")
 
-        existing_active = (
-            LicenceOffer.objects
-            .filter(license_request=obj, status='ACTIVE')
-            .order_by('-version')
-            .first()
-        )
+        scope_snapshot, snapshot_backfilled = self._ensure_agreed_scope_snapshot(obj)
         next_version = (
             (LicenceOffer.objects.filter(license_request=obj).aggregate(max_v=Max("version"))["max_v"] or 0)
             + 1
         )
+        expires_at = build_offer_expires_at()
         idempotency_base = f"license-request-{obj.pk}-offer-v{next_version}-{amount_in_cents}"
         product_name = f"Commercial License Offer v{next_version}: {obj.asset} ({obj.get_project_type_display()})"
 
@@ -570,20 +671,18 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             metadata={
                 "license_request_id": str(obj.pk),
                 "offer_version": str(next_version),
+                "offer_expires_at": expires_at.isoformat(),
             },
             idempotency_key=f"{idempotency_base}-link"
         )
 
-        if existing_active:
-            existing_active.status = "SUPERSEDED"
-            existing_active.superseded_at = timezone.now()
-            existing_active.save(update_fields=["status", "superseded_at"])
+        self._supersede_active_offers(obj)
 
         offer = LicenceOffer.objects.create(
             license_request=obj,
             version=next_version,
             status='ACTIVE',
-            scope_snapshot=self._build_scope_snapshot(obj),
+            scope_snapshot=scope_snapshot,
             quoted_price=obj.quoted_price,
             currency="EUR",
             terms_version=getattr(settings, "LICENCE_TERMS_VERSION", "RM-1.0"),
@@ -593,9 +692,15 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             stripe_payment_link_id=payment_link.id,
             stripe_payment_link_url=payment_link.url,
             created_by=request.user if request.user.is_authenticated else None,
+            expires_at=expires_at,
         )
         obj.stripe_payment_link = payment_link.url
         obj.stripe_payment_link_id = payment_link.id
+        obj.ai_payment_draft_response = None
+        obj.payment_email_sent_at = None
+        obj.last_payment_email_body = ""
+        if snapshot_backfilled:
+            obj.agreed_scope_snapshot = scope_snapshot
         return offer
 
     def _save_model_with_retry(self, request, obj, form, change):
@@ -654,53 +759,378 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                 actor=request.user if request.user.is_authenticated else None,
             )
 
-        scope_fields = {
-            'project_type',
-            'permitted_media',
-            'territory',
-            'duration',
-            'reach_caps',
-            'exclusivity',
-            'message',
-            'quoted_price',
-        }
-        scope_changed = bool(scope_fields.intersection(set(form.changed_data)))
-        has_active_offer = LicenceOffer.objects.filter(
-            license_request=obj,
-            status='ACTIVE',
-        ).exists()
-        should_issue_offer = bool(obj.quoted_price) and (
-            not has_active_offer or scope_changed
-        )
+    @admin.action(description="Generate Negotiation Draft")
+    def generate_negotiation_draft(self, request, queryset):
+        updated = 0
+        for obj in queryset:
+            if self._is_locked_request(obj) or obj.status == 'PAYMENT_PENDING':
+                messages.warning(
+                    request,
+                    f"Request {obj.id} is already in or beyond payment fulfilment and cannot request a negotiation draft.",
+                )
+                continue
+            if obj.client_confirmed_at:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} already has client confirmation recorded. Reset confirmation before drafting a revised negotiation email.",
+                )
+                continue
+            if get_active_offer(obj):
+                messages.warning(
+                    request,
+                    f"Request {obj.id} already has an active payment offer. Generate a new payment email draft instead.",
+                )
+                continue
+            obj.ai_draft_response = None
+            obj.save(update_fields=['ai_draft_response', 'updated_at'])
+            obj.add_audit_note(
+                "Negotiation draft requested.",
+                actor=request.user if request.user.is_authenticated else None,
+                metadata={"draft_mode": "negotiation"},
+            )
+            updated += 1
+        self.message_user(request, f"{updated} request(s) queued for negotiation drafting.")
 
-        if should_issue_offer:
+    @admin.action(description="Send Negotiation Email")
+    def send_negotiation_email(self, request, queryset):
+        sent_count = 0
+        for obj in queryset:
+            if self._is_locked_request(obj) or obj.status == 'PAYMENT_PENDING':
+                messages.warning(
+                    request,
+                    f"Request {obj.id} is already in or beyond payment fulfilment and cannot send a negotiation email.",
+                )
+                continue
+            if obj.client_confirmed_at:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} already has client confirmation recorded. Use Reset Client Confirmation before sending a revised negotiation email.",
+                )
+                continue
+            if get_active_offer(obj):
+                messages.warning(
+                    request,
+                    f"Request {obj.id} already has an active payment offer. Send a payment email instead.",
+                )
+                continue
+            if not (obj.ai_draft_response or "").strip():
+                messages.warning(request, f"Request {obj.id} does not have a negotiation draft to send.")
+                continue
+            try:
+                body = send_licence_negotiation_email(obj)
+            except Exception as exc:
+                messages.error(request, f"Failed to send negotiation email for request {obj.id}: {exc}")
+                continue
+
+            now = timezone.now()
+            obj.negotiation_sent_at = now
+            obj.client_confirmed_at = None
+            obj.agreed_scope_snapshot = None
+            obj.last_negotiation_email_body = body
+            update_fields = [
+                'negotiation_sent_at',
+                'client_confirmed_at',
+                'agreed_scope_snapshot',
+                'last_negotiation_email_body',
+            ]
+            update_fields.extend(self._clear_payment_state(obj))
+            obj.save(
+                update_fields=update_fields
+            )
+            if obj.status != 'AWAITING_CLIENT_CONFIRMATION':
+                obj.transition_to(
+                    'AWAITING_CLIENT_CONFIRMATION',
+                    actor=request.user if request.user.is_authenticated else None,
+                    note="Negotiation email sent to client.",
+                    metadata={"action": "negotiation_email_sent", "email_type": "negotiation"},
+                )
+            else:
+                obj.add_audit_note(
+                    "Negotiation email sent to client.",
+                    actor=request.user if request.user.is_authenticated else None,
+                    metadata={"action": "negotiation_email_sent", "email_type": "negotiation"},
+                )
+            sent_count += 1
+        self.message_user(request, f"{sent_count} negotiation email(s) sent.")
+
+    @admin.action(description="Mark Client Confirmed")
+    def mark_client_confirmed(self, request, queryset):
+        changed = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot be marked confirmed.")
+                continue
+            if obj.status != 'AWAITING_CLIENT_CONFIRMATION':
+                messages.warning(
+                    request,
+                    f"Request {obj.id} must be in Awaiting Client Confirmation before client confirmation can be recorded.",
+                )
+                continue
+            if not obj.negotiation_sent_at:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} has not sent a negotiation email yet.",
+                )
+                continue
+            if obj.client_confirmed_at:
+                messages.info(request, f"Request {obj.id} is already marked confirmed.")
+                continue
+            obj.client_confirmed_at = timezone.now()
+            if not obj.agreed_scope_snapshot:
+                obj.agreed_scope_snapshot = self._build_scope_snapshot(obj)
+            obj.save(update_fields=['client_confirmed_at', 'agreed_scope_snapshot', 'updated_at'])
+            obj.add_audit_note(
+                "Client marked confirmed by admin and agreed scope frozen.",
+                actor=request.user if request.user.is_authenticated else None,
+                metadata={"action": "client_confirmed", "scope_frozen": True},
+            )
+            changed += 1
+        self.message_user(request, f"{changed} request(s) marked as client confirmed.")
+
+    @admin.action(description="Reset Client Confirmation")
+    def reset_client_confirmation(self, request, queryset):
+        reset_count = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot reset client confirmation.")
+                continue
+            if not obj.client_confirmed_at and not obj.agreed_scope_snapshot:
+                messages.info(request, f"Request {obj.id} does not have frozen client confirmation state to reset.")
+                continue
+
+            superseded_count = self._supersede_active_offers(obj)
+            obj.client_confirmed_at = None
+            obj.agreed_scope_snapshot = None
+            update_fields = [
+                'client_confirmed_at',
+                'agreed_scope_snapshot',
+            ]
+            update_fields.extend(self._clear_payment_state(obj))
+            obj.save(
+                update_fields=update_fields
+            )
+            if obj.status != 'APPROVED':
+                obj.transition_to(
+                    'APPROVED',
+                    actor=request.user if request.user.is_authenticated else None,
+                    note="Client confirmation reset; request returned to pre-confirmation review.",
+                    metadata={
+                        "action": "reset_client_confirmation",
+                        "superseded_offers": superseded_count,
+                    },
+                )
+            else:
+                obj.add_audit_note(
+                    "Client confirmation reset; request returned to pre-confirmation review.",
+                    actor=request.user if request.user.is_authenticated else None,
+                    metadata={
+                        "action": "reset_client_confirmation",
+                        "superseded_offers": superseded_count,
+                    },
+                )
+            reset_count += 1
+        self.message_user(request, f"{reset_count} request(s) reset to pre-confirmation review.")
+
+    @admin.action(description="Generate Payment Offer")
+    def generate_payment_offer(self, request, queryset):
+        created = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot generate a payment offer.")
+                continue
+            if not obj.client_confirmed_at:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} cannot generate a payment offer until client confirmation is recorded.",
+                )
+                continue
+            if obj.quoted_price is None or obj.quoted_price <= 0:
+                messages.warning(request, f"Request {obj.id} needs a positive quoted price before generating a payment offer.")
+                continue
+            current_offer = get_current_offer(obj)
+            if current_offer:
+                messages.info(request, f"Request {obj.id} already has an active payment offer for the current scope.")
+                continue
+            latest_offer = get_latest_offer(obj)
+            if latest_offer:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} already has offer history. Use Regenerate Payment Offer to issue a fresh version.",
+                )
+                continue
             try:
                 offer = self._issue_new_offer(request, obj)
-                obj.set_status_change_context(
+                obj.save(
+                    update_fields=[
+                        'stripe_payment_link',
+                        'stripe_payment_link_id',
+                        'ai_payment_draft_response',
+                        'payment_email_sent_at',
+                        'last_payment_email_body',
+                        'agreed_scope_snapshot',
+                        'updated_at',
+                    ]
+                )
+                obj.add_audit_note(
+                    f"Payment offer v{offer.version} created.",
                     actor=request.user if request.user.is_authenticated else None,
-                    note=f"Issued licence offer v{offer.version}.",
-                    metadata={"offer_version": offer.version},
+                    metadata={
+                        "action": "payment_offer_created",
+                        "offer_version": offer.version,
+                        "payment_link_id": offer.stripe_payment_link_id,
+                        "expires_at": offer.expires_at.isoformat() if offer.expires_at else None,
+                    },
                 )
-                if obj.status in {'DRAFT', 'SUBMITTED', 'NEEDS_INFO'}:
-                    obj.status = 'APPROVED'
-                    obj.save(update_fields=['status', 'updated_at'])
-                if obj.status != 'PAYMENT_PENDING':
-                    obj.transition_to(
-                        'PAYMENT_PENDING',
-                        actor=request.user if request.user.is_authenticated else None,
-                        note=f"Awaiting payment for offer v{offer.version}.",
-                        metadata={"offer_version": offer.version},
-                    )
-                obj.save(update_fields=['stripe_payment_link', 'stripe_payment_link_id', 'updated_at'])
-                send_licence_quote_email(obj)
-                messages.success(
+                created += 1
+            except stripe.error.StripeError as exc:
+                messages.error(request, f"Failed to issue Stripe offer for request {obj.id}: {exc.user_message or str(exc)}")
+            except Exception as exc:
+                messages.error(request, f"Failed to issue Stripe offer for request {obj.id}: {exc}")
+        self.message_user(request, f"{created} payment offer(s) created.")
+
+    @admin.action(description="Regenerate Payment Offer")
+    def regenerate_payment_offer(self, request, queryset):
+        regenerated = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot regenerate a payment offer.")
+                continue
+            if not obj.client_confirmed_at:
+                messages.warning(
                     request,
-                    f"Offer v{offer.version} issued and quote email sent to {obj.email}."
+                    f"Request {obj.id} cannot regenerate a payment offer until client confirmation is recorded.",
                 )
-            except stripe.error.StripeError as e:
-                messages.error(request, f"Failed to issue Stripe offer: {e.user_message or str(e)}")
-            except Exception as e:
-                messages.error(request, f"Failed to issue Stripe offer: {e}")
+                continue
+            if obj.quoted_price is None or obj.quoted_price <= 0:
+                messages.warning(request, f"Request {obj.id} needs a positive quoted price before regenerating a payment offer.")
+                continue
+            previous_offer = get_latest_offer(obj)
+            if not previous_offer:
+                messages.warning(
+                    request,
+                    f"Request {obj.id} does not have an existing offer to regenerate. Use Generate Payment Offer first.",
+                )
+                continue
+            try:
+                offer = self._issue_new_offer(request, obj)
+                obj.save(
+                    update_fields=[
+                        'stripe_payment_link',
+                        'stripe_payment_link_id',
+                        'ai_payment_draft_response',
+                        'payment_email_sent_at',
+                        'last_payment_email_body',
+                        'agreed_scope_snapshot',
+                        'updated_at',
+                    ]
+                )
+                obj.add_audit_note(
+                    f"Payment offer regenerated as v{offer.version}.",
+                    actor=request.user if request.user.is_authenticated else None,
+                    metadata={
+                        "action": "payment_offer_regenerated",
+                        "offer_version": offer.version,
+                        "previous_offer_version": previous_offer.version,
+                        "payment_link_id": offer.stripe_payment_link_id,
+                        "expires_at": offer.expires_at.isoformat() if offer.expires_at else None,
+                    },
+                )
+                regenerated += 1
+            except stripe.error.StripeError as exc:
+                messages.error(request, f"Failed to regenerate Stripe offer for request {obj.id}: {exc.user_message or str(exc)}")
+            except Exception as exc:
+                messages.error(request, f"Failed to regenerate Stripe offer for request {obj.id}: {exc}")
+        self.message_user(request, f"{regenerated} payment offer(s) regenerated.")
+
+    @admin.action(description="Generate Payment Email Draft")
+    def generate_payment_email_draft(self, request, queryset):
+        updated = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot request a payment email draft.")
+                continue
+            if not obj.client_confirmed_at and obj.status != 'PAYMENT_PENDING':
+                messages.warning(request, f"Request {obj.id} must be client-confirmed before generating a payment email draft.")
+                continue
+            offer = get_current_offer(obj)
+            if not offer or not offer.stripe_payment_link_url:
+                latest_offer = get_latest_offer(obj)
+                if latest_offer and latest_offer.is_expired:
+                    messages.warning(
+                        request,
+                        f"Request {obj.id} has an expired payment offer. Regenerate the offer before requesting a payment email draft.",
+                    )
+                else:
+                    messages.warning(request, f"Request {obj.id} does not have a valid current payment offer yet.")
+                continue
+            obj.ai_payment_draft_response = None
+            obj.save(update_fields=['ai_payment_draft_response', 'updated_at'])
+            obj.add_audit_note(
+                "Payment email draft requested.",
+                actor=request.user if request.user.is_authenticated else None,
+                metadata={
+                    "draft_mode": "payment_link",
+                    "offer_version": offer.version if offer else None,
+                    "expires_at": offer.expires_at.isoformat() if offer and offer.expires_at else None,
+                },
+            )
+            updated += 1
+        self.message_user(request, f"{updated} request(s) queued for payment email drafting.")
+
+    @admin.action(description="Send Payment Email")
+    def send_payment_email(self, request, queryset):
+        sent_count = 0
+        for obj in queryset:
+            if self._is_locked_request(obj):
+                messages.warning(request, f"Request {obj.id} is locked and cannot send a payment email.")
+                continue
+            if not obj.client_confirmed_at and obj.status != 'PAYMENT_PENDING':
+                messages.warning(request, f"Request {obj.id} must be client-confirmed before sending a payment email.")
+                continue
+            offer = get_current_offer(obj)
+            if not offer or not offer.stripe_payment_link_url:
+                latest_offer = get_latest_offer(obj)
+                if latest_offer and latest_offer.is_expired:
+                    messages.warning(
+                        request,
+                        f"Request {obj.id} has an expired payment offer. Regenerate the offer before sending a payment email.",
+                    )
+                else:
+                    messages.warning(request, f"Request {obj.id} does not have a valid current payment offer yet.")
+                continue
+            if not (obj.ai_payment_draft_response or "").strip():
+                messages.warning(request, f"Request {obj.id} does not have a payment email draft to send.")
+                continue
+            try:
+                body = send_licence_quote_email(obj)
+            except Exception as exc:
+                messages.error(request, f"Failed to send payment email for request {obj.id}: {exc}")
+                continue
+
+            obj.payment_email_sent_at = timezone.now()
+            obj.last_payment_email_body = body
+            obj.save(update_fields=['payment_email_sent_at', 'last_payment_email_body', 'updated_at'])
+            if obj.status != 'PAYMENT_PENDING':
+                obj.transition_to(
+                    'PAYMENT_PENDING',
+                    actor=request.user if request.user.is_authenticated else None,
+                    note=f"Payment email sent for offer v{offer.version if offer else 'legacy'}.",
+                    metadata={
+                        "action": "payment_email_sent",
+                        "offer_version": offer.version if offer else None,
+                    },
+                )
+            else:
+                obj.add_audit_note(
+                    "Payment email sent to client.",
+                    actor=request.user if request.user.is_authenticated else None,
+                    metadata={
+                        "action": "payment_email_sent",
+                        "offer_version": offer.version if offer else None,
+                    },
+                )
+            sent_count += 1
+        self.message_user(request, f"{sent_count} payment email(s) sent.")
 
     @admin.action(description="Request More Info")
     def mark_needs_info(self, request, queryset):
@@ -879,6 +1309,7 @@ class LicenceOfferAdmin(admin.ModelAdmin):
         'status',
         'quoted_price',
         'currency',
+        'expires_at',
         'stripe_payment_link_id',
         'paid_at',
         'created_at',
@@ -902,6 +1333,7 @@ class LicenceOfferAdmin(admin.ModelAdmin):
         'stripe_payment_intent_id',
         'created_by',
         'created_at',
+        'expires_at',
         'paid_at',
         'superseded_at',
     )
