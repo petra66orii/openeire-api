@@ -591,9 +591,6 @@ class LicenseRequestAdmin(admin.ModelAdmin):
     def _is_locked_request(self, obj):
         return obj.status in {'PAID', 'DELIVERED', 'EXPIRED', 'REVOKED'}
 
-    def _has_current_active_offer(self, obj):
-        return get_current_offer(obj) is not None
-
     def _ensure_agreed_scope_snapshot(self, obj):
         if obj.agreed_scope_snapshot:
             return obj.agreed_scope_snapshot, False
@@ -829,25 +826,16 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             obj.negotiation_sent_at = now
             obj.client_confirmed_at = None
             obj.agreed_scope_snapshot = None
-            obj.payment_email_sent_at = None
-            obj.ai_payment_draft_response = None
             obj.last_negotiation_email_body = body
-            obj.last_payment_email_body = ""
-            obj.stripe_payment_link = None
-            obj.stripe_payment_link_id = None
+            update_fields = [
+                'negotiation_sent_at',
+                'client_confirmed_at',
+                'agreed_scope_snapshot',
+                'last_negotiation_email_body',
+            ]
+            update_fields.extend(self._clear_payment_state(obj))
             obj.save(
-                update_fields=[
-                    'negotiation_sent_at',
-                    'client_confirmed_at',
-                    'agreed_scope_snapshot',
-                    'payment_email_sent_at',
-                    'ai_payment_draft_response',
-                    'last_negotiation_email_body',
-                    'last_payment_email_body',
-                    'stripe_payment_link',
-                    'stripe_payment_link_id',
-                    'updated_at',
-                ]
+                update_fields=update_fields
             )
             if obj.status != 'AWAITING_CLIENT_CONFIRMATION':
                 obj.transition_to(
@@ -913,22 +901,13 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             superseded_count = self._supersede_active_offers(obj)
             obj.client_confirmed_at = None
             obj.agreed_scope_snapshot = None
-            obj.payment_email_sent_at = None
-            obj.ai_payment_draft_response = None
-            obj.last_payment_email_body = ""
-            obj.stripe_payment_link = None
-            obj.stripe_payment_link_id = None
+            update_fields = [
+                'client_confirmed_at',
+                'agreed_scope_snapshot',
+            ]
+            update_fields.extend(self._clear_payment_state(obj))
             obj.save(
-                update_fields=[
-                    'client_confirmed_at',
-                    'agreed_scope_snapshot',
-                    'payment_email_sent_at',
-                    'ai_payment_draft_response',
-                    'last_payment_email_body',
-                    'stripe_payment_link',
-                    'stripe_payment_link_id',
-                    'updated_at',
-                ]
+                update_fields=update_fields
             )
             if obj.status != 'APPROVED':
                 obj.transition_to(

@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect
 from django.db import transaction
-from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField
+from django.db.models import Q, Exists, OuterRef, Min, Case, When, IntegerField, Prefetch
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import send_mail
 from django.conf import settings
@@ -24,6 +24,7 @@ from .models import (
     ProductReview,
     GalleryAccess,
     LicenseRequest,
+    LicenceOffer,
     LicenceDeliveryToken,
     PersonalDownloadToken,
 )
@@ -375,6 +376,12 @@ class AILicenseDraftQueueView(APIView):
             status__in=self.PAYMENT_DRAFT_STATUSES,
         ).filter(
             Q(client_confirmed_at__isnull=False) | Q(status='PAYMENT_PENDING')
+        ).prefetch_related(
+            Prefetch(
+                'offers',
+                queryset=LicenceOffer.objects.filter(status='ACTIVE').order_by('-version'),
+                to_attr='prefetched_active_offers',
+            )
         ).order_by('created_at')
         default_limit = getattr(settings, 'AI_WORKER_MAX_BATCH', 25)
         hard_max = getattr(settings, 'AI_WORKER_MAX_BATCH_HARD', 100)
@@ -413,21 +420,34 @@ class AILicenseDraftUpdateView(APIView):
         draft_text = serializer.validated_data["draft_text"]
         if draft_mode == "payment_link":
             allowed_statuses = ['AWAITING_CLIENT_CONFIRMATION', 'PAYMENT_PENDING']
-            req_obj = LicenseRequest.objects.filter(pk=pk).first()
             updated = 0
-            if req_obj and req_obj.status in allowed_statuses:
-                current_offer = get_current_offer(req_obj)
-                if (
-                    current_offer
-                    and current_offer.stripe_payment_link_url
-                    and (req_obj.client_confirmed_at or req_obj.status == 'PAYMENT_PENDING')
-                    and not (req_obj.ai_payment_draft_response or "").strip()
-                ):
-                    req_obj.ai_payment_draft_response = draft_text
-                    req_obj.save(update_fields=['ai_payment_draft_response', 'updated_at'])
-                    updated = 1
+            with transaction.atomic():
+                req_obj = (
+                    LicenseRequest.objects.select_for_update()
+                    .prefetch_related(
+                        Prefetch(
+                            'offers',
+                            queryset=LicenceOffer.objects.filter(status='ACTIVE').order_by('-version'),
+                            to_attr='prefetched_active_offers',
+                        )
+                    )
+                    .filter(pk=pk)
+                    .first()
+                )
+                if req_obj and req_obj.status in allowed_statuses:
+                    current_offer = get_current_offer(req_obj)
+                    if (
+                        current_offer
+                        and current_offer.stripe_payment_link_url
+                        and (req_obj.client_confirmed_at or req_obj.status == 'PAYMENT_PENDING')
+                        and not (req_obj.ai_payment_draft_response or "").strip()
+                    ):
+                        req_obj.ai_payment_draft_response = draft_text
+                        req_obj.save(update_fields=['ai_payment_draft_response', 'updated_at'])
+                        updated = 1
         else:
             allowed_statuses = ['SUBMITTED', 'NEEDS_INFO', 'APPROVED', 'AWAITING_CLIENT_CONFIRMATION']
+            now = timezone.now()
             with transaction.atomic():
                 updated = LicenseRequest.objects.filter(
                     pk=pk,
@@ -435,7 +455,7 @@ class AILicenseDraftUpdateView(APIView):
                     status__in=allowed_statuses
                 ).filter(
                     Q(ai_draft_response__isnull=True) | Q(ai_draft_response__exact="")
-                ).update(ai_draft_response=draft_text)
+                ).update(ai_draft_response=draft_text, updated_at=now)
 
         if updated == 1:
             return Response(

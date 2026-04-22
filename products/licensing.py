@@ -1,5 +1,6 @@
 import hashlib
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -38,7 +39,11 @@ def get_active_offer(license_request):
 
 
 def get_current_offer(license_request):
-    offer = get_active_offer(license_request)
+    prefetched_offers = getattr(license_request, "prefetched_active_offers", None)
+    if prefetched_offers is not None:
+        offer = prefetched_offers[0] if prefetched_offers else None
+    else:
+        offer = get_active_offer(license_request)
     if offer and offer.is_expired:
         return None
     return offer
@@ -67,10 +72,7 @@ def _scope_summary_lines(license_request, snapshot=None):
         ]
         quoted_price = snapshot.get('quoted_price')
         if quoted_price not in (None, ""):
-            try:
-                lines.append(f"- Quoted Fee: EUR {float(quoted_price):.2f}")
-            except (TypeError, ValueError):
-                lines.append(f"- Quoted Fee: EUR {quoted_price}")
+            lines.append(f"- Quoted Fee: EUR {_format_currency_value(quoted_price)}")
         return lines
 
     territory = (
@@ -98,8 +100,16 @@ def _scope_summary_lines(license_request, snapshot=None):
         f"- Reach Caps: {license_request.reach_caps or 'None'}",
     ]
     if license_request.quoted_price:
-        lines.append(f"- Quoted Fee: EUR {license_request.quoted_price:.2f}")
+        lines.append(f"- Quoted Fee: EUR {_format_currency_value(license_request.quoted_price)}")
     return lines
+
+
+def _format_currency_value(value):
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return str(value)
+    return f"{amount:.2f}"
 
 
 def _draft_text(value):
