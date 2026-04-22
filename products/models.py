@@ -533,8 +533,8 @@ class LicenseRequestAuditLog(models.Model):
         on_delete=models.CASCADE,
         related_name='audit_logs',
     )
-    from_status = models.CharField(max_length=20, blank=True, null=True)
-    to_status = models.CharField(max_length=20, blank=True, null=True)
+    from_status = models.CharField(max_length=32, blank=True, null=True)
+    to_status = models.CharField(max_length=32, blank=True, null=True)
     changed_by = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True)
     note = models.TextField(blank=True, default="")
     metadata = models.JSONField(default=dict, blank=True)
