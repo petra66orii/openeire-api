@@ -22,6 +22,7 @@ class NewsletterSignupView(generics.CreateAPIView):
     permission_classes = [AllowAny]
 
 class ContactFormView(APIView):
+    permission_classes = [AllowAny]
     def post(self, request):
         serializer = ContactFormSerializer(data=request.data)
         if serializer.is_valid():
