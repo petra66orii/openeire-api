@@ -2,30 +2,24 @@ import logging
 import secrets
 from django.conf import settings
 from rest_framework import permissions
-from .models import GalleryAccess
 
 logger = logging.getLogger(__name__)
 
 class IsDigitalGalleryAuthorized(permissions.BasePermission):
     """
-    Allows access only if a valid 'X-Gallery-Access-Token' header is present
-    and matches an active GalleryAccess record.
+    Allows access only to authenticated users whose account has active digital
+    gallery access.
     """
-    message = "Digital Gallery Access Required. Please request an access code."
+    message = "Digital gallery access is linked to your account. Please sign in and verify your access code."
 
     def has_permission(self, request, view):
-        # 1. Get the token from the header
-        token = request.headers.get('X-Gallery-Access-Token')
-        
-        if not token:
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
             return False
-
-        # 2. Check if the token exists and is valid
-        try:
-            access_record = GalleryAccess.objects.get(access_code=token)
-            return access_record.is_valid
-        except GalleryAccess.DoesNotExist:
+        profile = getattr(user, "userprofile", None)
+        if not profile:
             return False
+        return bool(profile.has_digital_gallery_access)
 
 
 class IsAIWorkerAuthorized(permissions.BasePermission):

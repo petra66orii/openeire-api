@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django_countries.fields import CountryField
+from django.utils import timezone
 
 class UserProfile(models.Model):
     """User Profile model for maintaining delivery information and order history"""
@@ -20,6 +21,12 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return self.user.username
+
+    @property
+    def has_digital_gallery_access(self):
+        if self.can_access_gallery:
+            return True
+        return self.user.gallery_access_grants.filter(expires_at__gt=timezone.now()).exists()
 
 @receiver(post_save, sender=User)
 def create_or_update_user_profile(sender, instance, created, **kwargs):

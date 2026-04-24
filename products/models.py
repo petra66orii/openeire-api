@@ -44,14 +44,29 @@ def normalize_email(value):
 class GalleryAccess(models.Model):
     """
     Stores temporary access codes for the Digital Gallery.
-    Codes are valid for 30 days.
+    Codes are valid for 30 days and can be linked to an authenticated user
+    account after verification.
     """
     email = models.EmailField()
     access_code = models.CharField(max_length=8, unique=True)
+    granted_user = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="gallery_access_grants",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()
 
     def save(self, *args, **kwargs):
+        normalized_email = normalize_email(self.email) or ""
+        update_fields = kwargs.get("update_fields")
+        email_changed = self.email != normalized_email
+        self.email = normalized_email
+        if email_changed and update_fields is not None and "email" not in update_fields:
+            kwargs["update_fields"] = set(update_fields) | {"email"}
         if not self.access_code:
             # Generate a readable 8-char code (e.g., A1B2C3D4)
             self.access_code = uuid.uuid4().hex[:8].upper()
@@ -59,6 +74,11 @@ class GalleryAccess(models.Model):
             # Set expiration to 30 days from now
             self.expires_at = timezone.now() + timedelta(days=30)
         super().save(*args, **kwargs)
+
+    def grant_to_user(self, user):
+        self.granted_user = user
+        self.verified_at = timezone.now()
+        self.save(update_fields=["granted_user", "verified_at"])
 
     @property
     def is_valid(self):

@@ -47,6 +47,7 @@ from .licensing import (
 from .uploads import build_object_key, sanitize_upload_filename
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class LicenseRequestTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -99,6 +100,22 @@ class LicenseRequestTests(APITestCase):
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path.write_bytes(content)
         return str(relative_path).replace("\\", "/")
+
+    def _create_gallery_user(self, *, email="gallery-user@example.com", username=None):
+        username = username or email.split("@")[0]
+        return User.objects.create_user(
+            username=username,
+            email=email,
+            password="testpass123",
+        )
+
+    def _grant_gallery_access(self, user, *, email=None, expires_at=None):
+        access = GalleryAccess.objects.create(
+            email=email or user.email,
+            expires_at=expires_at or (timezone.now() + timedelta(days=30)),
+        )
+        access.grant_to_user(user)
+        return access
 
     def _payload(self, asset_id=None, message=None, reach_caps=None):
         return {
@@ -227,6 +244,8 @@ class LicenseRequestTests(APITestCase):
         self.assertFalse(ProductVariant.objects.filter(photo=digital_only_photo).exists())
 
     def test_gallery_verify_endpoint_throttles(self):
+        user = self._create_gallery_user(email="verify-throttle@example.com")
+        self.client.force_authenticate(user=user)
         access = GalleryAccess.objects.create(email="verify-throttle@example.com")
         url = reverse("gallery_verify")
         limit = int(settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["gallery_access_verify"].split("/")[0])
@@ -239,6 +258,8 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(blocked.status_code, 429)
 
     def test_gallery_verify_invalid_and_expired_codes_return_same_response(self):
+        user = self._create_gallery_user(email="expired-code@example.com")
+        self.client.force_authenticate(user=user)
         expired = GalleryAccess.objects.create(
             email="expired-code@example.com",
             expires_at=timezone.now() - timedelta(minutes=1),
@@ -262,6 +283,81 @@ class LicenseRequestTests(APITestCase):
             invalid_response.json(),
             {"error": "Invalid or expired code"},
         )
+
+    def test_gallery_verify_requires_authenticated_user(self):
+        access = GalleryAccess.objects.create(email="needs-login@example.com")
+
+        response = self.client.post(
+            reverse("gallery_verify"),
+            {"access_code": access.access_code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_gallery_verify_grants_access_to_matching_authenticated_account(self):
+        user = self._create_gallery_user(email="match@example.com")
+        access = GalleryAccess.objects.create(email="match@example.com")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            reverse("gallery_verify"),
+            {"access_code": access.access_code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        access.refresh_from_db()
+        self.assertEqual(access.granted_user, user)
+        self.assertIsNotNone(access.verified_at)
+        self.assertTrue(user.userprofile.has_digital_gallery_access)
+
+    def test_gallery_verify_rejects_code_for_different_account_email(self):
+        user = self._create_gallery_user(email="signed-in@example.com")
+        access = GalleryAccess.objects.create(email="other@example.com")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            reverse("gallery_verify"),
+            {"access_code": access.access_code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json(),
+            {"error": "This access code belongs to a different email address than your signed-in account."},
+        )
+        access.refresh_from_db()
+        self.assertIsNone(access.granted_user)
+
+    def test_gallery_verify_accepts_legacy_mixed_case_access_email(self):
+        user = self._create_gallery_user(email="legacy@example.com")
+        access = GalleryAccess.objects.create(email="legacy@example.com")
+        GalleryAccess.objects.filter(pk=access.pk).update(email=" Legacy@Example.com ")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            reverse("gallery_verify"),
+            {"access_code": access.access_code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        access.refresh_from_db()
+        self.assertEqual(access.granted_user, user)
+
+    def test_gallery_grant_to_user_persists_email_normalization_when_record_is_dirty(self):
+        user = self._create_gallery_user(email="grant@example.com")
+        access = GalleryAccess.objects.create(email="grant@example.com")
+        access.email = " Grant@Example.com "
+
+        access.grant_to_user(user)
+
+        access.refresh_from_db()
+        self.assertEqual(access.email, "grant@example.com")
+        self.assertEqual(access.granted_user, user)
+        self.assertIsNotNone(access.verified_at)
 
     def test_bag_recommendations_returns_up_to_four_active_photos(self):
         for _ in range(5):
@@ -1538,9 +1634,11 @@ class LicenseRequestTests(APITestCase):
         self.assertNotIn("price_4k", response.data)
 
     def test_digital_photo_page_exposes_personal_and_commercial_flows(self):
-        access = GalleryAccess.objects.create(email="gated@example.com")
+        user = self._create_gallery_user(email="gated@example.com")
+        self._grant_gallery_access(user)
+        self.client.force_authenticate(user=user)
         url = reverse("photo_detail", args=[self.photo.id])
-        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+        response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["product_type"], "photo")
@@ -1553,9 +1651,11 @@ class LicenseRequestTests(APITestCase):
 
     def test_video_detail_does_not_expose_video_file(self):
         video = self._create_video(is_active=True)
-        access = GalleryAccess.objects.create(email="video-gated@example.com")
+        user = self._create_gallery_user(email="video-gated@example.com")
+        self._grant_gallery_access(user)
+        self.client.force_authenticate(user=user)
         url = reverse("video_detail", args=[video.id])
-        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+        response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["product_type"], "video")
@@ -1566,10 +1666,12 @@ class LicenseRequestTests(APITestCase):
         video = self._create_video(is_active=True)
         video.preview_video_key = "previews/videos/test-preview.mp4"
         video.save(update_fields=["preview_video_key"])
-        access = GalleryAccess.objects.create(email="video-preview@example.com")
+        user = self._create_gallery_user(email="video-preview@example.com")
+        self._grant_gallery_access(user)
+        self.client.force_authenticate(user=user)
         url = reverse("video_detail", args=[video.id])
 
-        response = self.client.get(url, HTTP_X_GALLERY_ACCESS_TOKEN=access.access_code)
+        response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("preview_video_url", response.data)
@@ -1578,6 +1680,49 @@ class LicenseRequestTests(APITestCase):
                 "/media/previews/videos/test-preview.mp4"
             )
         )
+
+    def test_authenticated_user_without_gallery_access_cannot_access_digital_gallery(self):
+        user = self._create_gallery_user(email="no-gallery@example.com")
+        self.client.force_authenticate(user=user)
+
+        gallery_response = self.client.get(reverse("gallery_list"), {"type": "digital"})
+        photo_response = self.client.get(reverse("photo_detail", args=[self.photo.id]))
+
+        self.assertEqual(gallery_response.status_code, 403)
+        self.assertEqual(photo_response.status_code, 403)
+
+    def test_approved_user_can_access_digital_gallery_listing(self):
+        user = self._create_gallery_user(email="approved-gallery@example.com")
+        self._grant_gallery_access(user)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get(reverse("gallery_list"), {"type": "digital"})
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_different_authenticated_user_does_not_inherit_other_accounts_gallery_access(self):
+        approved_user = self._create_gallery_user(email="approved@example.com")
+        other_user = self._create_gallery_user(email="other-user@example.com")
+        self._grant_gallery_access(approved_user)
+        photo_url = reverse("photo_detail", args=[self.photo.id])
+
+        self.client.force_authenticate(user=approved_user)
+        approved_response = self.client.get(photo_url)
+        self.assertEqual(approved_response.status_code, 200)
+
+        self.client.force_authenticate(user=other_user)
+        other_response = self.client.get(photo_url)
+        self.assertEqual(other_response.status_code, 403)
+
+    def test_anonymous_user_cannot_access_protected_digital_endpoints(self):
+        gallery_response = self.client.get(reverse("gallery_list"), {"type": "digital"})
+        photo_response = self.client.get(reverse("photo_detail", args=[self.photo.id]))
+        video = self._create_video(is_active=True)
+        video_response = self.client.get(reverse("video_detail", args=[video.id]))
+
+        self.assertEqual(gallery_response.status_code, 403)
+        self.assertEqual(photo_response.status_code, 401)
+        self.assertEqual(video_response.status_code, 401)
 
     @patch("products.views.generate_r2_presigned_url", return_value=None)
     def test_secure_video_download_supports_existing_r2_object_key(self, _mock_presigned_url):

@@ -78,6 +78,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     last_name = serializers.CharField(source='user.last_name')
     email = serializers.EmailField(source='user.email')
     is_staff = serializers.BooleanField(source='user.is_staff', read_only=True)
+    can_access_gallery = serializers.SerializerMethodField()
     
     # Use the special serializer field for the country
     country = CountryField(source='default_country', name_only=True)
@@ -99,6 +100,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'country',
             'can_access_gallery',
         )
+
+    def get_can_access_gallery(self, obj):
+        return obj.has_digital_gallery_access
 
     def update(self, instance, validated_data):
         """
