@@ -27,6 +27,7 @@ from .models import (
     LicenceOffer,
     LicenceDeliveryToken,
     PersonalDownloadToken,
+    normalize_email,
 )
 from .licensing import (
     get_current_offer,
@@ -107,7 +108,7 @@ class RequestGalleryAccessView(APIView):
     throttle_scope = 'gallery_access_request'
 
     def post(self, request):
-        email = request.data.get('email')
+        email = normalize_email(request.data.get('email'))
         if not email:
             return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -131,21 +132,33 @@ class RequestGalleryAccessView(APIView):
         return Response({"message": "Code sent"}, status=status.HTTP_200_OK)
 
 class VerifyGalleryAccessView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = 'gallery_access_verify'
 
     def post(self, request):
         code = request.data.get('access_code', '').upper().strip()
+        user_email = normalize_email(getattr(request.user, "email", ""))
+        if not user_email:
+            return Response(
+                {"error": "Your account must have a verified email address to unlock the digital gallery."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             access_record = GalleryAccess.objects.get(access_code=code)
-            if access_record.is_valid:
-                return Response({
-                    "message": "Access granted", 
-                    "expires_at": access_record.expires_at,
-                    "valid": True
-                })
-            return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
+            if not access_record.is_valid:
+                return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
+            if access_record.email != user_email:
+                return Response(
+                    {"error": "This access code belongs to a different email address than your signed-in account."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            access_record.grant_to_user(request.user)
+            return Response({
+                "message": "Access granted",
+                "expires_at": access_record.expires_at,
+                "valid": True
+            })
         except GalleryAccess.DoesNotExist:
             return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
 
