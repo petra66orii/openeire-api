@@ -61,7 +61,12 @@ class GalleryAccess(models.Model):
     expires_at = models.DateTimeField()
 
     def save(self, *args, **kwargs):
-        self.email = normalize_email(self.email) or ""
+        normalized_email = normalize_email(self.email) or ""
+        update_fields = kwargs.get("update_fields")
+        email_changed = self.email != normalized_email
+        self.email = normalized_email
+        if email_changed and update_fields is not None and "email" not in update_fields:
+            kwargs["update_fields"] = set(update_fields) | {"email"}
         if not self.access_code:
             # Generate a readable 8-char code (e.g., A1B2C3D4)
             self.access_code = uuid.uuid4().hex[:8].upper()

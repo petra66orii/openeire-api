@@ -148,7 +148,7 @@ class VerifyGalleryAccessView(APIView):
             access_record = GalleryAccess.objects.get(access_code=code)
             if not access_record.is_valid:
                 return Response({"error": "Invalid or expired code"}, status=status.HTTP_403_FORBIDDEN)
-            if access_record.email != user_email:
+            if normalize_email(access_record.email) != user_email:
                 return Response(
                     {"error": "This access code belongs to a different email address than your signed-in account."},
                     status=status.HTTP_403_FORBIDDEN,

@@ -331,6 +331,34 @@ class LicenseRequestTests(APITestCase):
         access.refresh_from_db()
         self.assertIsNone(access.granted_user)
 
+    def test_gallery_verify_accepts_legacy_mixed_case_access_email(self):
+        user = self._create_gallery_user(email="legacy@example.com")
+        access = GalleryAccess.objects.create(email="legacy@example.com")
+        GalleryAccess.objects.filter(pk=access.pk).update(email=" Legacy@Example.com ")
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            reverse("gallery_verify"),
+            {"access_code": access.access_code},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        access.refresh_from_db()
+        self.assertEqual(access.granted_user, user)
+
+    def test_gallery_grant_to_user_persists_email_normalization_when_record_is_dirty(self):
+        user = self._create_gallery_user(email="grant@example.com")
+        access = GalleryAccess.objects.create(email="grant@example.com")
+        access.email = " Grant@Example.com "
+
+        access.grant_to_user(user)
+
+        access.refresh_from_db()
+        self.assertEqual(access.email, "grant@example.com")
+        self.assertEqual(access.granted_user, user)
+        self.assertIsNotNone(access.verified_at)
+
     def test_bag_recommendations_returns_up_to_four_active_photos(self):
         for _ in range(5):
             self._create_photo(is_active=True)
