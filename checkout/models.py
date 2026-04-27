@@ -10,6 +10,11 @@ from django.contrib.contenttypes.models import ContentType
 from django_countries.fields import CountryField
 
 class Order(models.Model):
+    CONFIRMATION_EMAIL_STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('SENT', 'Sent'),
+        ('FAILED', 'Failed'),
+    ]
 
     SHIPPING_METHOD_CHOICES = [
         ('budget', 'Budget'),
@@ -53,6 +58,14 @@ class Order(models.Model):
     prodigi_last_callback_at = models.DateTimeField(null=True, blank=True)
     tracking_email_sent_at = models.DateTimeField(null=True, blank=True)
     tracking_email_signature = models.CharField(max_length=64, null=True, blank=True)
+    confirmation_email_status = models.CharField(
+        max_length=20,
+        choices=CONFIRMATION_EMAIL_STATUS_CHOICES,
+        default='PENDING',
+    )
+    confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
+    confirmation_email_failed_at = models.DateTimeField(null=True, blank=True)
+    confirmation_email_error = models.TextField(blank=True, default="")
 
     def _generate_order_number(self):
         """

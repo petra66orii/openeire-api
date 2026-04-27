@@ -44,6 +44,7 @@ from .licensing import (
     send_licence_negotiation_email,
     send_licence_quote_email,
 )
+from .personal_downloads import ensure_personal_download_token
 from .uploads import build_object_key, sanitize_upload_filename
 
 
@@ -1532,7 +1533,7 @@ class LicenseRequestTests(APITestCase):
         self.assertIsNone(token.used_at)
 
     @patch("products.views.generate_r2_presigned_url", return_value=None)
-    def test_personal_download_token_streams_asset_and_remains_valid_until_expiry(self, _mock_presigned_url):
+    def test_personal_download_token_streams_asset_once(self, _mock_presigned_url):
         user = User.objects.create_user(
             username="personaltokendownload",
             email="personaltokendownload@example.com",
@@ -1567,11 +1568,10 @@ class LicenseRequestTests(APITestCase):
 
         second_response = self.client.get(url)
 
-        self.assertEqual(second_response.status_code, 200)
-        self.assertIn("attachment;", second_response["Content-Disposition"])
+        self.assertEqual(second_response.status_code, 404)
 
     @patch("products.views.generate_r2_presigned_url")
-    def test_personal_download_token_redirects_to_presigned_r2_url_until_expiry(
+    def test_personal_download_token_redirects_to_presigned_r2_url_once(
         self, mock_presigned_url
     ):
         mock_presigned_url.return_value = "https://r2.example.com/private-download"
@@ -1610,8 +1610,100 @@ class LicenseRequestTests(APITestCase):
 
         second_response = self.client.get(url)
 
-        self.assertEqual(second_response.status_code, 302)
-        self.assertEqual(second_response["Location"], "https://r2.example.com/private-download")
+        self.assertEqual(second_response.status_code, 404)
+
+    def test_personal_download_token_fails_when_expired(self):
+        user = User.objects.create_user(
+            username="personaltokenexpired",
+            email="personaltokenexpired@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_expired",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        response = self.client.get(reverse("personal-asset-download", args=[str(token.token)]))
+
+        self.assertEqual(response.status_code, 404)
+        token.refresh_from_db()
+        self.assertIsNone(token.used_at)
+
+    def test_used_personal_download_token_is_not_reused_for_fresh_links(self):
+        user = User.objects.create_user(
+            username="personaltokenfresh",
+            email="personaltokenfresh@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_fresh_token",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        used_token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+            used_at=timezone.now(),
+        )
+
+        fresh_token = ensure_personal_download_token(order_item)
+
+        self.assertNotEqual(fresh_token.pk, used_token.pk)
+        self.assertIsNone(fresh_token.used_at)
+        self.assertGreater(fresh_token.expires_at, timezone.now())
+
+    @patch("products.views.generate_r2_presigned_url", return_value=None)
+    def test_license_delivery_token_is_one_time_for_anonymous_downloads(self, _mock_presigned_url):
+        req = LicenseRequest.objects.create(
+            content_type=ContentType.objects.get_for_model(self.photo),
+            object_id=self.photo.id,
+            client_name="One Time Client",
+            company="Download Co",
+            email="one-time-license@example.com",
+            project_type="COMMERCIAL",
+            duration="1_YEAR",
+            message="Need a licence",
+            status="DELIVERED",
+        )
+        token = LicenceDeliveryToken.objects.create(
+            license_request=req,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        url = reverse("license-asset-download", args=[str(token.token)])
+
+        first_response = self.client.get(url)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertIn("attachment;", first_response["Content-Disposition"])
+        token.refresh_from_db()
+        self.assertIsNotNone(token.used_at)
+
+        second_response = self.client.get(url)
+
+        self.assertEqual(second_response.status_code, 404)
 
     def test_physical_product_page_uses_physical_purchase_flow(self):
         self.photo.is_printable = True

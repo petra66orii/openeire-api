@@ -1,17 +1,70 @@
 import logging
 import os
+import ipaddress
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse
 
 logger = logging.getLogger(__name__)
 
 
+def _is_non_public_prodigi_asset_url(url: str) -> bool:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return True
+
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return True
+
+    hostname = str(parsed.hostname or "").strip().lower()
+    if not hostname:
+        return True
+    if hostname == "localhost" or hostname.endswith(".local"):
+        return True
+
+    try:
+        ip_address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+
+    return (
+        ip_address.is_private
+        or ip_address.is_loopback
+        or ip_address.is_link_local
+        or ip_address.is_multicast
+        or ip_address.is_reserved
+        or ip_address.is_unspecified
+    )
+
+
+def _parse_prodigi_sandbox(raw_value: Optional[str]) -> bool:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise ImproperlyConfigured(
+        "PRODIGI_SANDBOX must be explicitly set to true or false."
+    )
+
+
 def _prodigi_base_url() -> str:
-    is_sandbox = os.environ.get("PRODIGI_SANDBOX", "True") == "True"
+    raw_prodigi_sandbox = os.environ.get("PRODIGI_SANDBOX")
+    if raw_prodigi_sandbox is None:
+        if getattr(settings, "DEBUG", False) or getattr(settings, "IS_TEST_ENV", False):
+            is_sandbox = True
+        else:
+            raise ImproperlyConfigured(
+                "PRODIGI_SANDBOX must be set explicitly when DEBUG is False."
+            )
+    else:
+        is_sandbox = _parse_prodigi_sandbox(raw_prodigi_sandbox)
     return "https://api.sandbox.prodigi.com/v4.0/" if is_sandbox else "https://api.prodigi.com/v4.0/"
 
 
@@ -189,15 +242,14 @@ def create_prodigi_order(order):
             try:
                 image_url = _get_prodigi_asset_url(product, site_url=site_url)
 
-                if "127.0.0.1" in image_url or "localhost" in image_url:
+                if _is_non_public_prodigi_asset_url(image_url):
                     logger.warning(
-                        "Prodigi cannot access localhost asset URL; using placeholder image "
+                        "Prodigi cannot access non-public asset URL; rejecting fulfillment "
                         "(order=%s, sku=%s)",
                         order.order_number,
                         product.prodigi_sku,
                     )
-                    # Public placeholder image only for local validation/testing paths.
-                    image_url = "https://images.unsplash.com/photo-1506744626753-1fa28f67c9bf?w=2400&q=80"
+                    raise RuntimeError("Prodigi fulfillment asset URL is not publicly reachable.")
 
                 item_payload = {
                     "sku": product.prodigi_sku,

@@ -1,9 +1,11 @@
 from urllib.parse import urljoin
 
 from django.conf import settings
+from django.db import transaction
 from rest_framework import serializers
 from .models import Order, OrderItem
 from products.models import Photo, Video, ProductVariant
+from products.file_access import asset_file_exists
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_url, get_personal_terms_version
 from django.contrib.contenttypes.models import ContentType
@@ -97,6 +99,10 @@ class OrderSerializer(serializers.ModelSerializer):
                         photo__is_active=True,
                         photo__is_printable=True,
                     )
+                elif product_type_str == 'photo':
+                    product_instance = model_class.objects.get(id=product_id, is_active=True)
+                elif product_type_str == 'video':
+                    product_instance = model_class.objects.get(id=product_id, is_active=True)
                 else:
                     product_instance = model_class.objects.get(id=product_id)
                 
@@ -109,6 +115,14 @@ class OrderSerializer(serializers.ModelSerializer):
                 
                 elif product_type_str in ['photo', 'video']:
                     # Digital items have NO shipping cost and now use one price.
+                    if not asset_file_exists(product_instance):
+                        raise serializers.ValidationError(
+                            {
+                                "items": (
+                                    f"Digital product {product_id} is unavailable for delivery."
+                                )
+                            }
+                        )
                     has_consumer_digital_item = True
                     price = product_instance.price
 
@@ -135,28 +149,29 @@ class OrderSerializer(serializers.ModelSerializer):
                     )
                 continue
 
-        order = Order.objects.create(user_profile=user_profile, **validated_data)
-        OrderItem.objects.bulk_create(
-            [
-                OrderItem(order=order, **item_kwargs)
-                for item_kwargs in order_items_to_create
-            ]
-        )
-
         shipping_quote = calculate_physical_shipping_quote(
             line_items=physical_line_items,
             shipping_country=shipping_country,
             shipping_method=shipping_method,
         )
         calculated_delivery_cost = shipping_quote.delivery_cost
-        
-        # 3. Save the calculated values to the order
-        order.order_total = order_total
-        order.delivery_cost = calculated_delivery_cost # Update the field
-        order.total_price = order.order_total + order.delivery_cost
-        if has_consumer_digital_item:
-            order.personal_terms_version = get_personal_terms_version()
-        order.save()
+
+        with transaction.atomic():
+            order = Order.objects.create(user_profile=user_profile, **validated_data)
+            OrderItem.objects.bulk_create(
+                [
+                    OrderItem(order=order, **item_kwargs)
+                    for item_kwargs in order_items_to_create
+                ]
+            )
+
+            # 3. Save the calculated values to the order
+            order.order_total = order_total
+            order.delivery_cost = calculated_delivery_cost # Update the field
+            order.total_price = order.order_total + order.delivery_cost
+            if has_consumer_digital_item:
+                order.personal_terms_version = get_personal_terms_version()
+            order.save()
 
         return order
 
@@ -193,6 +208,18 @@ class OrderSerializer(serializers.ModelSerializer):
                 if not isinstance(options, dict):
                     raise serializers.ValidationError(
                         {"items": f"Invalid options payload for {p_type} item."}
+                    )
+                product_id = item.get('product_id')
+                model_class = Photo if p_type == 'photo' else Video
+                try:
+                    product = model_class.objects.get(id=product_id, is_active=True)
+                except model_class.DoesNotExist:
+                    raise serializers.ValidationError(
+                        {"items": f"Digital product {product_id} is no longer available for sale."}
+                    )
+                if not asset_file_exists(product):
+                    raise serializers.ValidationError(
+                        {"items": f"Digital product {product_id} is unavailable for delivery."}
                     )
 
         return data

@@ -1,6 +1,7 @@
 import logging
 import secrets
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
@@ -40,7 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 def get_frontend_url():
-    return str(getattr(settings, "FRONTEND_URL", "http://localhost:5173")).rstrip("/")
+    frontend_url = getattr(settings, "FRONTEND_URL", None)
+    if frontend_url:
+        return str(frontend_url).rstrip("/")
+    if getattr(settings, "DEBUG", False) or getattr(settings, "IS_TEST_ENV", False):
+        return "http://localhost:5173"
+    raise ImproperlyConfigured("FRONTEND_URL must be configured when DEBUG is False.")
 
 
 def _token_minutes(setting_name, default_value):
@@ -455,7 +461,7 @@ class ChangeEmailView(generics.UpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         self.object = self.get_object()
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(instance=self.object, data=request.data)
 
         if serializer.is_valid(raise_exception=True):
             # The serializer's .update() method saves the new email and sets user inactive

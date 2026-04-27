@@ -4,17 +4,16 @@ import logging
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
-from django.core.mail import EmailMessage
 from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
-from django.template.loader import render_to_string
 from django.urls import reverse
 from urllib.parse import urljoin
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.parsers import JSONParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
@@ -31,8 +30,7 @@ from products.licensing import (
     ensure_delivery_token,
     send_licence_delivery_email,
 )
-from products.file_access import get_asset_file_name
-from products.file_access import open_asset_file
+from products.file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
@@ -41,7 +39,12 @@ from .serializers import OrderSerializer, OrderHistoryListSerializer
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, fetch_prodigi_order
 from .order_claiming import claim_guest_orders_for_user
-from .shipping import calculate_physical_shipping_quote, get_free_shipping_threshold
+from .emails import send_order_confirmation_email
+from .shipping import (
+    ShippingConfigurationError,
+    calculate_physical_shipping_quote,
+    get_free_shipping_threshold,
+)
 from .tracking import (
     build_tracking_signature,
     send_tracking_email,
@@ -184,11 +187,23 @@ class CreatePaymentIntentView(APIView):
                         photo__is_active=True,
                         photo__is_printable=True,
                     )
+                elif product_type == 'photo':
+                    product_instance = model_class.objects.get(id=product_id, is_active=True)
+                elif product_type == 'video':
+                    product_instance = model_class.objects.get(id=product_id, is_active=True)
                 else:
                     product_instance = model_class.objects.get(id=product_id)
                 
                 # Digital items use a single price; physical variants use their own price.
                 if product_type in ['photo', 'video']:
+                    if not asset_file_exists(product_instance):
+                        return Response(
+                            {
+                                "code": "DIGITAL_ASSET_UNAVAILABLE",
+                                "error": f"Digital product {product_id} is unavailable for delivery.",
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                     options = item.get('options') or {}
                     if not isinstance(options, dict):
                         return Response(
@@ -221,11 +236,27 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        shipping_quote = calculate_physical_shipping_quote(
-            line_items=physical_line_items,
-            shipping_country=shipping_country,
-            shipping_method=shipping_method,
-        )
+        try:
+            shipping_quote = calculate_physical_shipping_quote(
+                line_items=physical_line_items,
+                shipping_country=shipping_country,
+                shipping_method=shipping_method,
+            )
+        except ShippingConfigurationError as exc:
+            logger.warning(
+                "CreatePaymentIntentView blocked checkout because shipping configuration was missing "
+                "(country=%s, method=%s, cart_items=%s)",
+                shipping_country,
+                shipping_method,
+                len(physical_line_items),
+            )
+            return Response(
+                {
+                    "code": "SHIPPING_UNAVAILABLE",
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         shipping_cost = shipping_quote.delivery_cost
         grand_total = total + shipping_cost
         amount_in_cents = int(
@@ -306,44 +337,8 @@ class StripeWebhookView(APIView):
             return ", ".join(fields) if fields else "unknown"
         return "unknown"
 
-    def _send_confirmation_email(self, order, request=None):
-        """Send the user a confirmation email"""
-        cust_email = order.email
-        personal_download_items = []
-        for item in order.items.all():
-            if item.content_type.model not in {"photo", "video"}:
-                continue
-            token_obj = ensure_personal_download_token(item)
-            personal_download_items.append(
-                {
-                    "title": getattr(item.product, "title", f"Digital item {item.object_id}"),
-                    "download_url": self._build_personal_download_url(request, token_obj),
-                }
-            )
-        context = {
-            'order': order,
-            'contact_email': settings.DEFAULT_FROM_EMAIL,
-            'personal_terms_url': get_personal_licence_url(request=request),
-            'personal_terms_summary': get_personal_licence_summary(),
-            'personal_download_items': personal_download_items,
-            'profile_url': self._build_profile_url(),
-        }
-        subject = render_to_string(
-            'checkout/confirmation_emails/confirmation_email_subject.txt',
-            context,
-        )
-        body = render_to_string(
-            'checkout/confirmation_emails/confirmation_email_body.txt',
-            context,
-        )
-        
-        email = EmailMessage(
-            subject=subject.strip(),
-            body=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[cust_email],
-        )
-        email.send(fail_silently=False)
+    def _order_has_physical_items(self, order):
+        return order.items.filter(content_type__model='productvariant').exists()
 
     def _extract_payment_link_id(self, session):
         return session.get('payment_link') or session.get('metadata', {}).get('payment_link_id')
@@ -368,6 +363,32 @@ class StripeWebhookView(APIView):
             return urljoin(str(frontend_url).rstrip("/") + "/", "profile")
         logger.warning("FRONTEND_URL is not configured; omitting profile link from confirmation email")
         return None
+
+    def _mark_confirmation_email_sent(self, order):
+        order.confirmation_email_status = 'SENT'
+        order.confirmation_email_sent_at = timezone.now()
+        order.confirmation_email_failed_at = None
+        order.confirmation_email_error = ""
+        order.save(
+            update_fields=[
+                'confirmation_email_status',
+                'confirmation_email_sent_at',
+                'confirmation_email_failed_at',
+                'confirmation_email_error',
+            ]
+        )
+
+    def _mark_confirmation_email_failed(self, order, exc):
+        order.confirmation_email_status = 'FAILED'
+        order.confirmation_email_failed_at = timezone.now()
+        order.confirmation_email_error = f"{exc.__class__.__name__}: {exc}"
+        order.save(
+            update_fields=[
+                'confirmation_email_status',
+                'confirmation_email_failed_at',
+                'confirmation_email_error',
+            ]
+        )
 
     def _handle_license_payment(self, request, session):
         payment_link_id = self._extract_payment_link_id(session)
@@ -583,6 +604,7 @@ class StripeWebhookView(APIView):
             return Response(status=status.HTTP_200_OK)
 
         processing_error = None
+        retryable_processing_error = False
 
         try:
             if event_type == 'payment_intent.succeeded':
@@ -677,64 +699,83 @@ class StripeWebhookView(APIView):
                         profile.default_country = address_details.get('country', profile.default_country)
                         profile.save()
 
-                # 5. Validate and Save
-                serializer = OrderSerializer(data=order_data)
-                if serializer.is_valid():
-                    order = serializer.save()
-                    logger.info("Order created successfully. order_number=%s", order.order_number)
+                existing_order = Order.objects.filter(
+                    stripe_pid=payment_intent.get('id', '')
+                ).first()
+                order = existing_order
 
+                if order is None:
+                    serializer = OrderSerializer(data=order_data)
+                    if serializer.is_valid():
+                        order = serializer.save()
+                        logger.info("Order created successfully. order_number=%s", order.order_number)
+                    else:
+                        error_fields = self._summarize_validation_errors(serializer.errors)
+                        logger.error("Error creating order. Validation fields: %s", error_fields)
+                        processing_error = f"Order validation failed. Fields: {error_fields}"
+                else:
+                    logger.info(
+                        "Reusing existing order for Stripe retry. order_number=%s stripe_pid=%s",
+                        order.order_number,
+                        order.stripe_pid,
+                    )
+
+                if order and not processing_error:
+                    if order.confirmation_email_status != 'SENT':
+                        try:
+                            send_order_confirmation_email(order, request=request)
+                            self._mark_confirmation_email_sent(order)
+                            logger.info("Confirmation email sent. order_number=%s", order.order_number)
+                        except Exception as exc:
+                            self._mark_confirmation_email_failed(order, exc)
+                            logger.exception(
+                                "Could not send confirmation email. order_number=%s",
+                                order.order_number,
+                            )
                     try:
-                        self._send_confirmation_email(order, request=request)
-                        logger.info("Confirmation email sent. order_number=%s", order.order_number)
-                    except Exception:
-                        logger.exception(
-                            "Could not send confirmation email. order_number=%s",
-                            order.order_number,
-                        )
-                    
-                    try:
-                        has_physical_items = False
-                        for item in order.items.all():
-                            if item.content_type.model == 'productvariant':
-                                has_physical_items = True
-                                break
-                        
-                        if has_physical_items:
-                            # Only contact Prodigi if we actually have prints
-                            logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
-                            prodigi_response = create_prodigi_order(order)
-                            if isinstance(prodigi_response, dict):
-                                prodigi_order = prodigi_response.get("order")
-                                if isinstance(prodigi_order, dict):
-                                    update_order_from_prodigi_payload(order, prodigi_order)
-                            logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
+                        if self._order_has_physical_items(order):
+                            if order.prodigi_order_id:
+                                logger.info(
+                                    "Skipping Prodigi fulfillment because the order already has a Prodigi id. "
+                                    "order_number=%s prodigi_order_id=%s",
+                                    order.order_number,
+                                    order.prodigi_order_id,
+                                )
+                            else:
+                                logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
+                                prodigi_response = create_prodigi_order(order)
+                                if isinstance(prodigi_response, dict):
+                                    prodigi_order = prodigi_response.get("order")
+                                    if isinstance(prodigi_order, dict):
+                                        update_order_from_prodigi_payload(order, prodigi_order)
+                                logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
                         else:
-                            # Digital-only order: Stay silent
                             logger.info(
                                 "Digital-only order detected; skipping Prodigi fulfillment. order_number=%s",
                                 order.order_number,
                             )
-
-                    except Exception:
+                    except Exception as exc:
+                        if order.prodigi_status != "FULFILMENT_FAILED":
+                            order.prodigi_status = "FULFILMENT_FAILED"
+                            order.save(update_fields=["prodigi_status"])
+                        processing_error = (
+                            f"Physical fulfilment failed for order {order.order_number}: {exc}"
+                        )
+                        retryable_processing_error = True
                         logger.exception(
                             "Failed to fulfill order after webhook processing. order_number=%s",
                             order.order_number,
                         )
 
-                else:
-                    error_fields = self._summarize_validation_errors(serializer.errors)
-                    logger.error("Error creating order. Validation fields: %s", error_fields)
-                    processing_error = f"Order validation failed. Fields: {error_fields}"
-                    logger.warning(
-                        "Acknowledging webhook event despite validation failure. %s",
-                        processing_error,
-                    )
-
             elif event_type == 'checkout.session.completed':
                 session = event['data']['object']
                 self._handle_license_payment(request, session)
+        except DRFValidationError as e:
+            processing_error = str(e.detail if hasattr(e, "detail") else e)
+            logger.exception("Validation error processing Stripe event. event_id=%s", event_id)
         except Exception as e:
             processing_error = str(e)
+            retryable_processing_error = True
             logger.exception("Error processing Stripe event. event_id=%s", event_id)
         finally:
             if event_record and should_process_event:
@@ -745,6 +786,9 @@ class StripeWebhookView(APIView):
                     event_type=event_type or 'unknown',
                 )
         
+        if processing_error and retryable_processing_error:
+            return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         return Response(status=status.HTTP_200_OK)
 
 class OrderHistoryView(generics.ListAPIView):

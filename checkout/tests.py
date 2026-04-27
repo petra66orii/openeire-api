@@ -11,10 +11,11 @@ from unittest.mock import patch, Mock
 
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ImproperlyConfigured
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
-from django.test import TestCase, override_settings, SimpleTestCase
+from django.test import TestCase, override_settings, SimpleTestCase, RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -32,9 +33,19 @@ from products.models import (
 )
 from .models import Order, OrderItem, ProductShipping
 from .address_validation import validate_physical_shipping_address
-from .prodigi import create_prodigi_order, _get_prodigi_asset_url, _get_prodigi_callback_url
+from .prodigi import (
+    _get_prodigi_asset_url,
+    _get_prodigi_callback_url,
+    _is_non_public_prodigi_asset_url,
+    _prodigi_base_url,
+    create_prodigi_order,
+)
+from .admin import OrderAdmin
 from . import views as checkout_views
 from .serializers import OrderSerializer
+from .shipping import ShippingConfigurationError, calculate_physical_shipping_quote
+from openeire_api.admin import custom_admin_site
+from openeire_api.settings import require_env_in_production
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -316,6 +327,56 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         self.assertIn("prepared_items=1", logs)
         self.assertIn("missing_sku=1", logs)
 
+    @patch("checkout.prodigi.requests.post")
+    def test_prodigi_rejects_localhost_asset_urls_instead_of_using_placeholder(self, mock_post):
+        localhost_order = self._build_order()
+        localhost_order.items = self._ItemsManager(
+            [
+                SimpleNamespace(
+                    product=SimpleNamespace(
+                        prodigi_sku="ECO-CAN-12X18",
+                        material="eco_canvas",
+                        photo=SimpleNamespace(
+                            high_res_file=SimpleNamespace(url="http://127.0.0.1:8000/media/high-res.jpg")
+                        ),
+                    ),
+                    quantity=1,
+                )
+            ]
+        )
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    create_prodigi_order(localhost_order)
+
+        self.assertEqual(
+            str(raised.exception),
+            "Prodigi fulfillment could not prepare all physical items.",
+        )
+        self.assertEqual(mock_post.call_count, 0)
+        self.assertIn(
+            "Prodigi cannot access non-public asset URL; rejecting fulfillment",
+            " ".join(captured_logs.output),
+        )
+
+    def test_prodigi_rejects_private_and_local_asset_hosts(self):
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("http://10.0.0.5/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://192.168.1.25/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://[fe80::1]/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://studio-assets.local/media/high-res.jpg")
+        )
+        self.assertFalse(
+            _is_non_public_prodigi_asset_url("https://cdn.example.com/media/high-res.jpg")
+        )
+
     def test_prodigi_prefers_storage_signed_url_for_private_assets(self):
         signed_url = "https://private-r2.example.com/digital_products/photos/high-res.jpg?X-Amz-Signature=test"
         file_handle = self._StorageBackedFileHandle(
@@ -356,6 +417,26 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
     def test_prodigi_callback_url_is_disabled_without_base_url(self):
         self.assertIsNone(_get_prodigi_callback_url())
 
+    @override_settings(DEBUG=True, IS_TEST_ENV=False)
+    def test_prodigi_defaults_to_sandbox_in_debug_when_env_missing(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _prodigi_base_url(),
+                "https://api.sandbox.prodigi.com/v4.0/",
+            )
+
+    @override_settings(DEBUG=False, IS_TEST_ENV=False)
+    def test_prodigi_requires_explicit_mode_when_debug_is_false(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ImproperlyConfigured):
+                _prodigi_base_url()
+
+    @override_settings(DEBUG=False, IS_TEST_ENV=False)
+    def test_prodigi_rejects_invalid_sandbox_value(self):
+        with patch.dict(os.environ, {"PRODIGI_SANDBOX": "maybe"}, clear=True):
+            with self.assertRaises(ImproperlyConfigured):
+                _prodigi_base_url()
+
     @patch("checkout.prodigi.requests.post")
     def test_prodigi_error_parser_ignores_non_string_fields(self, mock_post):
         mock_response = Mock()
@@ -390,6 +471,27 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         self.assertIn("trace_parent=n/a", log_output)
         self.assertNotIn("ShouldBeIgnored", log_output)
         self.assertNotIn("{'unexpected': 'dict'}", log_output)
+
+
+class ProductionEnvironmentRequirementTests(SimpleTestCase):
+    def test_require_env_in_production_allows_missing_value_in_debug(self):
+        self.assertIsNone(
+            require_env_in_production(
+                "PRODIGI_CALLBACK_BASE_URL",
+                None,
+                debug=True,
+                is_test_env=False,
+            )
+        )
+
+    def test_require_env_in_production_raises_when_missing_in_production(self):
+        with self.assertRaises(ImproperlyConfigured):
+            require_env_in_production(
+                "PRODIGI_CALLBACK_BASE_URL",
+                "",
+                debug=False,
+                is_test_env=False,
+            )
 
 
 @override_settings(
@@ -581,7 +683,7 @@ class StripeWebhookLicenseTests(TestCase):
             HTTP_STRIPE_SIGNATURE="sig",
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 500)
         self.license_request.refresh_from_db()
         self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
         self.assertEqual(LicenceDocument.objects.filter(license_request=self.license_request).count(), 0)
@@ -646,6 +748,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             password="StrongPass123!",
         )
         self.url = reverse("webhook")
+        self.factory = RequestFactory()
 
     def _payment_intent_event(self, license_value="hd", username=None, user_id=None):
         cart = [
@@ -693,6 +796,45 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             },
         }
 
+    def _physical_payment_intent_event(self, *, event_id="evt_physical_retry", payment_intent_id="pi_physical_retry"):
+        cart = [
+            {
+                "product_id": self.variant.id,
+                "product_type": "physical",
+                "quantity": 1,
+                "options": {},
+            }
+        ]
+        return {
+            "id": event_id,
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": payment_intent_id,
+                    "receipt_email": "buyer@example.com",
+                    "metadata": {
+                        "cart": json.dumps(cart),
+                        "username": "Guest",
+                        "save_info": "false",
+                        "shipping_cost": "8.45",
+                        "shipping_method": "budget",
+                    },
+                    "shipping": {
+                        "name": "Buyer",
+                        "phone": "+3530000000",
+                        "address": {
+                            "country": "IE",
+                            "city": "Galway",
+                            "line1": "1 Test Street",
+                            "line2": "",
+                            "postal_code": "H62 X254",
+                            "state": "Galway",
+                        },
+                    },
+                }
+            },
+        }
+
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_digital_order_stores_personal_terms_and_includes_it_in_email(self, mock_construct):
         mock_construct.return_value = self._payment_intent_event()
@@ -709,6 +851,9 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
 
         order = Order.objects.first()
         self.assertEqual(order.personal_terms_version, "PERSONAL v1.1 - March 2026")
+        self.assertEqual(order.confirmation_email_status, "SENT")
+        self.assertIsNotNone(order.confirmation_email_sent_at)
+        self.assertFalse(order.confirmation_email_error)
 
         self.assertEqual(len(mail.outbox), 1)
         body = mail.outbox[0].body
@@ -744,6 +889,85 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         body = mail.outbox[0].body
         self.assertNotIn("None/profile", body)
         self.assertNotIn("logging into your profile", body)
+
+    @patch("checkout.views.send_order_confirmation_email", side_effect=RuntimeError("smtp offline"))
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_confirmation_email_failure_is_recorded_on_order(
+        self,
+        mock_construct,
+        _mock_send_confirmation_email,
+    ):
+        mock_construct.return_value = self._payment_intent_event()
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.confirmation_email_status, "FAILED")
+        self.assertIsNone(order.confirmation_email_sent_at)
+        self.assertIsNotNone(order.confirmation_email_failed_at)
+        self.assertIn("smtp offline", order.confirmation_email_error)
+
+    @patch("checkout.admin.send_order_confirmation_email")
+    def test_admin_retry_confirmation_email_marks_order_sent(self, mock_send_confirmation_email):
+        order = Order.objects.create(
+            user_profile=self.user.userprofile,
+            email=self.user.email,
+            stripe_pid="pi_confirmation_retry",
+            confirmation_email_status="FAILED",
+            confirmation_email_error="RuntimeError: smtp offline",
+            confirmation_email_failed_at=timezone.now(),
+        )
+        order_admin = OrderAdmin(Order, custom_admin_site)
+        order_admin.message_user = Mock()
+        request = self.factory.post("/admin/checkout/order/")
+        request.user = get_user_model().objects.create_superuser(
+            username="adminretry",
+            email="adminretry@example.com",
+            password="StrongPass123!",
+        )
+
+        order_admin.retry_confirmation_emails(request, Order.objects.filter(pk=order.pk))
+
+        order.refresh_from_db()
+        self.assertEqual(order.confirmation_email_status, "SENT")
+        self.assertIsNotNone(order.confirmation_email_sent_at)
+        self.assertIsNone(order.confirmation_email_failed_at)
+        self.assertEqual(order.confirmation_email_error, "")
+        mock_send_confirmation_email.assert_called_once_with(order, request=request)
+
+    @patch("checkout.admin.send_order_confirmation_email", side_effect=RuntimeError("smtp offline"))
+    def test_admin_retry_confirmation_email_skips_orders_already_sent(self, mock_send_confirmation_email):
+        sent_at = timezone.now()
+        order = Order.objects.create(
+            user_profile=self.user.userprofile,
+            email=self.user.email,
+            stripe_pid="pi_confirmation_already_sent",
+            confirmation_email_status="SENT",
+            confirmation_email_sent_at=sent_at,
+        )
+        order_admin = OrderAdmin(Order, custom_admin_site)
+        order_admin.message_user = Mock()
+        request = self.factory.post("/admin/checkout/order/")
+        request.user = get_user_model().objects.create_superuser(
+            username="adminskipretry",
+            email="adminskipretry@example.com",
+            password="StrongPass123!",
+        )
+
+        order_admin.retry_confirmation_emails(request, Order.objects.filter(pk=order.pk))
+
+        order.refresh_from_db()
+        self.assertEqual(order.confirmation_email_status, "SENT")
+        self.assertEqual(order.confirmation_email_sent_at, sent_at)
+        self.assertIsNone(order.confirmation_email_failed_at)
+        self.assertEqual(order.confirmation_email_error, "")
+        mock_send_confirmation_email.assert_not_called()
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_ignores_invalid_digital_license_option(self, mock_construct):
@@ -992,43 +1216,10 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         mock_construct,
         mock_create_prodigi_order,
     ):
-        cart = [
-            {
-                "product_id": self.variant.id,
-                "product_type": "physical",
-                "quantity": 1,
-                "options": {},
-            }
-        ]
-        mock_construct.return_value = {
-            "id": "evt_physical_prodigi_metadata",
-            "type": "payment_intent.succeeded",
-            "data": {
-                "object": {
-                    "id": "pi_physical_prodigi_metadata",
-                    "receipt_email": "buyer@example.com",
-                    "metadata": {
-                        "cart": json.dumps(cart),
-                        "username": "Guest",
-                        "save_info": "false",
-                        "shipping_cost": "8.45",
-                        "shipping_method": "budget",
-                    },
-                    "shipping": {
-                        "name": "Buyer",
-                        "phone": "+3530000000",
-                        "address": {
-                            "country": "IE",
-                            "city": "Galway",
-                            "line1": "1 Test Street",
-                            "line2": "",
-                            "postal_code": "H62 X254",
-                            "state": "Galway",
-                        },
-                    },
-                }
-            },
-        }
+        mock_construct.return_value = self._physical_payment_intent_event(
+            event_id="evt_physical_prodigi_metadata",
+            payment_intent_id="pi_physical_prodigi_metadata",
+        )
         mock_create_prodigi_order.return_value = {
             "order": {
                 "id": "ord_prodigi_123",
@@ -1051,6 +1242,89 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(order.prodigi_status, "InProduction")
         self.assertEqual(order.prodigi_shipments, [])
         self.assertIsNone(order.prodigi_last_callback_at)
+
+    @patch("checkout.views.create_prodigi_order", side_effect=RuntimeError("prodigi offline"))
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_marks_physical_fulfilment_failure_visible_and_retryable(
+        self,
+        mock_construct,
+        _mock_create_prodigi_order,
+    ):
+        mock_construct.return_value = self._physical_payment_intent_event()
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.get()
+        self.assertEqual(order.prodigi_status, "FULFILMENT_FAILED")
+        event = StripeWebhookEvent.objects.get(stripe_event_id="evt_physical_retry")
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn(order.order_number, event.error_message)
+        self.assertIn("prodigi offline", event.error_message)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_retry_reuses_existing_order_after_prodigi_failure(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        mock_construct.return_value = self._physical_payment_intent_event()
+        mock_create_prodigi_order.side_effect = [
+            RuntimeError("prodigi offline"),
+            {
+                "order": {
+                    "id": "ord_prodigi_retry_success",
+                    "status": {"stage": "InProduction"},
+                    "merchantReference": "",
+                    "shipments": [],
+                }
+            },
+        ]
+
+        first_response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+        second_response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(first_response.status_code, 500)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(Order.objects.count(), 1)
+        order = Order.objects.get()
+        self.assertEqual(order.prodigi_order_id, "ord_prodigi_retry_success")
+        self.assertEqual(order.prodigi_status, "InProduction")
+        event = StripeWebhookEvent.objects.get(stripe_event_id="evt_physical_retry")
+        self.assertEqual(event.status, "SUCCESS")
+        self.assertEqual(mock_create_prodigi_order.call_count, 2)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_digital_only_webhook_skips_prodigi_fulfilment(self, mock_construct, mock_create_prodigi_order):
+        mock_construct.return_value = self._payment_intent_event()
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_create_prodigi_order.assert_not_called()
 
 
 @override_settings(
@@ -1282,6 +1556,59 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("clientSecret", response.data)
         mock_create.assert_called_once()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_digital_checkout_is_blocked_when_asset_file_is_missing(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        self.photo.high_res_file.storage.delete(self.photo.high_res_file.name)
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "DIGITAL_ASSET_UNAVAILABLE")
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_digital_checkout_is_blocked_when_asset_is_inactive(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        self.photo.is_active = False
+        self.photo.save(update_fields=["is_active"])
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        mock_create.assert_not_called()
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_options_payload_shape_is_rejected(self, mock_create):
@@ -1653,6 +1980,80 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.data["shippingCost"], 19.76)
         self.assertFalse(response.data["freeShippingApplied"])
 
+    def test_calculate_physical_shipping_quote_returns_expected_cost_when_rule_exists(self):
+        shipping_quote = calculate_physical_shipping_quote(
+            line_items=[(self.variant, 1)],
+            shipping_country="IE",
+            shipping_method="budget",
+        )
+
+        self.assertEqual(shipping_quote.delivery_cost, Decimal("8.45"))
+        self.assertFalse(shipping_quote.free_shipping_applied)
+
+    def test_calculate_physical_shipping_quote_allows_zero_only_for_valid_free_shipping(self):
+        shipping_quote = calculate_physical_shipping_quote(
+            line_items=[(self.variant, 2)],
+            shipping_country="IE",
+            shipping_method="budget",
+        )
+
+        self.assertEqual(shipping_quote.delivery_cost, Decimal("0.00"))
+        self.assertTrue(shipping_quote.free_shipping_applied)
+
+    def test_calculate_physical_shipping_quote_blocks_missing_shipping_rule(self):
+        ProductShipping.objects.filter(
+            product=self.template,
+            country="IE",
+            method="budget",
+        ).delete()
+
+        with self.assertRaises(ShippingConfigurationError):
+            calculate_physical_shipping_quote(
+                line_items=[(self.variant, 1)],
+                shipping_country="IE",
+                shipping_method="budget",
+            )
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_physical_cart_cannot_create_payment_intent_when_shipping_rule_missing(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        ProductShipping.objects.filter(
+            product=self.template,
+            country="IE",
+            method="budget",
+        ).delete()
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                }
+            ],
+            "shipping_details": {
+                "email": "buyer@example.com",
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "SHIPPING_UNAVAILABLE")
+        self.assertIn("Shipping is not available", response.data["error"])
+        mock_create.assert_not_called()
+
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_authenticated_digital_cart_is_allowed(self, mock_create):
         self.client.force_authenticate(user=self.user)
@@ -2001,3 +2402,18 @@ class FreeShippingOrderSerializerTests(TestCase):
         self.assertEqual(order.order_total, Decimal("99.00"))
         self.assertEqual(order.delivery_cost, Decimal("8.45"))
         self.assertEqual(order.total_price, Decimal("107.45"))
+
+    def test_order_serializer_does_not_persist_partial_order_when_shipping_rule_is_missing(self):
+        ProductShipping.objects.filter(
+            product=self.template,
+            country="IE",
+            method="budget",
+        ).delete()
+        serializer = OrderSerializer(data=self._serializer_payload(quantity=1))
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with self.assertRaises(ShippingConfigurationError):
+            serializer.save()
+
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(OrderItem.objects.count(), 0)

@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_FREE_SHIPPING_THRESHOLD = Decimal("150.00")
 
 
+class ShippingConfigurationError(Exception):
+    """Raised when required physical shipping config is missing."""
+
+
 @dataclass(frozen=True)
 class ShippingQuote:
     delivery_cost: Decimal
@@ -69,6 +73,7 @@ def free_shipping_applies(*, physical_subtotal, shipping_country):
 def calculate_physical_shipping_quote(*, line_items, shipping_country, shipping_method):
     physical_subtotal = Decimal("0.00")
     delivery_cost = Decimal("0.00")
+    missing_shipping_rules = []
 
     for product_instance, quantity in line_items:
         line_quantity = int(quantity or 0)
@@ -97,11 +102,24 @@ def calculate_physical_shipping_quote(*, line_items, shipping_country, shipping_
                 shipping_country,
                 shipping_method,
             )
+            missing_shipping_rules.append(
+                (
+                    product_instance.material,
+                    product_instance.size,
+                    shipping_country,
+                    shipping_method,
+                )
+            )
 
     free_shipping = free_shipping_applies(
         physical_subtotal=physical_subtotal,
         shipping_country=shipping_country,
     )
+    if missing_shipping_rules and not free_shipping:
+        raise ShippingConfigurationError(
+            "Shipping is not available for one or more items in your cart. "
+            "Please contact support before completing checkout."
+        )
     if free_shipping:
         delivery_cost = Decimal("0.00")
 
