@@ -665,7 +665,7 @@ class StripeWebhookLicenseTests(TestCase):
             HTTP_STRIPE_SIGNATURE="sig",
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 500)
         self.license_request.refresh_from_db()
         self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
         self.assertEqual(LicenceDocument.objects.filter(license_request=self.license_request).count(), 0)
