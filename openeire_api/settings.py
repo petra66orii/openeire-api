@@ -393,6 +393,14 @@ def _frontend_origin_from_url(value):
 
 FRONTEND_ORIGIN = _frontend_origin_from_url(FRONTEND_URL)
 
+
+def require_env_in_production(name, value, *, debug, is_test_env):
+    if debug or is_test_env:
+        return value
+    if value:
+        return value
+    raise ImproperlyConfigured(f"{name} must be set when DEBUG is False.")
+
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -499,6 +507,12 @@ STRIPE_MAX_NETWORK_RETRIES = int(os.getenv('STRIPE_MAX_NETWORK_RETRIES', '2'))
 PRODIGI_CONNECT_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_CONNECT_TIMEOUT_SECONDS', '5'))
 PRODIGI_READ_TIMEOUT_SECONDS = float(os.getenv('PRODIGI_READ_TIMEOUT_SECONDS', '20'))
 PRODIGI_CALLBACK_BASE_URL = os.getenv("PRODIGI_CALLBACK_BASE_URL")
+PRODIGI_CALLBACK_BASE_URL = require_env_in_production(
+    "PRODIGI_CALLBACK_BASE_URL",
+    PRODIGI_CALLBACK_BASE_URL,
+    debug=DEBUG,
+    is_test_env=IS_TEST_ENV,
+)
 FREE_SHIPPING_ENABLED = env_bool(
     os.getenv("FREE_SHIPPING_ENABLED"),
     default=False,
@@ -513,6 +527,18 @@ FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+require_env_in_production(
+    "STRIPE_SECRET_KEY",
+    STRIPE_SECRET_KEY,
+    debug=DEBUG,
+    is_test_env=IS_TEST_ENV,
+)
+require_env_in_production(
+    "STRIPE_WEBHOOK_SECRET",
+    STRIPE_WEBHOOK_SECRET,
+    debug=DEBUG,
+    is_test_env=IS_TEST_ENV,
+)
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_OAUTH_SECRET = os.getenv("GOOGLE_OAUTH_SECRET") or os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_OAUTH_KEY = os.getenv("GOOGLE_OAUTH_KEY", "")

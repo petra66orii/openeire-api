@@ -1,5 +1,6 @@
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.exceptions import ImproperlyConfigured
 from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase, override_settings
@@ -7,6 +8,7 @@ from django.urls import reverse
 from allauth.socialaccount.models import SocialApp
 from dj_rest_auth.registration.views import SocialLoginView
 from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework.test import APIClient
 from unittest.mock import patch
 from checkout.models import Order
 
@@ -15,6 +17,7 @@ from .token_utils import (
     PASSWORD_RESET_PURPOSE,
     issue_user_action_token,
 )
+from .views import get_frontend_url
 
 
 @override_settings(
@@ -52,6 +55,97 @@ class PasswordResetRequestTests(TestCase):
             "https://app.openeire.online/password-reset/confirm/",
             mail.outbox[0].body,
         )
+
+
+class FrontendUrlConfigurationTests(TestCase):
+    @override_settings(FRONTEND_URL=None, DEBUG=True, IS_TEST_ENV=False)
+    def test_get_frontend_url_defaults_to_localhost_in_debug(self):
+        self.assertEqual(get_frontend_url(), "http://localhost:5173")
+
+    @override_settings(FRONTEND_URL=None, DEBUG=False, IS_TEST_ENV=False)
+    def test_get_frontend_url_requires_configuration_when_debug_is_false(self):
+        with self.assertRaises(ImproperlyConfigured):
+            get_frontend_url()
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="noreply@example.com",
+    FRONTEND_URL="https://app.openeire.online",
+)
+class ChangeEmailTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="changeemailuser",
+            email="old@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        self.url = reverse("auth_email_change")
+        login_response = self.client.post(
+            reverse("auth_login"),
+            data={"username": self.user.username, "password": "StrongPass123!"},
+        )
+        self.access_token = login_response.json()["access"]
+
+    def test_change_email_updates_email_and_sends_verification(self):
+        response = self.client.put(
+            self.url,
+            data={
+                "new_email": "new@example.com",
+                "current_password": "StrongPass123!",
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.access_token}",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "new@example.com")
+        self.assertFalse(self.user.is_active)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("new@example.com", mail.outbox[0].to)
+        self.assertIn("/verify-email/confirm/", mail.outbox[0].body)
+
+    def test_change_email_rejects_wrong_password(self):
+        response = self.client.put(
+            self.url,
+            data={
+                "new_email": "new@example.com",
+                "current_password": "WrongPass123!",
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.access_token}",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "old@example.com")
+        self.assertIn("current_password", response.json())
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class UserProfileCountrySerializationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="countryuser",
+            email="country@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        self.url = reverse("user_profile")
+
+    def test_profile_returns_country_code_for_frontend_prefill(self):
+        profile = self.user.userprofile
+        profile.default_country = "US"
+        profile.save(update_fields=["default_country"])
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["country"], "US")
 
 
 @override_settings(

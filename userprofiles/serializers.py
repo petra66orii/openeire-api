@@ -80,8 +80,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
     is_staff = serializers.BooleanField(source='user.is_staff', read_only=True)
     can_access_gallery = serializers.SerializerMethodField()
     
-    # Use the special serializer field for the country
-    country = CountryField(source='default_country', name_only=True)
+    # Return the ISO country code so frontend selects/prefills work correctly.
+    country = CountryField(source='default_country')
 
     class Meta:
         model = UserProfile
