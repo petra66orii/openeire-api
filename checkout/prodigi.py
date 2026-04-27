@@ -1,7 +1,8 @@
 import logging
 import os
+import ipaddress
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from django.conf import settings
@@ -12,11 +13,33 @@ logger = logging.getLogger(__name__)
 
 
 def _is_non_public_prodigi_asset_url(url: str) -> bool:
-    normalized = str(url or "").strip().lower()
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return True
+
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return True
+
+    hostname = str(parsed.hostname or "").strip().lower()
+    if not hostname:
+        return True
+    if hostname == "localhost" or hostname.endswith(".local"):
+        return True
+
+    try:
+        ip_address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+
     return (
-        "127.0.0.1" in normalized
-        or "localhost" in normalized
-        or normalized.startswith("http://0.0.0.0")
+        ip_address.is_private
+        or ip_address.is_loopback
+        or ip_address.is_link_local
+        or ip_address.is_multicast
+        or ip_address.is_reserved
+        or ip_address.is_unspecified
     )
 
 

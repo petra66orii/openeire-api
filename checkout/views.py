@@ -338,7 +338,7 @@ class StripeWebhookView(APIView):
         return "unknown"
 
     def _order_has_physical_items(self, order):
-        return any(item.content_type.model == 'productvariant' for item in order.items.all())
+        return order.items.filter(content_type__model='productvariant').exists()
 
     def _extract_payment_link_id(self, session):
         return session.get('payment_link') or session.get('metadata', {}).get('payment_link_id')

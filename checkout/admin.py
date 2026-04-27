@@ -52,8 +52,12 @@ class OrderAdmin(admin.ModelAdmin):
     def retry_confirmation_emails(self, request, queryset):
         sent_count = 0
         failed_count = 0
+        skipped_sent_count = 0
 
         for order in queryset:
+            if order.confirmation_email_status == 'SENT':
+                skipped_sent_count += 1
+                continue
             try:
                 send_order_confirmation_email(order, request=request)
                 order.confirmation_email_status = 'SENT'
@@ -86,6 +90,12 @@ class OrderAdmin(admin.ModelAdmin):
                 request,
                 f"Confirmation email retry failed for {failed_count} order(s).",
                 level=messages.ERROR,
+            )
+        if skipped_sent_count:
+            self.message_user(
+                request,
+                f"Skipped {skipped_sent_count} order(s) already marked as sent.",
+                level=messages.WARNING,
             )
 
 class ProductShippingAdmin(admin.ModelAdmin):

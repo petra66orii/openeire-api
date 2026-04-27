@@ -16,6 +16,7 @@ def ensure_personal_download_token(order_item, days=None):
         PersonalDownloadToken.objects.filter(
             order_item=order_item,
             expires_at__gt=now,
+            used_at__isnull=True,
         )
         .order_by("-expires_at")
         .first()

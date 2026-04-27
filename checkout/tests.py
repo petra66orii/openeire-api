@@ -36,6 +36,7 @@ from .address_validation import validate_physical_shipping_address
 from .prodigi import (
     _get_prodigi_asset_url,
     _get_prodigi_callback_url,
+    _is_non_public_prodigi_asset_url,
     _prodigi_base_url,
     create_prodigi_order,
 )
@@ -357,6 +358,23 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         self.assertIn(
             "Prodigi cannot access non-public asset URL; rejecting fulfillment",
             " ".join(captured_logs.output),
+        )
+
+    def test_prodigi_rejects_private_and_local_asset_hosts(self):
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("http://10.0.0.5/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://192.168.1.25/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://[fe80::1]/media/high-res.jpg")
+        )
+        self.assertTrue(
+            _is_non_public_prodigi_asset_url("https://studio-assets.local/media/high-res.jpg")
+        )
+        self.assertFalse(
+            _is_non_public_prodigi_asset_url("https://cdn.example.com/media/high-res.jpg")
         )
 
     def test_prodigi_prefers_storage_signed_url_for_private_assets(self):
@@ -922,6 +940,34 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIsNone(order.confirmation_email_failed_at)
         self.assertEqual(order.confirmation_email_error, "")
         mock_send_confirmation_email.assert_called_once_with(order, request=request)
+
+    @patch("checkout.admin.send_order_confirmation_email", side_effect=RuntimeError("smtp offline"))
+    def test_admin_retry_confirmation_email_skips_orders_already_sent(self, mock_send_confirmation_email):
+        sent_at = timezone.now()
+        order = Order.objects.create(
+            user_profile=self.user.userprofile,
+            email=self.user.email,
+            stripe_pid="pi_confirmation_already_sent",
+            confirmation_email_status="SENT",
+            confirmation_email_sent_at=sent_at,
+        )
+        order_admin = OrderAdmin(Order, custom_admin_site)
+        order_admin.message_user = Mock()
+        request = self.factory.post("/admin/checkout/order/")
+        request.user = get_user_model().objects.create_superuser(
+            username="adminskipretry",
+            email="adminskipretry@example.com",
+            password="StrongPass123!",
+        )
+
+        order_admin.retry_confirmation_emails(request, Order.objects.filter(pk=order.pk))
+
+        order.refresh_from_db()
+        self.assertEqual(order.confirmation_email_status, "SENT")
+        self.assertEqual(order.confirmation_email_sent_at, sent_at)
+        self.assertIsNone(order.confirmation_email_failed_at)
+        self.assertEqual(order.confirmation_email_error, "")
+        mock_send_confirmation_email.assert_not_called()
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_ignores_invalid_digital_license_option(self, mock_construct):

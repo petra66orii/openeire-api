@@ -44,6 +44,7 @@ from .licensing import (
     send_licence_negotiation_email,
     send_licence_quote_email,
 )
+from .personal_downloads import ensure_personal_download_token
 from .uploads import build_object_key, sanitize_upload_filename
 
 
@@ -1641,6 +1642,38 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 404)
         token.refresh_from_db()
         self.assertIsNone(token.used_at)
+
+    def test_used_personal_download_token_is_not_reused_for_fresh_links(self):
+        user = User.objects.create_user(
+            username="personaltokenfresh",
+            email="personaltokenfresh@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_fresh_token",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        used_token = PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+            used_at=timezone.now(),
+        )
+
+        fresh_token = ensure_personal_download_token(order_item)
+
+        self.assertNotEqual(fresh_token.pk, used_token.pk)
+        self.assertIsNone(fresh_token.used_at)
+        self.assertGreater(fresh_token.expires_at, timezone.now())
 
     @patch("products.views.generate_r2_presigned_url", return_value=None)
     def test_license_delivery_token_is_one_time_for_anonymous_downloads(self, _mock_presigned_url):
