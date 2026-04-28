@@ -40,6 +40,7 @@ from .personal_licence import (
     build_personal_licence_download_url,
     build_personal_licence_filename,
     generate_personal_licence_pdf,
+    get_personal_licence_url,
     get_personal_licence_summary,
     get_personal_licence_text,
     get_personal_terms_version,
@@ -781,14 +782,16 @@ class ProtectedDownloadView(APIView):
 
         if request.query_params.get("preview") in {"1", "true", "yes"}:
             download_path = reverse("secure-download", args=[product_type, product_id])
+            personal_terms_url = (
+                build_personal_licence_download_url(order_item.order, request=request)
+                if order_item
+                else get_personal_licence_url(request=request)
+            )
             return Response(
                 {
                     "download_url": request.build_absolute_uri(download_path),
                     "personal_terms_version": terms_version,
-                    "personal_terms_url": build_personal_licence_download_url(
-                        order_item.order,
-                        request=request,
-                    ),
+                    "personal_terms_url": personal_terms_url,
                     "personal_terms_summary": get_personal_licence_summary(),
                 },
                 status=status.HTTP_200_OK,

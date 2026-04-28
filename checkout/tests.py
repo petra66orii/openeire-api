@@ -3,7 +3,6 @@ import uuid
 import json
 import os
 import requests
-from email.header import decode_header, make_header
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -24,6 +23,7 @@ from rest_framework.test import APIClient
 from products.models import (
     LicenseRequest,
     Photo,
+    PersonalLicenceToken,
     PrintTemplate,
     ProductVariant,
     StripeWebhookEvent,
@@ -43,14 +43,11 @@ from .prodigi import (
 )
 from .admin import OrderAdmin
 from . import views as checkout_views
-from .serializers import OrderSerializer
+from .serializers import OrderHistoryItemSerializer, OrderSerializer
 from .shipping import ShippingConfigurationError, calculate_physical_shipping_quote
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
-
-
-def decode_sender_header(value):
-    return str(make_header(decode_header(value)))
+from openeire_api.test_utils import decode_sender_header
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -2332,6 +2329,37 @@ class OrderHistoryClaimingTests(TestCase):
         download_url = response.data[0]["items"][0]["download_url"]
         token = PersonalDownloadToken.objects.get(order_item=order_item)
         self.assertTrue(download_url.endswith(f"/api/personal-download/{token.token}/"))
+
+    @override_settings(PERSONAL_DOWNLOAD_BASE_URL=None)
+    def test_order_history_does_not_mint_personal_licence_token_without_request_or_base_url(self):
+        photo = Photo.objects.create(
+            title="History Licence Photo",
+            description="Digital asset",
+            collection="Test Collection",
+            preview_image=SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg"),
+            high_res_file=SimpleUploadedFile("high_res.jpg", b"highres", content_type="image/jpeg"),
+            price=Decimal("10.00"),
+            is_active=True,
+        )
+        order = Order.objects.create(
+            email=self.user.email,
+            user_profile=self.user.userprofile,
+            stripe_pid="pi_history_licence_order",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=photo.id,
+            details={"license": "hd"},
+        )
+
+        serializer = OrderHistoryItemSerializer(instance=order_item)
+
+        self.assertIsNone(serializer.data["personal_terms_url"])
+        self.assertEqual(PersonalLicenceToken.objects.filter(order=order).count(), 0)
 
 
 @override_settings(

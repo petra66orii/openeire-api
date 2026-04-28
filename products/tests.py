@@ -1,6 +1,5 @@
 import shutil
 import uuid
-from email.header import decode_header, make_header
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +25,7 @@ from django.contrib.contenttypes.models import ContentType
 from checkout.models import Order, OrderItem
 from openeire_api.throttling import SharedScopedRateThrottle
 from openeire_api.admin import custom_admin_site
+from openeire_api.test_utils import decode_sender_header
 from .admin import LicenseRequestAdmin, LicenseRequestAdminForm
 from .models import (
     LicenseRequest,
@@ -46,12 +46,9 @@ from .licensing import (
     send_licence_negotiation_email,
     send_licence_quote_email,
 )
+from .personal_licence import ensure_personal_licence_token
 from .personal_downloads import ensure_personal_download_token
 from .uploads import build_object_key, sanitize_upload_filename
-
-
-def decode_sender_header(value):
-    return str(make_header(decode_header(value)))
 
 
 @override_settings(SECURE_SSL_REDIRECT=False)
@@ -1575,6 +1572,23 @@ class LicenseRequestTests(APITestCase):
         self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
 
+    def test_secure_download_preview_for_staff_without_purchase_uses_public_licence_url(self):
+        staff_user = User.objects.create_user(
+            username="staffpreview",
+            email="staffpreview@example.com",
+            password="testpass123",
+            is_staff=True,
+        )
+
+        self.client.force_authenticate(user=staff_user)
+        url = reverse("secure-download", args=["photo", self.photo.id])
+        response = self.client.get(url, {"preview": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            response.data["personal_terms_url"].endswith(reverse("personal-licence-text"))
+        )
+
     def test_personal_download_token_not_burned_if_file_unavailable(self):
         user = User.objects.create_user(
             username="personaltokenbuyer",
@@ -1750,6 +1764,25 @@ class LicenseRequestTests(APITestCase):
         self.assertNotEqual(fresh_token.pk, used_token.pk)
         self.assertIsNone(fresh_token.used_at)
         self.assertGreater(fresh_token.expires_at, timezone.now())
+
+    def test_ensure_personal_licence_token_honours_zero_day_expiry(self):
+        user = User.objects.create_user(
+            username="zerodaylicence",
+            email="zerodaylicence@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_zero_day_licence",
+        )
+
+        before = timezone.now()
+        token = ensure_personal_licence_token(order, days=0)
+        after = timezone.now()
+
+        self.assertGreaterEqual(token.expires_at, before)
+        self.assertLessEqual(token.expires_at, after)
 
     @patch("products.views.generate_r2_presigned_url", return_value=None)
     def test_license_delivery_token_is_one_time_for_anonymous_downloads(self, _mock_presigned_url):

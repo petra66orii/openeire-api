@@ -279,10 +279,14 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
     def get_personal_terms_url(self, obj):
         if not self._is_digital_item(obj):
             return None
+        request = self.context.get('request')
+        base_url = getattr(settings, "PERSONAL_DOWNLOAD_BASE_URL", None)
+        if not request and not base_url:
+            return None
         try:
             return build_personal_licence_download_url(
                 obj.order,
-                request=self.context.get('request'),
+                request=request,
             )
         except RuntimeError:
             return None

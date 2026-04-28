@@ -88,7 +88,8 @@ def get_personal_licence_url(request=None):
 
 
 def ensure_personal_licence_token(order, days=None):
-    days = days or DEFAULT_TOKEN_DAYS
+    if days is None:
+        days = DEFAULT_TOKEN_DAYS
     now = timezone.now()
     existing = (
         PersonalLicenceToken.objects.filter(
