@@ -9,6 +9,11 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.management.utils import get_random_secret_key
 from corsheaders.defaults import default_headers
 from openeire_api.cache_config import build_cache_settings, env_bool, infer_runtime_env
+from openeire_api.mail_utils import (
+    DEFAULT_STUDIO_EMAIL,
+    extract_email_address,
+    format_branded_sender,
+)
 
 load_dotenv()
 
@@ -470,9 +475,18 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
-LICENSING_FROM_EMAIL = os.getenv('LICENSING_FROM_EMAIL') or DEFAULT_FROM_EMAIL
-LICENSOR_CONTACT_EMAIL = os.getenv('LICENSOR_CONTACT_EMAIL') or LICENSING_FROM_EMAIL
+DEFAULT_FROM_EMAIL = format_branded_sender(
+    os.getenv('DEFAULT_FROM_EMAIL') or DEFAULT_STUDIO_EMAIL
+)
+SERVER_EMAIL = format_branded_sender(
+    os.getenv('SERVER_EMAIL') or extract_email_address(DEFAULT_FROM_EMAIL)
+)
+LICENSING_FROM_EMAIL = format_branded_sender(
+    os.getenv('LICENSING_FROM_EMAIL') or extract_email_address(DEFAULT_FROM_EMAIL)
+)
+LICENSOR_CONTACT_EMAIL = extract_email_address(
+    os.getenv('LICENSOR_CONTACT_EMAIL') or LICENSING_FROM_EMAIL
+)
 LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     email.strip()
     for email in os.getenv('LICENCE_ADMIN_NOTIFICATION_RECIPIENTS', '').split(',')

@@ -1,6 +1,6 @@
 Hi,
 
-Tracking information is now available for your OpenÉire order {{ order.order_number }}.
+Tracking information is now available for your OpenÉire Studios order {{ order.order_number }}.
 
 {% for shipment in shipments %}
 Shipment {{ forloop.counter }}{% if shipment.carrier_name %} - {{ shipment.carrier_name }}{% endif %}{% if shipment.carrier_service %} ({{ shipment.carrier_service }}){% endif %}

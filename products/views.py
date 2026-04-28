@@ -27,6 +27,7 @@ from .models import (
     LicenceOffer,
     LicenceDeliveryToken,
     PersonalDownloadToken,
+    PersonalLicenceToken,
     normalize_email,
 )
 from .licensing import (
@@ -36,11 +37,15 @@ from .licensing import (
 from .file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from .utils import generate_r2_presigned_url
 from .personal_licence import (
+    build_personal_licence_download_url,
+    build_personal_licence_filename,
+    generate_personal_licence_pdf,
+    get_personal_licence_url,
     get_personal_licence_summary,
     get_personal_licence_text,
-    get_personal_licence_url,
     get_personal_terms_version,
 )
+from openeire_api.mail_utils import get_default_from_email
 from checkout.models import OrderItem
 from .serializers import (
     PhotoListSerializer,
@@ -117,9 +122,9 @@ class RequestGalleryAccessView(APIView):
                 access_record = GalleryAccess.objects.create(email=email)
 
                 send_mail(
-                    subject="OpenEire Studios - Private Gallery Access",
+                    subject="OpenÉire Studios - Private Gallery Access",
                     message=f"Hello,\n\nHere is your access code for the Digital Stock Gallery:\n\n{access_record.access_code}\n\nValid for 30 days.",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    from_email=get_default_from_email(),
                     recipient_list=[email],
                     fail_silently=False,
                 )
@@ -699,6 +704,39 @@ class PersonalUseLicenceTextView(APIView):
         return response
 
 
+class PersonalLicenceDownloadView(APIView):
+    """
+    Serves a one-time downloadable PDF for a purchased personal-use licence.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        with transaction.atomic():
+            token_obj = (
+                PersonalLicenceToken.objects
+                .select_related("order")
+                .select_for_update()
+                .filter(token=token)
+                .first()
+            )
+            if not token_obj or not token_obj.is_valid:
+                raise Http404("Licence download link has expired or was already used.")
+
+            order = token_obj.order
+            pdf_bytes = generate_personal_licence_pdf(order)
+            token_obj.used_at = timezone.now()
+            token_obj.save(update_fields=["used_at"])
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = (
+            f'attachment; filename="{build_personal_licence_filename(order)}"'
+        )
+        response["X-Personal-Terms-Version"] = (
+            order.personal_terms_version or get_personal_terms_version()
+        )
+        return response
+
+
 class ProtectedDownloadView(APIView):
     """
     Securely serves the high-res file ONLY if the user has purchased it.
@@ -744,11 +782,16 @@ class ProtectedDownloadView(APIView):
 
         if request.query_params.get("preview") in {"1", "true", "yes"}:
             download_path = reverse("secure-download", args=[product_type, product_id])
+            personal_terms_url = (
+                build_personal_licence_download_url(order_item.order, request=request)
+                if order_item
+                else get_personal_licence_url(request=request)
+            )
             return Response(
                 {
                     "download_url": request.build_absolute_uri(download_path),
                     "personal_terms_version": terms_version,
-                    "personal_terms_url": get_personal_licence_url(request=request),
+                    "personal_terms_url": personal_terms_url,
                     "personal_terms_summary": get_personal_licence_summary(),
                 },
                 status=status.HTTP_200_OK,
@@ -831,7 +874,7 @@ class PersonalAssetDownloadView(APIView):
     def get(self, request, token):
         token_obj = PersonalDownloadToken.objects.select_related("order_item").filter(token=token).first()
         if not token_obj or not token_obj.is_valid:
-            raise Http404("Download link has expired.")
+            raise Http404("Download link has expired or was already used.")
 
         order_item = token_obj.order_item
         asset = order_item.product

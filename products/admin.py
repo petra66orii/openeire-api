@@ -578,7 +578,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
                     f"Your licence request status is now: {status_label}.\n\n"
                     "If you have questions, reply to this email.\n\n"
                     "Kind regards,\n"
-                    "OpenEire Studios\n"
+                    "OpenÉire Studios\n"
                 ),
                 from_email=get_licensing_from_email(),
                 recipient_list=[obj.email],

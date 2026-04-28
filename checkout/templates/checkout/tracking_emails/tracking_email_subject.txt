@@ -1,1 +1,1 @@
-Your OpenÉire order {{ order.order_number }} is on the way
+Your OpenÉire Studios order {{ order.order_number }} is on the way

@@ -5,6 +5,7 @@ from rest_framework import status
 from django.core.mail import send_mail
 from django.conf import settings
 from rest_framework.permissions import AllowAny
+from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
 from .models import Testimonial, NewsletterSubscriber
 from .serializers import TestimonialSerializer, NewsletterSubscriberSerializer, ContactFormSerializer
 
@@ -35,7 +36,7 @@ class ContactFormView(APIView):
 
             # Construct the email body
             email_body = (
-                f"New Message from OpenEire Studios Contact Form\n\n"
+                f"New Message from OpenÉire Studios Contact Form\n\n"
                 f"From: {name} ({email})\n"
                 f"Subject: {subject}\n\n"
                 f"Message:\n{message}"
@@ -47,8 +48,8 @@ class ContactFormView(APIView):
                 send_mail(
                     subject=f"Contact Form: {subject}",
                     message=email_body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[settings.DEFAULT_FROM_EMAIL], # Or a specific admin email
+                    from_email=get_default_from_email(),
+                    recipient_list=[get_contact_email_address()], # Or a specific admin email
                     fail_silently=False,
                 )
                 return Response(

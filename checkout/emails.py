@@ -5,10 +5,15 @@ from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.urls import reverse
 
+from openeire_api.mail_utils import (
+    get_contact_email_address,
+    get_default_from_email,
+    resolve_order_display_name,
+)
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import (
+    build_personal_licence_download_url,
     get_personal_licence_summary,
-    get_personal_licence_url,
 )
 
 
@@ -47,8 +52,9 @@ def send_order_confirmation_email(order, request=None):
 
     context = {
         'order': order,
-        'contact_email': settings.DEFAULT_FROM_EMAIL,
-        'personal_terms_url': get_personal_licence_url(request=request),
+        'contact_email': get_contact_email_address(),
+        'customer_display_name': resolve_order_display_name(order),
+        'personal_terms_url': build_personal_licence_download_url(order, request=request),
         'personal_terms_summary': get_personal_licence_summary(),
         'personal_download_items': personal_download_items,
         'profile_url': _build_profile_url(),
@@ -65,7 +71,7 @@ def send_order_confirmation_email(order, request=None):
     email = EmailMessage(
         subject=subject.strip(),
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_default_from_email(),
         to=[cust_email],
     )
     email.send(fail_silently=False)

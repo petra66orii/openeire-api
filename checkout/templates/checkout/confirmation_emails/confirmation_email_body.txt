@@ -1,4 +1,4 @@
-Thank you for your order, {{ order.first_name|default:"Customer" }}!
+Thank you for your order, {{ customer_display_name }}!
 
 This is a confirmation that your transaction was successful.
 
@@ -12,7 +12,7 @@ This digital download order is licensed for personal use only.
 {% for line in personal_terms_summary %}
 - {{ line }}
 {% endfor %}
-Read the full Personal Use Licence: {{ personal_terms_url }}
+Download your Personal Use Licence PDF: {{ personal_terms_url }}
 
 {% if personal_download_items %}
 Your personal download links:
@@ -30,4 +30,4 @@ You can also view your order history and download your digital items by logging 
 If you have any questions, feel free to contact us at {{ contact_email }}.
 
 Best regards,
-OpenEire Studios Team
+OpenÉire Studios Team
