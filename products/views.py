@@ -713,7 +713,7 @@ class PersonalLicenceDownloadView(APIView):
         with transaction.atomic():
             token_obj = (
                 PersonalLicenceToken.objects
-                .select_related("order", "order__user_profile__user")
+                .select_related("order")
                 .select_for_update()
                 .filter(token=token)
                 .first()
