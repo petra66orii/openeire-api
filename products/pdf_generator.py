@@ -33,7 +33,7 @@ DEFAULT_SIGNATURE_TITLE = getattr(settings, "LICENCE_SIGNATURE_TITLE", "Licensin
 DEFAULT_SIGNATURE_TEXT = getattr(
     settings,
     "LICENCE_SIGNATURE_TEXT",
-    "Digitally issued and authorised by OpenEire Studios. "
+    "Digitally issued and authorised by OpenÉire Studios. "
     "This Licence Certificate is valid and enforceable without a handwritten signature.",
 )
 
@@ -172,8 +172,8 @@ def _apply_metadata(canvas, doc, title, license_request, terms_version):
     )
 
     canvas.setTitle(title)
-    canvas.setAuthor("OpenEire Studios")
-    canvas.setCreator("OpenEire Studios Licensing System")
+    canvas.setAuthor("OpenÉire Studios")
+    canvas.setCreator("OpenÉire Studios Licensing System")
     canvas.setSubject("Rights-Managed Licence")
     canvas.setKeywords(keywords)
 
@@ -440,7 +440,7 @@ def generate_licence_schedule_pdf(license_request, issued_at=None, terms_version
         buffer,
         pagesize=A4,
         title="Appendix A - Licence Schedule",
-        author="OpenEire Studios",
+        author="OpenÉire Studios",
     )
     doc.build(
         elements,
@@ -465,7 +465,7 @@ def generate_licence_certificate_pdf(license_request, issued_at=None, terms_vers
     activation_date = issue_date
     expiry_date = _compute_expiry_date(license_request, issued_at)
 
-    licensor_name = _safe_value(getattr(settings, "LICENSOR_NAME", "OpenEire Studios"))
+    licensor_name = _safe_value(getattr(settings, "LICENSOR_NAME", "OpenÉire Studios"))
     licensor_registered_name = _optional_safe_value(getattr(settings, "LICENSOR_REGISTERED_NAME", licensor_name)) or licensor_name
     licensor_address = _optional_safe_value(getattr(settings, "LICENSOR_ADDRESS", ""))
     licensor_registration = _optional_safe_value(getattr(settings, "LICENSOR_REGISTRATION_NUMBER", ""))
@@ -574,7 +574,7 @@ def generate_licence_certificate_pdf(license_request, issued_at=None, terms_vers
         buffer,
         pagesize=A4,
         title="Appendix B - Licence Certificate",
-        author="OpenEire Studios",
+        author="OpenÉire Studios",
     )
     doc.build(
         elements,

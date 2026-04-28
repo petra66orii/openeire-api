@@ -1,5 +1,6 @@
 import shutil
 import uuid
+from email.header import decode_header, make_header
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +31,7 @@ from .models import (
     LicenseRequest,
     LicenceOffer,
     LicenceDeliveryToken,
+    PersonalLicenceToken,
     PersonalDownloadToken,
     GalleryAccess,
     Photo,
@@ -46,6 +48,10 @@ from .licensing import (
 )
 from .personal_downloads import ensure_personal_download_token
 from .uploads import build_object_key, sanitize_upload_filename
+
+
+def decode_sender_header(value):
+    return str(make_header(decode_header(value)))
 
 
 @override_settings(SECURE_SSL_REDIRECT=False)
@@ -550,7 +556,10 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ['admin@example.com'])
-        self.assertEqual(sent.from_email, 'licensing@example.com')
+        self.assertEqual(
+            decode_sender_header(sent.from_email),
+            'OpenÉire Studios <licensing@example.com>',
+        )
         self.assertIn("New licence request", sent.subject)
         self.assertIn("Test Client", sent.body)
         self.assertIn("test@example.com", sent.body)
@@ -993,7 +1002,10 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["negotiation@example.com"])
-        self.assertEqual(sent.from_email, "licensing@example.com")
+        self.assertEqual(
+            decode_sender_header(sent.from_email),
+            "OpenÉire Studios <licensing@example.com>",
+        )
         self.assertEqual(sent.body, draft_body)
         self.assertNotIn("buy.stripe.com", sent.body)
 
@@ -1074,7 +1086,10 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["quote@example.com"])
-        self.assertEqual(sent.from_email, "licensing@example.com")
+        self.assertEqual(
+            decode_sender_header(sent.from_email),
+            "OpenÉire Studios <licensing@example.com>",
+        )
         self.assertEqual(sent.body, draft_body)
 
     @override_settings(
@@ -1435,7 +1450,10 @@ class LicenseRequestTests(APITestCase):
 
         self.assertTrue(sent)
         self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].from_email, "licensing@example.com")
+        self.assertEqual(
+            decode_sender_header(mail.outbox[0].from_email),
+            "OpenÉire Studios <licensing@example.com>",
+        )
 
     def test_license_download_token_not_burned_if_file_unavailable(self):
         req = LicenseRequest.objects.create(
@@ -1468,6 +1486,64 @@ class LicenseRequestTests(APITestCase):
         self.assertIn("Personal Terms Version: PERSONAL v1.1 - March 2026", body)
         self.assertIn("PERSONAL USE LICENSE CERTIFICATE", body)
 
+    def test_personal_licence_download_token_returns_pdf_once(self):
+        user = User.objects.create_user(
+            username="personallicencebuyer",
+            email="personallicencebuyer@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            first_name="Aisling",
+            email=user.email,
+            stripe_pid="pi_personal_licence_pdf",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        token = PersonalLicenceToken.objects.create(
+            order=order,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        url = reverse("personal-licence-download", args=[str(token.token)])
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn(
+            f'openeire-personal-licence-{order.id}.pdf',
+            response["Content-Disposition"],
+        )
+        self.assertGreater(len(response.content), 0)
+        token.refresh_from_db()
+        self.assertIsNotNone(token.used_at)
+
+        second_response = self.client.get(url)
+
+        self.assertEqual(second_response.status_code, 404)
+
+    def test_personal_licence_download_token_fails_when_expired(self):
+        user = User.objects.create_user(
+            username="personallicenceexpired",
+            email="personallicenceexpired@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_licence_expired",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        token = PersonalLicenceToken.objects.create(
+            order=order,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        response = self.client.get(reverse("personal-licence-download", args=[str(token.token)]))
+
+        self.assertEqual(response.status_code, 404)
+        token.refresh_from_db()
+        self.assertIsNone(token.used_at)
+
     def test_secure_download_preview_returns_personal_terms_context(self):
         user = User.objects.create_user(
             username="digitalbuyer",
@@ -1495,7 +1571,7 @@ class LicenseRequestTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["personal_terms_version"], "PERSONAL v1.1 - March 2026")
-        self.assertTrue(response.data["personal_terms_url"].endswith("/api/licence/personal-use/"))
+        self.assertIn("/api/licence/personal-download/", response.data["personal_terms_url"])
         self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
 

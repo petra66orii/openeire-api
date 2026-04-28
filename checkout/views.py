@@ -32,7 +32,6 @@ from products.licensing import (
 )
 from products.file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from products.personal_downloads import ensure_personal_download_token
-from products.personal_licence import get_personal_licence_summary, get_personal_licence_url
 from userprofiles.models import UserProfile
 from .models import Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer

@@ -11,13 +11,14 @@ from django.utils import timezone
 from .models import LicenceDocument, LicenceDeliveryToken, LicenceOffer
 from .file_access import get_asset_file_name, open_asset_file
 from .pdf_generator import generate_licence_schedule_pdf, generate_licence_certificate_pdf
+from openeire_api.mail_utils import get_licensing_from_email as get_branded_licensing_from_email
 
 
 DEFAULT_TOKEN_DAYS = int(getattr(settings, "LICENCE_DELIVERY_TOKEN_DAYS", 7))
 
 
 def get_licensing_from_email():
-    return getattr(settings, "LICENSING_FROM_EMAIL", settings.DEFAULT_FROM_EMAIL)
+    return get_branded_licensing_from_email()
 
 
 def get_latest_offer(license_request):
@@ -132,7 +133,7 @@ def _build_negotiation_email_body(license_request):
         f"{scope_summary}\n\n"
         "If you would like to proceed or need any refinements, reply to this email.\n\n"
         "Kind regards,\n"
-        "OpenEire Studios\n"
+        "OpenÉire Studios\n"
     )
 
 
@@ -175,7 +176,7 @@ def _build_payment_email_body(license_request, offer):
         f"{payment_link}\n\n"
         "If you need any final amendments before payment, reply to this email.\n\n"
         "Kind regards,\n"
-        "OpenEire Studios\n"
+        "OpenÉire Studios\n"
     )
 
 
@@ -279,7 +280,7 @@ def send_licence_delivery_email(license_request, documents, download_url, token_
         "Please retain these documents for your records.\n\n"
         "If you have any questions, reply to this email.\n\n"
         "Kind regards,\n"
-        "OpenEire Studios\n"
+        "OpenÉire Studios\n"
     )
 
     email = EmailMessage(

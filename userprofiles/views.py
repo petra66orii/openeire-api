@@ -36,6 +36,7 @@ from .token_utils import (
     issue_user_action_token,
 )
 from checkout.order_claiming import claim_guest_orders_for_user
+from openeire_api.mail_utils import get_default_from_email
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ class RegisterView(generics.CreateAPIView):
         frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
         
-        subject = 'Welcome to OpenEire Studios! Verify Your Email'
+        subject = 'Welcome to OpenÉire Studios! Verify Your Email'
         context = {
             'username': user.username,
             'verification_link': verification_link
@@ -182,7 +183,7 @@ class RegisterView(generics.CreateAPIView):
         
         html_message = render_to_string('emails/verification_email.html', context)
         plain_message = strip_tags(html_message)
-        from_email = settings.DEFAULT_FROM_EMAIL
+        from_email = get_default_from_email()
         to_email = user.email
 
         try:
@@ -257,7 +258,7 @@ class PasswordResetRequestView(generics.GenericAPIView):
 
         frontend_url = get_frontend_url()
         reset_link = f"{frontend_url}/password-reset/confirm/{token}"
-        subject = "OpenEire Studios - Reset Your Password"
+        subject = "OpenÉire Studios - Reset Your Password"
         context = {
             "username": user.username,
             "reset_link": reset_link,
@@ -269,7 +270,7 @@ class PasswordResetRequestView(generics.GenericAPIView):
             send_mail(
                 subject,
                 plain_message,
-                settings.DEFAULT_FROM_EMAIL,
+                get_default_from_email(),
                 [user.email],
                 html_message=html_message,
             )
@@ -351,11 +352,11 @@ class ResendVerificationView(generics.GenericAPIView):
         # Resend the email (reuse logic from RegisterView)
         frontend_url = get_frontend_url()
         verification_link = f"{frontend_url}/verify-email/confirm/{token}"
-        subject = 'Verify Your OpenEire Studios Email Address'
+        subject = 'Verify Your OpenÉire Studios Email Address'
         context = {'username': user.username, 'verification_link': verification_link}
         html_message = render_to_string('emails/verification_email.html', context)
         plain_message = strip_tags(html_message)
-        from_email = settings.DEFAULT_FROM_EMAIL
+        from_email = get_default_from_email()
         to_email = user.email
 
         try:
@@ -484,7 +485,7 @@ class ChangeEmailView(generics.UpdateAPIView):
             plain_message = strip_tags(html_message)
             
             try:
-                send_mail(subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email], html_message=html_message)
+                send_mail(subject, plain_message, get_default_from_email(), [user.email], html_message=html_message)
             except Exception:
                 logger.exception("Failed to send re-verification email for user_id=%s", user.id)
                 # We don't fail the whole request, just log the email error

@@ -7,7 +7,10 @@ from .models import Order, OrderItem
 from products.models import Photo, Video, ProductVariant
 from products.file_access import asset_file_exists
 from products.personal_downloads import ensure_personal_download_token
-from products.personal_licence import get_personal_licence_url, get_personal_terms_version
+from products.personal_licence import (
+    build_personal_licence_download_url,
+    get_personal_terms_version,
+)
 from django.contrib.contenttypes.models import ContentType
 from django_countries.serializer_fields import CountryField
 from django.urls import reverse
@@ -276,7 +279,13 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
     def get_personal_terms_url(self, obj):
         if not self._is_digital_item(obj):
             return None
-        return get_personal_licence_url(request=self.context.get('request'))
+        try:
+            return build_personal_licence_download_url(
+                obj.order,
+                request=self.context.get('request'),
+            )
+        except RuntimeError:
+            return None
 
 class OrderHistoryListSerializer(serializers.ModelSerializer):
     items = OrderHistoryItemSerializer(many=True, read_only=True)

@@ -3,6 +3,7 @@ import uuid
 import json
 import os
 import requests
+from email.header import decode_header, make_header
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -46,6 +47,10 @@ from .serializers import OrderSerializer
 from .shipping import ShippingConfigurationError, calculate_physical_shipping_quote
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
+
+
+def decode_sender_header(value):
+    return str(make_header(decode_header(value)))
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
@@ -856,10 +861,17 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertFalse(order.confirmation_email_error)
 
         self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(
+            decode_sender_header(mail.outbox[0].from_email),
+            "OpenÉire Studios <orders@example.com>",
+        )
         body = mail.outbox[0].body
+        self.assertIn("Thank you for your order, Buyer!", body)
+        self.assertNotIn("Thank you for your order, Customer!", body)
         self.assertIn("PERSONAL USE LICENCE", body)
         self.assertIn(order.personal_terms_version, body)
-        self.assertIn("http://testserver/api/licence/personal-use/", body)
+        self.assertIn("Download your Personal Use Licence PDF:", body)
+        self.assertIn("http://testserver/api/licence/personal-download/", body)
         self.assertIn("Your personal download links:", body)
         token = PersonalDownloadToken.objects.get(order_item__order=order)
         self.assertIn(

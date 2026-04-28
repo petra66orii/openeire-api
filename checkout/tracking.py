@@ -8,6 +8,8 @@ from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.utils import timezone
 
+from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,7 +128,7 @@ def send_tracking_email(order, shipments: Iterable[dict]):
     context = {
         "order": order,
         "shipments": tracked,
-        "contact_email": settings.DEFAULT_FROM_EMAIL,
+        "contact_email": get_contact_email_address(),
     }
     subject = render_to_string(
         "checkout/tracking_emails/tracking_email_subject.txt",
@@ -140,7 +142,7 @@ def send_tracking_email(order, shipments: Iterable[dict]):
     email = EmailMessage(
         subject=subject,
         body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=get_default_from_email(),
         to=[order.email],
     )
     email.send(fail_silently=False)
