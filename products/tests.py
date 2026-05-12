@@ -86,6 +86,16 @@ class LicenseRequestTests(APITestCase):
             is_printable=is_printable,
         )
 
+    def _create_printable_photo_with_variant(self, *, is_active=True):
+        photo = self._create_photo(is_active=is_active, is_printable=True)
+        ProductVariant.objects.create(
+            photo=photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        return photo
+
     def _create_video(self, is_active=True):
         thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
         video = SimpleUploadedFile("video.mp4", b"video-bytes", content_type="video/mp4")
@@ -363,10 +373,11 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(access.granted_user, user)
         self.assertIsNotNone(access.verified_at)
 
-    def test_bag_recommendations_returns_up_to_four_active_photos(self):
+    def test_bag_recommendations_return_only_public_prints_for_unauthorized_users(self):
         for _ in range(5):
-            self._create_photo(is_active=True)
-        inactive = self._create_photo(is_active=False)
+            self._create_printable_photo_with_variant(is_active=True)
+        hidden_digital = self._create_photo(is_active=True)
+        inactive = self._create_printable_photo_with_variant(is_active=False)
 
         url = reverse("bag-recommendations")
         response = self.client.get(url)
@@ -376,8 +387,10 @@ class LicenseRequestTests(APITestCase):
         self.assertLessEqual(len(response.data), 4)
         returned_ids = {item["id"] for item in response.data}
         self.assertNotIn(inactive.id, returned_ids)
+        self.assertNotIn(hidden_digital.id, returned_ids)
+        self.assertTrue(all(item["product_type"] == "physical" for item in response.data))
 
-    def test_bag_recommendations_returns_empty_when_no_active_photos(self):
+    def test_bag_recommendations_returns_empty_when_no_public_prints_exist(self):
         Photo.objects.update(is_active=False)
         url = reverse("bag-recommendations")
         response = self.client.get(url)
@@ -386,8 +399,8 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data, [])
 
     def test_bag_recommendations_filters_inactive_ids_from_selected_pool(self):
-        active = self._create_photo(is_active=True)
-        inactive = self._create_photo(is_active=False)
+        active = self._create_printable_photo_with_variant(is_active=True)
+        inactive = self._create_printable_photo_with_variant(is_active=False)
         url = reverse("bag-recommendations")
 
         with patch(
@@ -401,15 +414,15 @@ class LicenseRequestTests(APITestCase):
         self.assertIn(active.id, returned_ids)
         self.assertNotIn(inactive.id, returned_ids)
 
-    def test_bag_recommendations_uses_row_offset_sampling_over_active_rows(self):
+    def test_bag_recommendations_uses_row_offset_sampling_over_public_rows(self):
         Photo.objects.update(is_active=False)
-        active_a = self._create_photo(is_active=True)
-        self._create_photo(is_active=False)  # gap
-        active_b = self._create_photo(is_active=True)
-        self._create_photo(is_active=False)  # gap
-        active_c = self._create_photo(is_active=True)
-        active_d = self._create_photo(is_active=True)
-        active_e = self._create_photo(is_active=True)
+        active_a = self._create_printable_photo_with_variant(is_active=True)
+        self._create_printable_photo_with_variant(is_active=False)  # gap
+        active_b = self._create_printable_photo_with_variant(is_active=True)
+        self._create_printable_photo_with_variant(is_active=False)  # gap
+        active_c = self._create_printable_photo_with_variant(is_active=True)
+        active_d = self._create_printable_photo_with_variant(is_active=True)
+        active_e = self._create_printable_photo_with_variant(is_active=True)
         active_ids = [active_a.id, active_b.id, active_c.id, active_d.id, active_e.id]
 
         with patch("products.views.random.randint", return_value=3) as mocked_randint:
@@ -422,6 +435,26 @@ class LicenseRequestTests(APITestCase):
             [item["id"] for item in response.data],
             [active_d.id, active_e.id, active_a.id, active_b.id],
         )
+
+    def test_bag_recommendations_can_return_digital_photos_for_approved_gallery_users(self):
+        approved_user = self._create_gallery_user(
+            email="approved-recommendations@example.com",
+        )
+        self._grant_gallery_access(approved_user)
+        approved_user.userprofile.can_access_gallery = True
+        approved_user.userprofile.save(update_fields=["can_access_gallery"])
+        digital_photo = self._create_photo(is_active=True)
+
+        self.client.force_authenticate(user=approved_user)
+        with patch(
+            "products.views.ShoppingBagRecommendationsView._pick_recommendation_ids",
+            return_value=[digital_photo.id],
+        ):
+            response = self.client.get(reverse("bag-recommendations"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(digital_photo.id, {item["id"] for item in response.data})
+        self.assertTrue(any(item["product_type"] == "photo" for item in response.data))
 
     def test_license_request_message_max_length(self):
         payload = self._payload(message="a" * 3000)
