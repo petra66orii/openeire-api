@@ -665,7 +665,19 @@ class ShoppingBagRecommendationsView(APIView):
         return ids
 
     def get(self, request):
-        active_photos = Photo.objects.filter(is_active=True)
+        profile = getattr(request.user, "userprofile", None) if request.user.is_authenticated else None
+        has_gallery_access = bool(
+            profile and profile.has_digital_gallery_access
+        )
+        active_photos = (
+            Photo.objects.filter(is_active=True)
+            if has_gallery_access
+            else Photo.objects.filter(
+                is_active=True,
+                is_printable=True,
+                variants__isnull=False,
+            ).distinct()
+        )
         selected_ids = self._pick_recommendation_ids(active_photos, self.RECOMMENDATION_LIMIT)
 
         if not selected_ids:
@@ -675,14 +687,18 @@ class ShoppingBagRecommendationsView(APIView):
             *[When(id=photo_id, then=position) for position, photo_id in enumerate(selected_ids)],
             output_field=IntegerField(),
         )
-        photos = (
-            Photo.objects
-            .filter(id__in=selected_ids, is_active=True)
-            .annotate(starting_price=Min('variants__price'))
-            .order_by(preserved_order)
-        )
-
-        serializer = PhotoListSerializer(photos, many=True)
+        photos = Photo.objects.filter(id__in=selected_ids, is_active=True)
+        if has_gallery_access:
+            photos = photos.order_by(preserved_order)
+            serializer = PhotoListSerializer(photos, many=True)
+        else:
+            photos = (
+                photos.filter(is_printable=True, variants__isnull=False)
+                .annotate(starting_price=Min('variants__price'))
+                .distinct()
+                .order_by(preserved_order)
+            )
+            serializer = PhysicalPhotoListSerializer(photos, many=True)
         return Response(serializer.data)
 
 
