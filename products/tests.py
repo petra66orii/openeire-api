@@ -441,8 +441,6 @@ class LicenseRequestTests(APITestCase):
             email="approved-recommendations@example.com",
         )
         self._grant_gallery_access(approved_user)
-        approved_user.userprofile.can_access_gallery = True
-        approved_user.userprofile.save(update_fields=["can_access_gallery"])
         digital_photo = self._create_photo(is_active=True)
 
         self.client.force_authenticate(user=approved_user)

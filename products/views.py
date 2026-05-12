@@ -665,9 +665,9 @@ class ShoppingBagRecommendationsView(APIView):
         return ids
 
     def get(self, request):
+        profile = getattr(request.user, "userprofile", None) if request.user.is_authenticated else None
         has_gallery_access = bool(
-            request.user.is_authenticated
-            and getattr(getattr(request.user, "userprofile", None), "can_access_gallery", False)
+            profile and profile.has_digital_gallery_access
         )
         active_photos = (
             Photo.objects.filter(is_active=True)
