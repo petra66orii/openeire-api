@@ -36,6 +36,7 @@ from .token_utils import (
     issue_user_action_token,
 )
 from checkout.order_claiming import claim_guest_orders_for_user
+from openeire_api.throttling import SharedScopedRateThrottle
 from openeire_api.mail_utils import get_default_from_email
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,8 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = (AllowAny,)
     serializer_class = UserSerializer
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "register"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -234,6 +237,8 @@ class PasswordResetRequestView(generics.GenericAPIView):
     """
     serializer_class = PasswordResetRequestSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "password_reset"
     GENERIC_SUCCESS_MESSAGE = "Password reset link sent."
 
     def post(self, request, *args, **kwargs):
@@ -325,6 +330,8 @@ class ResendVerificationView(generics.GenericAPIView):
     """
     serializer_class = ResendVerificationSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "resend_verification"
     GENERIC_SUCCESS_MESSAGE = "Verification email sent."
 
     def post(self, request, *args, **kwargs):
@@ -371,6 +378,8 @@ class MyTokenObtainPairView(TokenObtainPairView):
     Custom view using the custom serializer to allow email/username login.
     """
     serializer_class = MyTokenObtainPairSerializer
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "login"
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
