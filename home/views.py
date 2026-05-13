@@ -6,6 +6,7 @@ from django.core.mail import send_mail
 from django.conf import settings
 from rest_framework.permissions import AllowAny
 from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
+from openeire_api.throttling import SharedScopedRateThrottle
 from .models import Testimonial, NewsletterSubscriber
 from .serializers import TestimonialSerializer, NewsletterSubscriberSerializer, ContactFormSerializer
 
@@ -21,9 +22,14 @@ class NewsletterSignupView(generics.CreateAPIView):
     queryset = NewsletterSubscriber.objects.all()
     serializer_class = NewsletterSubscriberSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "newsletter_signup"
 
 class ContactFormView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "contact"
+
     def post(self, request):
         serializer = ContactFormSerializer(data=request.data)
         if serializer.is_valid():

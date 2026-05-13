@@ -180,6 +180,12 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_THROTTLE_RATES': {
+        'login': '10/minute',
+        'register': '5/hour',
+        'password_reset': '5/hour',
+        'resend_verification': '5/hour',
+        'contact': '5/hour',
+        'newsletter_signup': '10/hour',
         'license_request': '10/hour',
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
