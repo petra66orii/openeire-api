@@ -189,19 +189,33 @@ def _redact_callback_url(callback_url: Optional[str]) -> str:
     if not raw_url:
         return "omitted"
 
-    parsed = urlsplit(raw_url)
-    query_items = []
-    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-        if key == "token" and value:
-            query_items.append((key, "[redacted]"))
-        else:
-            query_items.append((key, value))
+    def _redacted_query(query_string: str) -> str:
+        query_items = []
+        for key, value in parse_qsl(query_string, keep_blank_values=True):
+            if key == "token" and value:
+                query_items.append((key, "[redacted]"))
+            else:
+                query_items.append((key, value))
+        return urlencode(query_items)
+
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        base_and_query, has_fragment, fragment = raw_url.partition("#")
+        base, has_query, query_string = base_and_query.partition("?")
+        if not has_query:
+            return raw_url
+        rebuilt = f"{base}?{_redacted_query(query_string)}"
+        if has_fragment:
+            return f"{rebuilt}#{fragment}"
+        return rebuilt
+
     return urlunsplit(
         (
             parsed.scheme,
             parsed.netloc,
             parsed.path,
-            urlencode(query_items),
+            _redacted_query(parsed.query),
             parsed.fragment,
         )
     )

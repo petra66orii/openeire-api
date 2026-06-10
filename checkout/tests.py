@@ -39,6 +39,7 @@ from .prodigi import (
     _get_prodigi_callback_url,
     _is_non_public_prodigi_asset_url,
     _prodigi_base_url,
+    _redact_callback_url,
     create_prodigi_order,
 )
 from .admin import OrderAdmin
@@ -486,6 +487,12 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         self.assertIn(
             "PRODIGI_CALLBACK_BASE_URL is not configured",
             " ".join(captured_logs.output),
+        )
+
+    def test_redact_callback_url_tolerates_malformed_callback_url(self):
+        self.assertEqual(
+            _redact_callback_url("https://[::1/api/checkout/prodigi/callback/?token=callback-secret"),
+            "https://[::1/api/checkout/prodigi/callback/?token=%5Bredacted%5D",
         )
 
     @override_settings(DEBUG=True, IS_TEST_ENV=False)
