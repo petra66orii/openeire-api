@@ -78,6 +78,7 @@ Recommended operator checks:
 - Verify `LicenseRequest` status transitions and audit logs in admin.
 - For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
 - Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin. Tracking callbacks are disabled unless it is set.
+- Set `PRODIGI_CALLBACK_TOKEN` if you want the callback endpoint protected with a shared secret; when configured, the generated Prodigi callback URL appends `?token=...`.
 - Check `Order.prodigi_status`, `Order.prodigi_shipments`, and `tracking_email_sent_at` when investigating shipping/tracking issues.
 
 ## Logging and Monitoring
@@ -164,19 +165,51 @@ Operational practice:
   3. Keep `SITE_URL` set to a real public origin as fallback, but expect production fulfillment to prefer storage-generated signed URLs.
 
 ### Prodigi shipment tracking email did not send
-- Cause: Prodigi callback not configured, callback content type rejected, callback arrived before tracking was available, Prodigi lookup failed, or email delivery failed.
+- Cause: Prodigi callback not configured, callback token rejected, callback content type rejected, callback has not been verified against Prodigi API, order matching failed, the order has not reached shipped/dispatched state yet, or email delivery failed.
 - Fix:
   1. Verify `PRODIGI_CALLBACK_BASE_URL` resolves publicly to `/api/checkout/prodigi/callback/`.
-  2. Confirm Prodigi callbacks are hitting the backend without `415 Unsupported Media Type`; callbacks are expected as JSON CloudEvents.
-  3. Check the order in admin or shell for:
+  2. If callback protection is enabled, verify Prodigi is calling the exact generated URL including the `token` query parameter.
+  3. Confirm Prodigi callbacks are hitting the backend without `415 Unsupported Media Type`; callbacks are expected as JSON CloudEvents.
+  4. Review application logs for:
+     - callback `event_type`
+     - payload / fetched Prodigi shipped status
+     - `prodigi_order_id`
+     - `merchant_reference`
+     - matched local order id / order number
+     - whether the shipping email was sent or skipped and why
+  5. Check the order in admin or shell for:
      - `prodigi_order_id`
      - `prodigi_status`
      - `prodigi_shipments`
+     - `prodigi_last_callback_at`
      - `tracking_email_sent_at`
      - `tracking_email_signature`
-  4. If `prodigi_shipments` is present but has no tracking URL/number yet, no customer email should be sent yet.
-  5. If tracking exists but no email was sent, inspect SMTP/email logs and the application logs for `Failed to send tracking email after Prodigi callback`.
-  6. If callbacks arrive but local status remains stale, inspect logs for `Prodigi callback could not verify order against Prodigi API`.
+  6. If `prodigi_shipments` is present with shipped/dispatched status but no tracking yet, OpenEire should still send a graceful dispatched email. If that does not happen, inspect application logs for the skip reason.
+  7. If tracking exists but no email was sent, inspect SMTP/email logs and the application logs for `Failed to send tracking email after Prodigi callback`.
+  8. If callbacks arrive but local status remains stale, inspect logs for `Prodigi callback could not verify order against Prodigi API`.
+
+### Manual sandbox callback test
+1. Ensure the backend is publicly reachable and `PRODIGI_CALLBACK_BASE_URL` is set to that origin.
+2. In Render, verify:
+   - `PRODIGI_API_KEY`
+   - `PRODIGI_SANDBOX=true`
+   - `PRODIGI_CALLBACK_BASE_URL=https://<your-backend-origin>`
+   - `PRODIGI_CALLBACK_TOKEN=<shared-secret>` if you enabled callback protection
+   - SMTP variables and `DEFAULT_FROM_EMAIL`
+3. Place a physical print test order and confirm the local `Order` has a `prodigi_order_id`.
+4. In Prodigi sandbox, confirm the order callback URL resolves to:
+   - `https://<your-backend-origin>/api/checkout/prodigi/callback/`
+   - or `https://<your-backend-origin>/api/checkout/prodigi/callback/?token=<shared-secret>` when token protection is enabled
+5. Trigger or wait for a shipped/dispatched callback in Prodigi sandbox.
+6. In Django admin, open the order and inspect:
+   - `prodigi_status`
+   - `prodigi_shipments`
+   - `prodigi_last_callback_at`
+   - `tracking_email_sent_at`
+   - `tracking_email_signature`
+7. Confirm the customer receives:
+   - a dispatched email even if tracking is absent
+   - a follow-up shipping email with tracking if a later callback adds tracking details
 
 ### Digital downloads denied unexpectedly
 - Cause: missing purchase linkage or wrong user context.

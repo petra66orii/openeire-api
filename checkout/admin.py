@@ -31,7 +31,10 @@ class OrderAdmin(admin.ModelAdmin):
                        'street_address1', 'street_address2', 'county',
                        'personal_terms_version', 'confirmation_email_status',
                        'confirmation_email_sent_at', 'confirmation_email_failed_at',
-                       'confirmation_email_error')
+                       'confirmation_email_error', 'prodigi_order_id',
+                       'prodigi_status', 'prodigi_last_callback_at',
+                       'prodigi_shipments', 'tracking_email_sent_at',
+                       'tracking_email_signature')
 
     # Configure the list view
     list_display = (
@@ -41,10 +44,12 @@ class OrderAdmin(admin.ModelAdmin):
         'order_total',
         'date',
         'personal_terms_version',
+        'prodigi_status',
+        'tracking_email_sent_at',
         'confirmation_email_status',
         'confirmation_email_sent_at',
     )
-    list_filter = ('date', 'confirmation_email_status')
+    list_filter = ('date', 'confirmation_email_status', 'prodigi_status')
     search_fields = ('order_number', 'email', 'first_name')
     ordering = ('-date',)
 

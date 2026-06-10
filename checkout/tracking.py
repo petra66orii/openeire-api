@@ -11,6 +11,20 @@ from django.utils import timezone
 from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
 
 logger = logging.getLogger(__name__)
+SHIPPING_NOTIFICATION_STATES = {
+    "shipped",
+    "dispatched",
+    "partiallyshipped",
+    "partiallydispatched",
+}
+
+
+def _normalize_prodigi_state(value: object) -> str:
+    return "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum())
+
+
+def is_shipping_notification_state(value: object) -> bool:
+    return _normalize_prodigi_state(value) in SHIPPING_NOTIFICATION_STATES
 
 
 def normalize_prodigi_shipments(shipments_payload: object) -> List[dict]:
@@ -76,12 +90,57 @@ def tracked_shipments(shipments: Iterable[dict]) -> List[dict]:
     return normalized
 
 
-def build_tracking_signature(shipments: Iterable[dict]) -> Optional[str]:
-    tracked = tracked_shipments(shipments)
-    if not tracked:
+def shipping_notification_shipments(shipments: Iterable[dict]) -> List[dict]:
+    normalized: List[dict] = []
+    for shipment in shipments:
+        if not isinstance(shipment, dict):
+            continue
+        status = str(shipment.get("status") or "").strip()
+        tracking_number = str(shipment.get("tracking_number") or "").strip()
+        tracking_url = str(shipment.get("tracking_url") or "").strip()
+        if (
+            not tracking_number
+            and not tracking_url
+            and not is_shipping_notification_state(status)
+        ):
+            continue
+        normalized.append(
+            {
+                "id": str(shipment.get("id") or "").strip(),
+                "status": status,
+                "carrier_name": str(shipment.get("carrier_name") or "").strip(),
+                "carrier_service": str(shipment.get("carrier_service") or "").strip(),
+                "tracking_number": tracking_number,
+                "tracking_url": tracking_url,
+                "dispatch_date": str(shipment.get("dispatch_date") or "").strip(),
+            }
+        )
+
+    normalized.sort(
+        key=lambda shipment: (
+            shipment["id"],
+            shipment["status"],
+            shipment["tracking_number"],
+            shipment["tracking_url"],
+        )
+    )
+    return normalized
+
+
+def build_tracking_signature(shipments: Iterable[dict], *, order_stage: object = "") -> Optional[str]:
+    normalized_stage = _normalize_prodigi_state(order_stage)
+    eligible_shipments = shipping_notification_shipments(shipments)
+    if not eligible_shipments and not is_shipping_notification_state(order_stage):
         return None
 
-    encoded = json.dumps(tracked, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        {
+            "order_stage": normalized_stage,
+            "shipments": eligible_shipments,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -116,18 +175,22 @@ def update_order_from_prodigi_payload(order, prodigi_order_payload: dict, *, mar
     return shipments
 
 
-def send_tracking_email(order, shipments: Iterable[dict]):
-    tracked = tracked_shipments(shipments)
-    if not tracked:
+def send_tracking_email(order, shipments: Iterable[dict], *, order_stage: object = ""):
+    notifiable_shipments = shipping_notification_shipments(shipments)
+    has_tracking = bool(tracked_shipments(notifiable_shipments))
+    if not notifiable_shipments and not is_shipping_notification_state(order_stage):
         logger.info(
-            "Skipping tracking email because no tracked shipments are available (order=%s)",
+            "Skipping tracking email because no shipped/dispatched shipments are available (order=%s, order_stage=%s)",
             order.order_number,
+            str(order_stage or "").strip() or "n/a",
         )
         return False
 
     context = {
         "order": order,
-        "shipments": tracked,
+        "shipments": notifiable_shipments,
+        "has_tracking": has_tracking,
+        "order_stage": str(order_stage or "").strip(),
         "contact_email": get_contact_email_address(),
     }
     subject = render_to_string(

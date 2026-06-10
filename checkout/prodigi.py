@@ -2,7 +2,7 @@ import logging
 import os
 import ipaddress
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
@@ -165,7 +165,23 @@ def _get_prodigi_callback_url() -> Optional[str]:
         return None
 
     callback_path = reverse("prodigi_callback")
-    return urljoin(f"{str(base_url).rstrip('/')}/", callback_path.lstrip("/"))
+    callback_url = urljoin(f"{str(base_url).rstrip('/')}/", callback_path.lstrip("/"))
+    callback_token = str(getattr(settings, "PRODIGI_CALLBACK_TOKEN", "") or "").strip()
+    if not callback_token:
+        return callback_url
+
+    parsed = urlsplit(callback_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["token"] = callback_token
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
 
 
 def fetch_prodigi_order(prodigi_order_id: str) -> dict:

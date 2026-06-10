@@ -408,11 +408,24 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             "https://media.openeire.ie/digital_products/photos/high-res.jpg",
         )
 
-    @override_settings(PRODIGI_CALLBACK_BASE_URL="https://api.example.com")
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="",
+    )
     def test_prodigi_callback_url_uses_explicit_base_url(self):
         self.assertEqual(
             _get_prodigi_callback_url(),
             "https://api.example.com/api/checkout/prodigi/callback/",
+        )
+
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="callback-secret",
+    )
+    def test_prodigi_callback_url_includes_token_when_configured(self):
+        self.assertEqual(
+            _get_prodigi_callback_url(),
+            "https://api.example.com/api/checkout/prodigi/callback/?token=callback-secret",
         )
 
     @override_settings(PRODIGI_CALLBACK_BASE_URL="")
@@ -1340,6 +1353,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="orders@example.com",
     SECURE_SSL_REDIRECT=False,
+    PRODIGI_CALLBACK_TOKEN="",
 )
 class ProdigiTrackingCallbackTests(TestCase):
     def setUp(self):
@@ -1352,11 +1366,20 @@ class ProdigiTrackingCallbackTests(TestCase):
             prodigi_order_id="ord_prodigi_123",
         )
 
+    def _post_callback(self, payload, *, content_type="application/cloudevents+json", query_string=""):
+        return self.client.post(
+            f"{self.url}{query_string}",
+            data=json.dumps(payload),
+            content_type=content_type,
+        )
+
     def _payload(
         self,
         *,
         shipment_tracking_url="https://tracking.example.com/track/123",
         shipment_tracking_number="TRACK123",
+        order_stage="Shipped",
+        shipment_status="Shipped",
     ):
         return {
             "specversion": "1.0",
@@ -1365,11 +1388,11 @@ class ProdigiTrackingCallbackTests(TestCase):
             "data": {
                 "id": "ord_prodigi_123",
                 "merchantReference": self.order.order_number,
-                "status": {"stage": "Shipped"},
+                "status": {"stage": order_stage},
                 "shipments": [
                     {
                         "id": "shp_123",
-                        "status": "Shipped",
+                        "status": shipment_status,
                         "dispatchDate": "2026-03-31T10:00:00Z",
                         "carrier": {"name": "DHL", "service": "Express"},
                         "tracking": {
@@ -1384,11 +1407,7 @@ class ProdigiTrackingCallbackTests(TestCase):
     @patch("checkout.views.fetch_prodigi_order")
     def test_callback_stores_tracking_and_sends_email_once(self, mock_fetch_prodigi_order):
         mock_fetch_prodigi_order.return_value = self._payload()["data"]
-        response = self.client.post(
-            self.url,
-            data=json.dumps(self._payload()),
-            content_type="application/cloudevents+json",
-        )
+        response = self._post_callback(self._payload())
 
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
@@ -1401,11 +1420,7 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.assertIn("TRACK123", mail.outbox[0].body)
         self.assertIn("https://tracking.example.com/track/123", mail.outbox[0].body)
 
-        second_response = self.client.post(
-            self.url,
-            data=json.dumps(self._payload()),
-            content_type="application/cloudevents+json",
-        )
+        second_response = self._post_callback(self._payload())
 
         self.assertEqual(second_response.status_code, 200)
         self.assertEqual(len(mail.outbox), 1)
@@ -1429,30 +1444,48 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
 
     @patch("checkout.views.fetch_prodigi_order")
-    def test_callback_does_not_email_without_tracking(self, mock_fetch_prodigi_order):
+    def test_callback_sends_graceful_email_without_tracking(self, mock_fetch_prodigi_order):
         payload = self._payload(shipment_tracking_url="", shipment_tracking_number="")
         mock_fetch_prodigi_order.return_value = payload["data"]
 
-        response = self.client.post(
-            self.url,
-            data=json.dumps(payload),
-            content_type="application/cloudevents+json",
-        )
+        response = self._post_callback(payload)
 
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
         self.assertEqual(self.order.prodigi_status, "Shipped")
         self.assertEqual(len(self.order.prodigi_shipments), 1)
-        self.assertFalse(self.order.tracking_email_signature)
-        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(self.order.tracking_email_signature)
+        self.assertIsNotNone(self.order.tracking_email_sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("has been dispatched and is on the way", mail.outbox[0].body)
+        self.assertIn("Tracking details are not available", mail.outbox[0].body)
+
+        second_response = self._post_callback(payload)
+
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_accepts_dispatched_status_variant_without_tracking(self, mock_fetch_prodigi_order):
+        payload = self._payload(
+            shipment_tracking_url="",
+            shipment_tracking_number="",
+            order_stage="Dispatched",
+            shipment_status="Dispatched",
+        )
+        mock_fetch_prodigi_order.return_value = payload["data"]
+
+        response = self._post_callback(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_status, "Dispatched")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("has been dispatched and is on the way", mail.outbox[0].body)
 
     @patch("checkout.views.fetch_prodigi_order", side_effect=RuntimeError("lookup failed"))
     def test_callback_returns_502_when_prodigi_lookup_fails(self, _mock_fetch_prodigi_order):
-        response = self.client.post(
-            self.url,
-            data=json.dumps(self._payload()),
-            content_type="application/cloudevents+json",
-        )
+        response = self._post_callback(self._payload())
 
         self.assertEqual(response.status_code, 502)
         self.order.refresh_from_db()
@@ -1471,17 +1504,48 @@ class ProdigiTrackingCallbackTests(TestCase):
         }
         mock_fetch_prodigi_order.return_value = payload["data"]["order"]
 
-        response = self.client.post(
-            self.url,
-            data=json.dumps(payload),
-            content_type="application/cloudevents+json",
-        )
+        response = self._post_callback(payload)
 
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
         self.assertEqual(self.order.prodigi_status, "Shipped")
         self.assertEqual(self.order.prodigi_shipments[0]["tracking_number"], "TRACK123")
         self.assertEqual(len(mail.outbox), 1)
+
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_returns_200_and_logs_when_order_reference_is_unknown(self, mock_fetch_prodigi_order):
+        payload = self._payload()
+        prodigi_data = payload["data"].copy()
+        prodigi_data["merchantReference"] = "missing-order-number"
+        prodigi_data["id"] = "ord_prodigi_unknown"
+        payload["subject"] = "ord_prodigi_unknown"
+        payload["data"] = prodigi_data
+        mock_fetch_prodigi_order.return_value = prodigi_data
+
+        with self.assertLogs("checkout.views", level="WARNING") as captured_logs:
+            response = self._post_callback(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_shipments, [])
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIn(
+            "Prodigi callback ignored because no local order matched",
+            " ".join(captured_logs.output),
+        )
+
+    @override_settings(PRODIGI_CALLBACK_TOKEN="expected-token")
+    @patch("checkout.views.fetch_prodigi_order")
+    def test_callback_rejects_invalid_callback_token(self, mock_fetch_prodigi_order):
+        mock_fetch_prodigi_order.return_value = self._payload()["data"]
+
+        response = self._post_callback(self._payload(), query_string="?token=wrong-token")
+
+        self.assertEqual(response.status_code, 403)
+        mock_fetch_prodigi_order.assert_not_called()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.prodigi_shipments, [])
+        self.assertEqual(len(mail.outbox), 0)
 
 
 @override_settings(

@@ -299,6 +299,24 @@ No DRF routers were detected; endpoints are path-based class views.
 - Response:
   - Order list with totals, shipping, terms version, and item-level product payload + download URLs for digital items.
 
+### `POST /api/checkout/prodigi/callback/`
+- Purpose: Receive Prodigi order update callbacks for physical print fulfillment.
+- Auth:
+  - Public endpoint
+  - If `PRODIGI_CALLBACK_TOKEN` is configured, callbacks must include the matching token (the generated callback URL appends it automatically as `?token=...`)
+- Behavior:
+  - Accepts JSON and CloudEvents JSON payloads
+  - Verifies the upstream order via Prodigi API before mutating local state
+  - Matches the local order by `prodigi_order_id` or fallback `merchantReference -> order_number`
+  - Updates `prodigi_status`, `prodigi_shipments`, and `prodigi_last_callback_at`
+  - Sends a shipping/dispatched email when the order reaches shipped/dispatched state, even if tracking is not available yet
+  - Uses `tracking_email_signature` to avoid duplicate customer emails for the same shipment state
+- Response:
+  - `200` for processed, safely ignored, or unmatched callbacks
+  - `400` for invalid payloads
+  - `403` for invalid callback token when token protection is enabled
+  - `502` if the callback cannot be verified against the Prodigi API
+
 ---
 
 ## Blog (`/api/blog/`)
