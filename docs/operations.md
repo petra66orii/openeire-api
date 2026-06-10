@@ -185,6 +185,7 @@ Operational practice:
      - `prodigi_status`
      - `prodigi_shipments`
      - `prodigi_last_callback_at`
+     - `prodigi_last_polled_at`
      - `tracking_email_sent_at`
      - `tracking_email_signature`
   6. If `prodigi_shipments` is present with shipped/dispatched status but no tracking yet, OpenEire should still send a graceful dispatched email. If that does not happen, inspect application logs for the skip reason.
@@ -222,9 +223,39 @@ If Prodigi shipped the order but no callback arrived:
 4. Re-check:
    - `prodigi_status`
    - `prodigi_shipments`
+   - `prodigi_last_polled_at`
    - `tracking_email_sent_at`
    - `tracking_email_signature`
 5. If the order is shipped/dispatched, the refresh action should also send the customer shipping email.
+
+### Scheduled fallback sync for missed Prodigi callbacks
+Use this when Prodigi callbacks are delayed, unreliable, or absent, but you want OpenEire to keep polling recent physical orders and send shipping emails automatically.
+
+Manual run:
+1. Open a Render shell on the backend service.
+2. Run:
+   - `python manage.py sync_prodigi_shipments`
+   - or `python manage.py sync_prodigi_shipments --days 90`
+3. Review logs for:
+   - candidate count
+   - `order_number`
+   - `prodigi_order_id`
+   - old/new `prodigi_status`
+   - whether shipping email was sent or skipped and why
+
+Recommended schedule:
+1. Add a Render Cron Job or equivalent scheduled task.
+2. Command:
+   - `python manage.py sync_prodigi_shipments`
+3. Suggested cadence:
+   - every 30 minutes for faster customer updates
+   - or every 60 minutes for a lighter polling footprint
+
+Operational notes:
+- This command is a fallback, not a replacement for `POST /api/checkout/prodigi/callback/`.
+- It only polls recent candidate orders with a `prodigi_order_id` and at least one physical print item.
+- Duplicate shipping emails are still prevented via `tracking_email_signature`.
+- Check `prodigi_last_polled_at` in admin to confirm the fallback command has touched an order recently.
 
 ### Digital downloads denied unexpectedly
 - Cause: missing purchase linkage or wrong user context.
