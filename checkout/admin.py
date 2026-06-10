@@ -3,6 +3,8 @@ from django.contrib import messages
 from django.utils import timezone
 from .models import Order, OrderItem, ProductShipping
 from .emails import send_order_confirmation_email
+from .prodigi import fetch_prodigi_order
+from .tracking import sync_order_shipping_from_prodigi
 from openeire_api.admin import custom_admin_site
 
 class OrderItemInline(admin.TabularInline):
@@ -22,7 +24,7 @@ class OrderAdmin(admin.ModelAdmin):
     """
     inlines = (OrderItemInline,)
 
-    actions = ("retry_confirmation_emails",)
+    actions = ("retry_confirmation_emails", "refresh_from_prodigi")
 
     # Make all fields read-only in the detail view
     readonly_fields = ('order_number', 'user_profile', 'date', 'delivery_cost',
@@ -101,6 +103,51 @@ class OrderAdmin(admin.ModelAdmin):
                 request,
                 f"Skipped {skipped_sent_count} order(s) already marked as sent.",
                 level=messages.WARNING,
+            )
+
+    @admin.action(description="Refresh selected orders from Prodigi")
+    def refresh_from_prodigi(self, request, queryset):
+        refreshed_count = 0
+        emailed_count = 0
+        skipped_missing_id = 0
+        failed_count = 0
+
+        for order in queryset:
+            if not order.prodigi_order_id:
+                skipped_missing_id += 1
+                continue
+
+            try:
+                prodigi_order = fetch_prodigi_order(order.prodigi_order_id)
+                sync_result = sync_order_shipping_from_prodigi(order, prodigi_order)
+                refreshed_count += 1
+                if sync_result["email_sent"]:
+                    emailed_count += 1
+            except Exception as exc:
+                failed_count += 1
+                self.message_user(
+                    request,
+                    f"Could not refresh order {order.order_number} from Prodigi: {exc}",
+                    level=messages.ERROR,
+                )
+
+        if refreshed_count:
+            self.message_user(
+                request,
+                f"Refreshed {refreshed_count} order(s) from Prodigi. Shipping email sent for {emailed_count} order(s).",
+                level=messages.SUCCESS,
+            )
+        if skipped_missing_id:
+            self.message_user(
+                request,
+                f"Skipped {skipped_missing_id} order(s) without a Prodigi order id.",
+                level=messages.WARNING,
+            )
+        if failed_count and not refreshed_count:
+            self.message_user(
+                request,
+                f"Prodigi refresh failed for {failed_count} order(s).",
+                level=messages.ERROR,
             )
 
 class ProductShippingAdmin(admin.ModelAdmin):

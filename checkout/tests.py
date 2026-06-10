@@ -432,6 +432,62 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
     def test_prodigi_callback_url_is_disabled_without_base_url(self):
         self.assertIsNone(_get_prodigi_callback_url())
 
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="",
+    )
+    @patch("checkout.prodigi.requests.post")
+    def test_create_prodigi_order_includes_callback_url_when_base_url_configured(self, mock_post):
+        mock_response = Mock(status_code=201, headers={})
+        mock_response.json.return_value = {"order": {"id": "ord_prodigi_123"}}
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            create_prodigi_order(self._build_order())
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["callbackUrl"],
+            "https://api.example.com/api/checkout/prodigi/callback/",
+        )
+
+    @override_settings(
+        PRODIGI_CALLBACK_BASE_URL="https://api.example.com",
+        PRODIGI_CALLBACK_TOKEN="callback-secret",
+    )
+    @patch("checkout.prodigi.requests.post")
+    def test_create_prodigi_order_includes_callback_url_token_when_configured(self, mock_post):
+        mock_response = Mock(status_code=201, headers={})
+        mock_response.json.return_value = {"order": {"id": "ord_prodigi_123"}}
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            create_prodigi_order(self._build_order())
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["callbackUrl"],
+            "https://api.example.com/api/checkout/prodigi/callback/?token=callback-secret",
+        )
+
+    @override_settings(PRODIGI_CALLBACK_BASE_URL="", PRODIGI_CALLBACK_TOKEN="")
+    @patch("checkout.prodigi.requests.post")
+    def test_create_prodigi_order_omits_callback_url_when_base_url_missing_and_logs_reason(self, mock_post):
+        mock_response = Mock(status_code=201, headers={})
+        mock_response.json.return_value = {"order": {"id": "ord_prodigi_123"}}
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            with self.assertLogs("checkout.prodigi", level="WARNING") as captured_logs:
+                create_prodigi_order(self._build_order())
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertNotIn("callbackUrl", payload)
+        self.assertIn(
+            "PRODIGI_CALLBACK_BASE_URL is not configured",
+            " ".join(captured_logs.output),
+        )
+
     @override_settings(DEBUG=True, IS_TEST_ENV=False)
     def test_prodigi_defaults_to_sandbox_in_debug_when_env_missing(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -990,6 +1046,52 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIsNone(order.confirmation_email_failed_at)
         self.assertEqual(order.confirmation_email_error, "")
         mock_send_confirmation_email.assert_not_called()
+
+    @patch("checkout.admin.fetch_prodigi_order")
+    def test_admin_refresh_from_prodigi_updates_shipping_state_and_sends_email(self, mock_fetch_prodigi_order):
+        order = Order.objects.create(
+            user_profile=self.user.userprofile,
+            first_name="Buyer",
+            email=self.user.email,
+            stripe_pid="pi_prodigi_admin_refresh",
+            prodigi_order_id="ord_prodigi_admin_refresh",
+            prodigi_status="InProgress",
+        )
+        mock_fetch_prodigi_order.return_value = {
+            "id": "ord_prodigi_admin_refresh",
+            "merchantReference": order.order_number,
+            "status": {"stage": "Shipped"},
+            "shipments": [
+                {
+                    "id": "shp_admin_1",
+                    "status": "Shipped",
+                    "dispatchDate": "2026-06-10T10:00:00Z",
+                    "carrier": {"name": "DHL", "service": "Express"},
+                    "tracking": {
+                        "number": "TRACK-ADMIN-1",
+                        "url": "https://tracking.example.com/TRACK-ADMIN-1",
+                    },
+                }
+            ],
+        }
+        order_admin = OrderAdmin(Order, custom_admin_site)
+        order_admin.message_user = Mock()
+        request = self.factory.post("/admin/checkout/order/")
+        request.user = get_user_model().objects.create_superuser(
+            username="adminprodigirefresh",
+            email="adminprodigirefresh@example.com",
+            password="StrongPass123!",
+        )
+
+        order_admin.refresh_from_prodigi(request, Order.objects.filter(pk=order.pk))
+
+        order.refresh_from_db()
+        self.assertEqual(order.prodigi_status, "Shipped")
+        self.assertEqual(len(order.prodigi_shipments), 1)
+        self.assertIsNotNone(order.tracking_email_sent_at)
+        self.assertTrue(order.tracking_email_signature)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("TRACK-ADMIN-1", mail.outbox[0].body)
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_ignores_invalid_digital_license_option(self, mock_construct):

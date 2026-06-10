@@ -46,10 +46,7 @@ from .shipping import (
     get_free_shipping_threshold,
 )
 from .tracking import (
-    build_tracking_signature,
-    send_tracking_email,
-    tracked_shipments,
-    update_order_from_prodigi_payload,
+    sync_order_shipping_from_prodigi,
 )
 from openeire_api.throttling import SharedScopedRateThrottle
 
@@ -903,11 +900,6 @@ class ProdigiCallbackView(APIView):
             return Response(status=status.HTTP_502_BAD_GATEWAY)
 
         merchant_reference = str(prodigi_order.get("merchantReference") or "").strip()
-        order_status_payload = prodigi_order.get("status")
-        order_stage = ""
-        if isinstance(order_status_payload, dict):
-            order_stage = str(order_status_payload.get("stage") or "").strip()
-
         with transaction.atomic():
             order = None
             if prodigi_order_id:
@@ -921,6 +913,11 @@ class ProdigiCallbackView(APIView):
                     merchant_reference or "n/a",
                 )
                 return Response(status=status.HTTP_200_OK)
+            initial_order_stage = "n/a"
+            if isinstance(prodigi_order.get("status"), dict):
+                initial_order_stage = (
+                    str(prodigi_order["status"].get("stage") or "").strip() or "n/a"
+                )
             logger.info(
                 "Prodigi callback matched local order (event_type=%s prodigi_order_id=%s merchant_reference=%s local_order_id=%s order_number=%s order_stage=%s)",
                 event_type or "unknown",
@@ -928,31 +925,36 @@ class ProdigiCallbackView(APIView):
                 merchant_reference or "n/a",
                 order.id,
                 order.order_number,
-                order_stage or "n/a",
+                initial_order_stage,
             )
 
-            shipments = update_order_from_prodigi_payload(
-                order,
-                prodigi_order,
-                mark_callback_received=True,
-            )
-            tracking_signature = build_tracking_signature(
-                shipments,
-                order_stage=order_stage,
-            )
+            try:
+                sync_result = sync_order_shipping_from_prodigi(
+                    order,
+                    prodigi_order,
+                    mark_callback_received=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to sync shipping data after Prodigi callback (event_type=%s prodigi_order_id=%s order=%s)",
+                    event_type or "unknown",
+                    prodigi_order_id,
+                    order.order_number,
+                )
+                return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            if not tracking_signature:
+            if not sync_result["tracking_signature"]:
                 logger.info(
                     "Prodigi callback updated order but skipped shipping email because order is not yet shipped/dispatched (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
                     event_type or "unknown",
                     prodigi_order_id,
                     order.order_number,
-                    order_stage or "n/a",
-                    len(tracked_shipments(shipments)),
+                    sync_result["order_stage"] or "n/a",
+                    len(sync_result["tracked_shipments"]),
                 )
                 return Response(status=status.HTTP_200_OK)
 
-            if order.tracking_email_signature == tracking_signature:
+            if sync_result["email_skipped_reason"] == "duplicate_signature":
                 logger.info(
                     "Prodigi shipping email already sent for current shipment state (event_type=%s prodigi_order_id=%s order=%s)",
                     event_type or "unknown",
@@ -961,36 +963,24 @@ class ProdigiCallbackView(APIView):
                 )
                 return Response(status=status.HTTP_200_OK)
 
-            tracked = tracked_shipments(shipments)
-            try:
-                if send_tracking_email(order, shipments, order_stage=order_stage):
-                    order.tracking_email_signature = tracking_signature
-                    order.tracking_email_sent_at = timezone.now()
-                    order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
-                    logger.info(
-                        "Prodigi shipping email sent (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
-                        event_type or "unknown",
-                        prodigi_order_id,
-                        order.order_number,
-                        order_stage or "n/a",
-                        len(tracked),
-                    )
-                else:
-                    logger.info(
-                        "Prodigi shipping email skipped after evaluation (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
-                        event_type or "unknown",
-                        prodigi_order_id,
-                        order.order_number,
-                        order_stage or "n/a",
-                        len(tracked),
-                    )
-            except Exception:
-                logger.exception(
-                    "Failed to send tracking email after Prodigi callback (event_type=%s prodigi_order_id=%s order=%s order_stage=%s)",
+            if sync_result["email_sent"]:
+                logger.info(
+                    "Prodigi shipping email sent (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
                     event_type or "unknown",
                     prodigi_order_id,
                     order.order_number,
-                    order_stage or "n/a",
+                    sync_result["order_stage"] or "n/a",
+                    len(sync_result["tracked_shipments"]),
+                )
+            else:
+                logger.info(
+                    "Prodigi shipping email skipped after evaluation (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s reason=%s)",
+                    event_type or "unknown",
+                    prodigi_order_id,
+                    order.order_number,
+                    sync_result["order_stage"] or "n/a",
+                    len(sync_result["tracked_shipments"]),
+                    sync_result["email_skipped_reason"] or "unknown",
                 )
 
         return Response(status=status.HTTP_200_OK)

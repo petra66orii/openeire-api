@@ -184,6 +184,29 @@ def _get_prodigi_callback_url() -> Optional[str]:
     )
 
 
+def _redact_callback_url(callback_url: Optional[str]) -> str:
+    raw_url = str(callback_url or "").strip()
+    if not raw_url:
+        return "omitted"
+
+    parsed = urlsplit(raw_url)
+    query_items = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key == "token" and value:
+            query_items.append((key, "[redacted]"))
+        else:
+            query_items.append((key, value))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query_items),
+            parsed.fragment,
+        )
+    )
+
+
 def fetch_prodigi_order(prodigi_order_id: str) -> dict:
     normalized_order_id = str(prodigi_order_id or "").strip()
     if not normalized_order_id:
@@ -347,12 +370,28 @@ def create_prodigi_order(order):
     }
 
     callback_url = _get_prodigi_callback_url()
+    prodigi_mode = "sandbox" if "sandbox" in url.lower() else "live"
+    redacted_callback_url = _redact_callback_url(callback_url)
     if callback_url:
         payload["callbackUrl"] = callback_url
-    else:
-        logger.warning(
-            "Prodigi callback URL is not configured; tracking updates will not be pushed automatically (order=%s)",
+        logger.info(
+            "Creating Prodigi order with callback URL (order=%s, mode=%s, callback_url=%s)",
             order.order_number,
+            prodigi_mode,
+            redacted_callback_url,
+        )
+    else:
+        callback_base_url = str(getattr(settings, "PRODIGI_CALLBACK_BASE_URL", "") or "").strip()
+        omission_reason = (
+            "PRODIGI_CALLBACK_BASE_URL is not configured"
+            if not callback_base_url
+            else "callback URL could not be generated"
+        )
+        logger.warning(
+            "Prodigi callback URL omitted from Prodigi order payload (order=%s, mode=%s, reason=%s)",
+            order.order_number,
+            prodigi_mode,
+            omission_reason,
         )
 
     try:
