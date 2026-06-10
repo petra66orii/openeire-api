@@ -1,6 +1,6 @@
 Hi,
 
-Your OpenEire Studios order {{ order.order_number }} has been dispatched and is on the way.
+Your OpenÉire Studios order {{ order.order_number }} has been dispatched and is on the way.
 
 {% if has_tracking %}
 Tracking details are now available:

@@ -1,6 +1,7 @@
 import stripe
 import json
 import logging
+import secrets
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
@@ -838,7 +839,7 @@ class ProdigiCallbackView(APIView):
             return None
 
         provided_token = self._get_provided_callback_token(request)
-        if provided_token == expected_token:
+        if secrets.compare_digest(provided_token, expected_token):
             return None
 
         logger.warning(
