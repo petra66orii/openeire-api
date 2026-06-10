@@ -43,6 +43,8 @@ Set values for the variables used by settings and integrations:
   - `STRIPE_PUBLIC_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 - Prodigi:
   - `PRODIGI_API_KEY`, `PRODIGI_SANDBOX`, `SITE_URL`
+  - `PRODIGI_CALLBACK_BASE_URL`
+  - `PRODIGI_CALLBACK_TOKEN` (recommended; appended to the callback URL automatically when set)
   - `SITE_URL` is a fallback only. In production, physical print assets should resolve through the private storage backend so Prodigi receives a short-lived signed URL instead of a permanent public media URL.
 - Internal worker:
   - `AI_WORKER_SECRET` (+ optional IP allowlist vars)
@@ -116,4 +118,6 @@ This repository is compatible with Render-style deployment (environment-driven s
 - Throttled public endpoints enforce expected `429` behavior across multiple instances.
 - Stripe webhook endpoint receives signed events successfully.
 - Order flow creates order records and sends confirmation email.
+- Prodigi callback endpoint is reachable at `/api/checkout/prodigi/callback/` from the public backend origin.
+- If callback protection is enabled, confirm the generated Prodigi callback URL includes the expected `token` query parameter.
 - License delivery token downloads expire/one-time-use behavior works.

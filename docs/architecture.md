@@ -51,6 +51,7 @@ No Celery app/tasks were found in the repository (`Configuration Required` for C
 Current async-like external processing pattern:
 - Internal protected API endpoints are used by a separate worker process to pull and submit AI draft responses.
 - Stripe webhook callbacks are synchronous HTTP handlers with idempotency tracking via `StripeWebhookEvent`.
+- Prodigi fulfillment updates arrive through `POST /api/checkout/prodigi/callback/`; the handler verifies the upstream order against Prodigi before updating local shipment state and sending shipping/dispatched emails.
 
 ## Integration Points
 - Stripe: payment intents, webhooks, payment links (licensing offers)

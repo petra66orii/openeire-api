@@ -1,6 +1,7 @@
 import stripe
 import json
 import logging
+import secrets
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
@@ -823,8 +824,34 @@ class ProdigiCallbackView(APIView):
     throttle_scope = "prodigi_callback"
     parser_classes = [JSONParser, CloudEventJSONParser]
 
+    def _get_expected_callback_token(self):
+        return str(getattr(settings, "PRODIGI_CALLBACK_TOKEN", "") or "").strip()
+
+    def _get_provided_callback_token(self, request):
+        query_token = str(request.query_params.get("token") or "").strip()
+        if query_token:
+            return query_token
+        return str(request.META.get("HTTP_X_PRODIGI_CALLBACK_TOKEN") or "").strip()
+
+    def _reject_invalid_callback_token(self, request, *, prodigi_order_id, event_type):
+        expected_token = self._get_expected_callback_token()
+        if not expected_token:
+            return None
+
+        provided_token = self._get_provided_callback_token(request)
+        if secrets.compare_digest(provided_token, expected_token):
+            return None
+
+        logger.warning(
+            "Prodigi callback rejected due to invalid callback token (event_type=%s prodigi_order_id=%s)",
+            event_type or "unknown",
+            prodigi_order_id or "n/a",
+        )
+        return Response(status=status.HTTP_403_FORBIDDEN)
+
     def post(self, request):
         payload = request.data if isinstance(request.data, dict) else {}
+        event_type = str(payload.get("type") or "").strip()
         prodigi_order_hint = None
         data_payload = payload.get("data")
         if isinstance(data_payload, dict):
@@ -848,6 +875,24 @@ class ProdigiCallbackView(APIView):
             logger.warning("Prodigi callback received payload without order id.")
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
+        invalid_token_response = self._reject_invalid_callback_token(
+            request,
+            prodigi_order_id=prodigi_order_id,
+            event_type=event_type,
+        )
+        if invalid_token_response is not None:
+            return invalid_token_response
+
+        payload_stage = ""
+        if isinstance(prodigi_order_hint.get("status"), dict):
+            payload_stage = str(prodigi_order_hint["status"].get("stage") or "").strip()
+        logger.info(
+            "Prodigi callback received (event_type=%s payload_stage=%s prodigi_order_id=%s)",
+            event_type or "unknown",
+            payload_stage or "n/a",
+            prodigi_order_id,
+        )
+
         try:
             prodigi_order = fetch_prodigi_order(prodigi_order_id)
         except RuntimeError:
@@ -858,6 +903,10 @@ class ProdigiCallbackView(APIView):
             return Response(status=status.HTTP_502_BAD_GATEWAY)
 
         merchant_reference = str(prodigi_order.get("merchantReference") or "").strip()
+        order_status_payload = prodigi_order.get("status")
+        order_stage = ""
+        if isinstance(order_status_payload, dict):
+            order_stage = str(order_status_payload.get("stage") or "").strip()
 
         with transaction.atomic():
             order = None
@@ -872,38 +921,76 @@ class ProdigiCallbackView(APIView):
                     merchant_reference or "n/a",
                 )
                 return Response(status=status.HTTP_200_OK)
+            logger.info(
+                "Prodigi callback matched local order (event_type=%s prodigi_order_id=%s merchant_reference=%s local_order_id=%s order_number=%s order_stage=%s)",
+                event_type or "unknown",
+                prodigi_order_id,
+                merchant_reference or "n/a",
+                order.id,
+                order.order_number,
+                order_stage or "n/a",
+            )
 
             shipments = update_order_from_prodigi_payload(
                 order,
                 prodigi_order,
                 mark_callback_received=True,
             )
-            tracking_signature = build_tracking_signature(shipments)
+            tracking_signature = build_tracking_signature(
+                shipments,
+                order_stage=order_stage,
+            )
 
             if not tracking_signature:
                 logger.info(
-                    "Prodigi callback updated order without tracking info (order=%s)",
+                    "Prodigi callback updated order but skipped shipping email because order is not yet shipped/dispatched (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
+                    event_type or "unknown",
+                    prodigi_order_id,
                     order.order_number,
+                    order_stage or "n/a",
+                    len(tracked_shipments(shipments)),
                 )
                 return Response(status=status.HTTP_200_OK)
 
             if order.tracking_email_signature == tracking_signature:
                 logger.info(
-                    "Prodigi tracking email already sent for current shipment state (order=%s)",
+                    "Prodigi shipping email already sent for current shipment state (event_type=%s prodigi_order_id=%s order=%s)",
+                    event_type or "unknown",
+                    prodigi_order_id,
                     order.order_number,
                 )
                 return Response(status=status.HTTP_200_OK)
 
             tracked = tracked_shipments(shipments)
             try:
-                if send_tracking_email(order, tracked):
+                if send_tracking_email(order, shipments, order_stage=order_stage):
                     order.tracking_email_signature = tracking_signature
                     order.tracking_email_sent_at = timezone.now()
                     order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
+                    logger.info(
+                        "Prodigi shipping email sent (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
+                        event_type or "unknown",
+                        prodigi_order_id,
+                        order.order_number,
+                        order_stage or "n/a",
+                        len(tracked),
+                    )
+                else:
+                    logger.info(
+                        "Prodigi shipping email skipped after evaluation (event_type=%s prodigi_order_id=%s order=%s order_stage=%s tracked_shipments=%s)",
+                        event_type or "unknown",
+                        prodigi_order_id,
+                        order.order_number,
+                        order_stage or "n/a",
+                        len(tracked),
+                    )
             except Exception:
                 logger.exception(
-                    "Failed to send tracking email after Prodigi callback (order=%s)",
+                    "Failed to send tracking email after Prodigi callback (event_type=%s prodigi_order_id=%s order=%s order_stage=%s)",
+                    event_type or "unknown",
+                    prodigi_order_id,
                     order.order_number,
+                    order_stage or "n/a",
                 )
 
         return Response(status=status.HTTP_200_OK)

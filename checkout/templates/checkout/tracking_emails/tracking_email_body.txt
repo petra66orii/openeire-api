@@ -1,9 +1,15 @@
 Hi,
 
-Tracking information is now available for your OpenÉire Studios order {{ order.order_number }}.
+Your OpenÉire Studios order {{ order.order_number }} has been dispatched and is on the way.
+
+{% if has_tracking %}
+Tracking details are now available:
+{% else %}
+Tracking details are not available from the carrier yet. If more shipment details arrive, we'll keep your order record up to date.
+{% endif %}
 
 {% for shipment in shipments %}
-Shipment {{ forloop.counter }}{% if shipment.carrier_name %} - {{ shipment.carrier_name }}{% endif %}{% if shipment.carrier_service %} ({{ shipment.carrier_service }}){% endif %}
+Shipment {{ forloop.counter }}{% if shipment.carrier_name %} - {{ shipment.carrier_name }}{% endif %}{% if shipment.carrier_service %} ({{ shipment.carrier_service }}){% endif %}{% if shipment.status %} [{{ shipment.status }}]{% endif %}
 {% if shipment.tracking_number %}Tracking number: {{ shipment.tracking_number }}{% endif %}
 {% if shipment.tracking_url %}Track here: {{ shipment.tracking_url }}{% endif %}
 {% if shipment.dispatch_date %}Dispatched: {{ shipment.dispatch_date }}{% endif %}
