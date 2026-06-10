@@ -744,7 +744,7 @@ class StripeWebhookView(APIView):
                                 if isinstance(prodigi_response, dict):
                                     prodigi_order = prodigi_response.get("order")
                                     if isinstance(prodigi_order, dict):
-                                        update_order_from_prodigi_payload(order, prodigi_order)
+                                        sync_order_shipping_from_prodigi(order, prodigi_order)
                                 logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
                         else:
                             logger.info(
