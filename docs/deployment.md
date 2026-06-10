@@ -45,6 +45,7 @@ Set values for the variables used by settings and integrations:
   - `PRODIGI_API_KEY`, `PRODIGI_SANDBOX`, `SITE_URL`
   - `PRODIGI_CALLBACK_BASE_URL`
   - `PRODIGI_CALLBACK_TOKEN` (recommended; appended to the callback URL automatically when set)
+  - The backend sends the callback destination per order using Prodigi's `callbackUrl` payload field. This is not a separate dashboard-only webhook configured in this codebase.
   - `SITE_URL` is a fallback only. In production, physical print assets should resolve through the private storage backend so Prodigi receives a short-lived signed URL instead of a permanent public media URL.
 - Internal worker:
   - `AI_WORKER_SECRET` (+ optional IP allowlist vars)

@@ -175,6 +175,51 @@ def update_order_from_prodigi_payload(order, prodigi_order_payload: dict, *, mar
     return shipments
 
 
+def get_prodigi_order_stage(prodigi_order_payload: dict) -> str:
+    status_payload = prodigi_order_payload.get("status")
+    if isinstance(status_payload, dict):
+        return str(status_payload.get("stage") or "").strip()
+    return ""
+
+
+def sync_order_shipping_from_prodigi(order, prodigi_order_payload: dict, *, mark_callback_received: bool = False):
+    order_stage = get_prodigi_order_stage(prodigi_order_payload)
+    shipments = update_order_from_prodigi_payload(
+        order,
+        prodigi_order_payload,
+        mark_callback_received=mark_callback_received,
+    )
+    tracking_signature = build_tracking_signature(shipments, order_stage=order_stage)
+    tracked = tracked_shipments(shipments)
+
+    result = {
+        "order_stage": order_stage,
+        "shipments": shipments,
+        "tracked_shipments": tracked,
+        "tracking_signature": tracking_signature,
+        "email_sent": False,
+        "email_skipped_reason": "",
+    }
+
+    if not tracking_signature:
+        result["email_skipped_reason"] = "not_shipped_or_dispatched"
+        return result
+
+    if order.tracking_email_signature == tracking_signature:
+        result["email_skipped_reason"] = "duplicate_signature"
+        return result
+
+    if send_tracking_email(order, shipments, order_stage=order_stage):
+        order.tracking_email_signature = tracking_signature
+        order.tracking_email_sent_at = timezone.now()
+        order.save(update_fields=["tracking_email_signature", "tracking_email_sent_at"])
+        result["email_sent"] = True
+        return result
+
+    result["email_skipped_reason"] = "no_notifiable_shipments"
+    return result
+
+
 def send_tracking_email(order, shipments: Iterable[dict], *, order_stage: object = ""):
     notifiable_shipments = shipping_notification_shipments(shipments)
     has_tracking = bool(tracked_shipments(notifiable_shipments))

@@ -79,6 +79,7 @@ Recommended operator checks:
 - For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
 - Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin. Tracking callbacks are disabled unless it is set.
 - Set `PRODIGI_CALLBACK_TOKEN` if you want the callback endpoint protected with a shared secret; when configured, the generated Prodigi callback URL appends `?token=...`.
+- The callback destination is sent to Prodigi per order using the `callbackUrl` field in the order creation payload. It is not configured elsewhere in this backend.
 - Check `Order.prodigi_status`, `Order.prodigi_shipments`, and `tracking_email_sent_at` when investigating shipping/tracking issues.
 
 ## Logging and Monitoring
@@ -171,6 +172,8 @@ Operational practice:
   2. If callback protection is enabled, verify Prodigi is calling the exact generated URL including the `token` query parameter.
   3. Confirm Prodigi callbacks are hitting the backend without `415 Unsupported Media Type`; callbacks are expected as JSON CloudEvents.
   4. Review application logs for:
+     - `Creating Prodigi order with callback URL ...`
+     - or `Prodigi callback URL omitted from Prodigi order payload ...`
      - callback `event_type`
      - payload / fetched Prodigi shipped status
      - `prodigi_order_id`
@@ -210,6 +213,18 @@ Operational practice:
 7. Confirm the customer receives:
    - a dispatched email even if tracking is absent
    - a follow-up shipping email with tracking if a later callback adds tracking details
+
+### Manual refresh for missed Prodigi callbacks
+If Prodigi shipped the order but no callback arrived:
+1. Open the order in Django admin and confirm `prodigi_order_id` is present.
+2. In the order changelist, select the affected order(s).
+3. Run the admin action: `Refresh selected orders from Prodigi`.
+4. Re-check:
+   - `prodigi_status`
+   - `prodigi_shipments`
+   - `tracking_email_sent_at`
+   - `tracking_email_signature`
+5. If the order is shipped/dispatched, the refresh action should also send the customer shipping email.
 
 ### Digital downloads denied unexpectedly
 - Cause: missing purchase linkage or wrong user context.
