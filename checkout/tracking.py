@@ -7,6 +7,7 @@ from typing import Iterable, List, Optional
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.mail import EmailMessage
+from django.db import transaction
 from django.db.models import Q
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -191,13 +192,6 @@ def update_order_from_prodigi_payload(order, prodigi_order_payload: dict, *, mar
 
     return shipments
 
-
-def mark_order_polled(order, *, polled_at=None):
-    timestamp = polled_at or timezone.now()
-    order.prodigi_last_polled_at = timestamp
-    order.save(update_fields=["prodigi_last_polled_at"])
-
-
 def get_prodigi_order_stage(prodigi_order_payload: dict) -> str:
     status_payload = prodigi_order_payload.get("status")
     if isinstance(status_payload, dict):
@@ -206,6 +200,7 @@ def get_prodigi_order_stage(prodigi_order_payload: dict) -> str:
 
 
 def sync_order_shipping_from_prodigi(order, prodigi_order_payload: dict, *, mark_callback_received: bool = False):
+    old_status = str(order.prodigi_status or "").strip()
     order_stage = get_prodigi_order_stage(prodigi_order_payload)
     shipments = update_order_from_prodigi_payload(
         order,
@@ -220,7 +215,7 @@ def sync_order_shipping_from_prodigi(order, prodigi_order_payload: dict, *, mark
         "shipments": shipments,
         "tracked_shipments": tracked,
         "tracking_signature": tracking_signature,
-        "old_status": "",
+        "old_status": old_status,
         "new_status": str(order.prodigi_status or "").strip(),
         "email_sent": False,
         "email_skipped_reason": "",
@@ -249,16 +244,21 @@ def refresh_order_from_prodigi(order, *, mark_polled: bool = False):
     if not str(order.prodigi_order_id or "").strip():
         raise ValueError("Order does not have a Prodigi order id.")
 
-    old_status = str(order.prodigi_status or "").strip()
+    polled_at = timezone.now()
     try:
         prodigi_order = fetch_prodigi_order(order.prodigi_order_id)
-        sync_result = sync_order_shipping_from_prodigi(order, prodigi_order)
-    finally:
+    except Exception:
         if mark_polled:
-            mark_order_polled(order)
+            Order.objects.filter(pk=order.pk).update(prodigi_last_polled_at=polled_at)
+        raise
 
-    sync_result["old_status"] = old_status
-    sync_result["new_status"] = str(order.prodigi_status or "").strip()
+    with transaction.atomic():
+        locked_order = Order.objects.select_for_update().get(pk=order.pk)
+        sync_result = sync_order_shipping_from_prodigi(locked_order, prodigi_order)
+        if mark_polled:
+            locked_order.prodigi_last_polled_at = polled_at
+            locked_order.save(update_fields=["prodigi_last_polled_at"])
+
     return sync_result
 
 

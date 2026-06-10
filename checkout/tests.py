@@ -48,7 +48,11 @@ from .admin import OrderAdmin
 from . import views as checkout_views
 from .serializers import OrderHistoryItemSerializer, OrderSerializer
 from .shipping import ShippingConfigurationError, calculate_physical_shipping_quote
-from .tracking import build_tracking_signature, normalize_prodigi_shipments
+from .tracking import (
+    build_tracking_signature,
+    normalize_prodigi_shipments,
+    refresh_order_from_prodigi,
+)
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
@@ -1741,6 +1745,22 @@ class ProdigiShipmentSyncCommandTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("TRACK123", mail.outbox[0].body)
         self.assertIn("candidates=1", stdout.getvalue())
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_refresh_order_from_prodigi_reports_old_and_new_status(self, mock_fetch_prodigi_order):
+        order = self._create_physical_order(
+            prodigi_order_id="ord_prodigi_command_status",
+            prodigi_status="InProgress",
+        )
+        mock_fetch_prodigi_order.return_value = self._prodigi_payload(order)
+
+        sync_result = refresh_order_from_prodigi(order, mark_polled=True)
+
+        order.refresh_from_db()
+        self.assertEqual(sync_result["old_status"], "InProgress")
+        self.assertEqual(sync_result["new_status"], "Shipped")
+        self.assertEqual(order.prodigi_status, "Shipped")
+        self.assertIsNotNone(order.prodigi_last_polled_at)
 
     @patch("checkout.tracking.fetch_prodigi_order")
     def test_command_skips_duplicate_email(self, mock_fetch_prodigi_order):
