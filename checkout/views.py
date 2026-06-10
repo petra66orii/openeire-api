@@ -68,7 +68,11 @@ def _validated_email_or_none(value):
 def _configured_stripe_payment_method_types():
     configured = getattr(settings, "STRIPE_PAYMENT_METHOD_TYPES", None)
     if isinstance(configured, (list, tuple)):
-        cleaned = [str(value).strip() for value in configured if str(value).strip()]
+        cleaned = [
+            value.strip()
+            for value in configured
+            if isinstance(value, str) and value.strip()
+        ]
         if cleaned:
             return cleaned
     return ["card"]

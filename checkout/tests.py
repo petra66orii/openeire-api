@@ -2236,6 +2236,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertIn("Shipping is not available", response.data["error"])
         mock_create.assert_not_called()
 
+    @override_settings(STRIPE_PAYMENT_METHOD_TYPES=["card"])
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_authenticated_digital_cart_is_allowed(self, mock_create):
         self.client.force_authenticate(user=self.user)
