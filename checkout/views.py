@@ -65,6 +65,15 @@ def _validated_email_or_none(value):
         return None
     return candidate.lower()
 
+def _configured_stripe_payment_method_types():
+    configured = getattr(settings, "STRIPE_PAYMENT_METHOD_TYPES", None)
+    if isinstance(configured, (list, tuple)):
+        cleaned = [str(value).strip() for value in configured if str(value).strip()]
+        if cleaned:
+            return cleaned
+    return ["card"]
+
+
 class CreatePaymentIntentView(APIView):
     permission_classes = [AllowAny]
 
@@ -287,7 +296,7 @@ class CreatePaymentIntentView(APIView):
             intent = stripe.PaymentIntent.create(
                 amount=amount_in_cents,
                 currency='eur',
-                automatic_payment_methods={'enabled': True},
+                payment_method_types=_configured_stripe_payment_method_types(),
                 metadata=metadata,
                 receipt_email=customer_email 
             )

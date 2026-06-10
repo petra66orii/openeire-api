@@ -548,6 +548,17 @@ FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
 STRIPE_PUBLIC_KEY = os.getenv('STRIPE_PUBLIC_KEY')
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+
+
+def _stripe_payment_method_types_from_env(raw_value):
+    configured = [value.strip() for value in (raw_value or "").split(",")]
+    return [value for value in configured if value]
+
+
+STRIPE_PAYMENT_METHOD_TYPES = _stripe_payment_method_types_from_env(
+    os.getenv("STRIPE_PAYMENT_METHOD_TYPES", "card")
+)
+
 require_env_in_production(
     "STRIPE_SECRET_KEY",
     STRIPE_SECRET_KEY,

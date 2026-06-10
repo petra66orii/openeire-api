@@ -2261,6 +2261,40 @@ class CreatePaymentIntentSecurityTests(TestCase):
         mock_create.assert_called_once()
         sent_metadata = mock_create.call_args.kwargs["metadata"]
         self.assertEqual(sent_metadata["user_id"], str(self.user.id))
+        self.assertEqual(
+            mock_create.call_args.kwargs["payment_method_types"],
+            ["card"],
+        )
+        self.assertNotIn("automatic_payment_methods", mock_create.call_args.kwargs)
+
+    @override_settings(STRIPE_PAYMENT_METHOD_TYPES=["card", "klarna"])
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_checkout_uses_configured_payment_method_allowlist(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ]
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_create.assert_called_once()
+        self.assertEqual(
+            mock_create.call_args.kwargs["payment_method_types"],
+            ["card", "klarna"],
+        )
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_authenticated_checkout_uses_account_email_over_submitted_email(self, mock_create):
