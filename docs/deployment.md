@@ -122,3 +122,35 @@ This repository is compatible with Render-style deployment (environment-driven s
 - Prodigi callback endpoint is reachable at `/api/checkout/prodigi/callback/` from the public backend origin.
 - If callback protection is enabled, confirm the generated Prodigi callback URL includes the expected `token` query parameter.
 - License delivery token downloads expire/one-time-use behavior works.
+
+### Scheduled Prodigi shipment sync fallback
+Keep the existing Prodigi callback enabled, but add a scheduled fallback so missed callbacks do not block shipping emails.
+
+Manual run from Render Shell:
+- `python manage.py sync_prodigi_shipments`
+- optional lookback override: `python manage.py sync_prodigi_shipments --days 90`
+
+Recommended Render schedule:
+- Use a Render Cron Job or equivalent scheduled task.
+- Command: `python manage.py sync_prodigi_shipments`
+- Frequency: every 30 to 60 minutes
+
+What to verify in Render:
+- The web service still receives normal requests and, when available, Prodigi callbacks at `/api/checkout/prodigi/callback/`
+- Scheduled job logs show:
+  - candidate count
+  - per-order `order_number`
+  - `prodigi_order_id`
+  - old/new `prodigi_status`
+  - whether the shipping email was sent or skipped
+
+Sandbox verification steps:
+1. Place a physical sandbox order and confirm the local order has a `prodigi_order_id`.
+2. Let the Prodigi sandbox order move to shipped/dispatched.
+3. If no callback arrives, open Render Shell and run `python manage.py sync_prodigi_shipments`.
+4. In Django admin, confirm the order now shows:
+   - updated `prodigi_status`
+   - updated `prodigi_shipments`
+   - `prodigi_last_polled_at`
+   - `tracking_email_sent_at`
+5. Confirm the customer receives the shipping/dispatched email exactly once.

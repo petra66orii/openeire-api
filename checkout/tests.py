@@ -3,6 +3,7 @@ import uuid
 import json
 import os
 import requests
+from io import StringIO
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core import mail
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.signals import post_save
 from django.test import TestCase, override_settings, SimpleTestCase, RequestFactory
@@ -46,6 +48,7 @@ from .admin import OrderAdmin
 from . import views as checkout_views
 from .serializers import OrderHistoryItemSerializer, OrderSerializer
 from .shipping import ShippingConfigurationError, calculate_physical_shipping_quote
+from .tracking import build_tracking_signature, normalize_prodigi_shipments
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
@@ -1054,7 +1057,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(order.confirmation_email_error, "")
         mock_send_confirmation_email.assert_not_called()
 
-    @patch("checkout.admin.fetch_prodigi_order")
+    @patch("checkout.tracking.fetch_prodigi_order")
     def test_admin_refresh_from_prodigi_updates_shipping_state_and_sends_email(self, mock_fetch_prodigi_order):
         order = Order.objects.create(
             user_profile=self.user.userprofile,
@@ -1095,6 +1098,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.prodigi_status, "Shipped")
         self.assertEqual(len(order.prodigi_shipments), 1)
+        self.assertIsNotNone(order.prodigi_last_polled_at)
         self.assertIsNotNone(order.tracking_email_sent_at)
         self.assertTrue(order.tracking_email_signature)
         self.assertEqual(len(mail.outbox), 1)
@@ -1655,6 +1659,175 @@ class ProdigiTrackingCallbackTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.prodigi_shipments, [])
         self.assertEqual(len(mail.outbox), 0)
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="orders@example.com",
+    SECURE_SSL_REDIRECT=False,
+)
+class ProdigiShipmentSyncCommandTests(TestCase):
+    def setUp(self):
+        self.physical_content_type = ContentType.objects.get_for_model(PrintTemplate)
+        self.template = PrintTemplate.objects.create(
+            material="eco_canvas",
+            size="12x18",
+            production_cost=Decimal("40.00"),
+            sku_suffix="CAN-12x18",
+            prodigi_sku="PRODIGI-CAN-12x18",
+        )
+
+    def _create_physical_order(self, **overrides):
+        defaults = {
+            "first_name": "Buyer",
+            "email": "buyer@example.com",
+            "stripe_pid": f"pi_{uuid.uuid4().hex}",
+            "prodigi_order_id": f"ord_{uuid.uuid4().hex}",
+            "prodigi_status": "InProgress",
+        }
+        defaults.update(overrides)
+        order = Order.objects.create(**defaults)
+        OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("99.00"),
+            content_type=self.physical_content_type,
+            object_id=self.template.id,
+            details={"product_type": "physical"},
+        )
+        return order
+
+    def _prodigi_payload(
+        self,
+        order,
+        *,
+        order_stage="Shipped",
+        shipment_status="Shipped",
+        tracking_number="TRACK123",
+        tracking_url="https://tracking.example.com/track/123",
+    ):
+        return {
+            "id": order.prodigi_order_id,
+            "merchantReference": order.order_number,
+            "status": {"stage": order_stage},
+            "shipments": [
+                {
+                    "id": f"shp_{order.pk}",
+                    "status": shipment_status,
+                    "dispatchDate": "2026-06-10T10:00:00Z",
+                    "carrier": {"name": "DHL", "service": "Express"},
+                    "tracking": {
+                        "number": tracking_number,
+                        "url": tracking_url,
+                    },
+                }
+            ],
+        }
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_updates_shipped_order_and_sends_email(self, mock_fetch_prodigi_order):
+        order = self._create_physical_order(prodigi_order_id="ord_prodigi_command_1")
+        mock_fetch_prodigi_order.return_value = self._prodigi_payload(order)
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", stdout=stdout)
+
+        order.refresh_from_db()
+        self.assertEqual(order.prodigi_status, "Shipped")
+        self.assertEqual(len(order.prodigi_shipments), 1)
+        self.assertIsNotNone(order.prodigi_last_polled_at)
+        self.assertIsNotNone(order.tracking_email_sent_at)
+        self.assertTrue(order.tracking_email_signature)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("TRACK123", mail.outbox[0].body)
+        self.assertIn("candidates=1", stdout.getvalue())
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_skips_duplicate_email(self, mock_fetch_prodigi_order):
+        order = self._create_physical_order(prodigi_order_id="ord_prodigi_command_2")
+        payload = self._prodigi_payload(order, tracking_number="TRACK-DUPLICATE")
+        normalized_shipments = normalize_prodigi_shipments(payload["shipments"])
+        sent_at = timezone.now()
+        order.prodigi_status = "Shipped"
+        order.prodigi_shipments = normalized_shipments
+        order.tracking_email_signature = build_tracking_signature(
+            normalized_shipments,
+            order_stage="Shipped",
+        )
+        order.tracking_email_sent_at = sent_at
+        order.save(
+            update_fields=[
+                "prodigi_status",
+                "prodigi_shipments",
+                "tracking_email_signature",
+                "tracking_email_sent_at",
+            ]
+        )
+        mock_fetch_prodigi_order.return_value = payload
+
+        call_command("sync_prodigi_shipments", stdout=StringIO())
+
+        order.refresh_from_db()
+        self.assertEqual(order.tracking_email_sent_at, sent_at)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_handles_failed_prodigi_api_response_safely(self, mock_fetch_prodigi_order):
+        failing_order = self._create_physical_order(prodigi_order_id="ord_prodigi_fail")
+        healthy_order = self._create_physical_order(prodigi_order_id="ord_prodigi_ok")
+
+        def fetch_side_effect(prodigi_order_id):
+            if prodigi_order_id == "ord_prodigi_fail":
+                raise RuntimeError("lookup failed")
+            return self._prodigi_payload(healthy_order, tracking_number="TRACK-OK")
+
+        mock_fetch_prodigi_order.side_effect = fetch_side_effect
+        stderr = StringIO()
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", stdout=stdout, stderr=stderr)
+
+        failing_order.refresh_from_db()
+        healthy_order.refresh_from_db()
+        self.assertIsNotNone(failing_order.prodigi_last_polled_at)
+        self.assertEqual(failing_order.prodigi_status, "InProgress")
+        self.assertEqual(healthy_order.prodigi_status, "Shipped")
+        self.assertIsNotNone(healthy_order.tracking_email_sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Failed to sync order", stderr.getvalue())
+        self.assertIn("failed=1", stdout.getvalue())
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_ignores_orders_without_prodigi_order_id(self, mock_fetch_prodigi_order):
+        self._create_physical_order(prodigi_order_id=None)
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", stdout=stdout)
+
+        mock_fetch_prodigi_order.assert_not_called()
+        self.assertIn("Found 0 candidate Prodigi order(s)", stdout.getvalue())
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_limits_to_recent_candidate_orders(self, mock_fetch_prodigi_order):
+        recent_order = self._create_physical_order(prodigi_order_id="ord_prodigi_recent")
+        stale_order = self._create_physical_order(prodigi_order_id="ord_prodigi_stale")
+        Order.objects.filter(pk=stale_order.pk).update(date=timezone.now() - timedelta(days=120))
+
+        def fetch_side_effect(prodigi_order_id):
+            if prodigi_order_id == "ord_prodigi_recent":
+                return self._prodigi_payload(recent_order, tracking_number="TRACK-RECENT")
+            return self._prodigi_payload(stale_order, tracking_number="TRACK-STALE")
+
+        mock_fetch_prodigi_order.side_effect = fetch_side_effect
+
+        call_command("sync_prodigi_shipments", "--days", "90", stdout=StringIO())
+
+        recent_order.refresh_from_db()
+        stale_order.refresh_from_db()
+        self.assertEqual(mock_fetch_prodigi_order.call_count, 1)
+        self.assertEqual(recent_order.prodigi_status, "Shipped")
+        self.assertEqual(stale_order.prodigi_status, "InProgress")
+        self.assertIsNone(stale_order.prodigi_last_polled_at)
 
 
 @override_settings(

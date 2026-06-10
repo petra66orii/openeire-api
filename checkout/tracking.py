@@ -1,14 +1,21 @@
 import hashlib
 import json
 import logging
+from datetime import timedelta
 from typing import Iterable, List, Optional
 
 from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
 from django.core.mail import EmailMessage
+from django.db.models import Q
 from django.template.loader import render_to_string
 from django.utils import timezone
 
+from products.models import PrintTemplate
 from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
+
+from .models import Order
+from .prodigi import fetch_prodigi_order
 
 logger = logging.getLogger(__name__)
 SHIPPING_NOTIFICATION_STATES = {
@@ -16,6 +23,16 @@ SHIPPING_NOTIFICATION_STATES = {
     "dispatched",
     "partiallyshipped",
     "partiallydispatched",
+}
+FINAL_PRODIGI_SYNC_STATES = {
+    "Shipped",
+    "Dispatched",
+    "PartiallyShipped",
+    "PartiallyDispatched",
+    "Delivered",
+    "Complete",
+    "Completed",
+    "Cancelled",
 }
 
 
@@ -175,6 +192,12 @@ def update_order_from_prodigi_payload(order, prodigi_order_payload: dict, *, mar
     return shipments
 
 
+def mark_order_polled(order, *, polled_at=None):
+    timestamp = polled_at or timezone.now()
+    order.prodigi_last_polled_at = timestamp
+    order.save(update_fields=["prodigi_last_polled_at"])
+
+
 def get_prodigi_order_stage(prodigi_order_payload: dict) -> str:
     status_payload = prodigi_order_payload.get("status")
     if isinstance(status_payload, dict):
@@ -197,6 +220,8 @@ def sync_order_shipping_from_prodigi(order, prodigi_order_payload: dict, *, mark
         "shipments": shipments,
         "tracked_shipments": tracked,
         "tracking_signature": tracking_signature,
+        "old_status": "",
+        "new_status": str(order.prodigi_status or "").strip(),
         "email_sent": False,
         "email_skipped_reason": "",
     }
@@ -218,6 +243,46 @@ def sync_order_shipping_from_prodigi(order, prodigi_order_payload: dict, *, mark
 
     result["email_skipped_reason"] = "no_notifiable_shipments"
     return result
+
+
+def refresh_order_from_prodigi(order, *, mark_polled: bool = False):
+    if not str(order.prodigi_order_id or "").strip():
+        raise ValueError("Order does not have a Prodigi order id.")
+
+    old_status = str(order.prodigi_status or "").strip()
+    try:
+        prodigi_order = fetch_prodigi_order(order.prodigi_order_id)
+        sync_result = sync_order_shipping_from_prodigi(order, prodigi_order)
+    finally:
+        if mark_polled:
+            mark_order_polled(order)
+
+    sync_result["old_status"] = old_status
+    sync_result["new_status"] = str(order.prodigi_status or "").strip()
+    return sync_result
+
+
+def get_prodigi_sync_candidates(*, lookback_days: int = 90):
+    physical_content_type = ContentType.objects.get_for_model(PrintTemplate)
+    lookback_days = max(int(lookback_days or 0), 1)
+    cutoff = timezone.now() - timedelta(days=lookback_days)
+
+    return (
+        Order.objects.filter(
+            date__gte=cutoff,
+            prodigi_order_id__isnull=False,
+            items__content_type=physical_content_type,
+        )
+        .exclude(prodigi_order_id="")
+        .filter(
+            Q(prodigi_status__isnull=True)
+            | Q(prodigi_status="")
+            | ~Q(prodigi_status__in=FINAL_PRODIGI_SYNC_STATES)
+            | Q(tracking_email_sent_at__isnull=True)
+            | Q(prodigi_last_polled_at__isnull=True)
+        )
+        .distinct()
+    )
 
 
 def send_tracking_email(order, shipments: Iterable[dict], *, order_stage: object = ""):

@@ -3,8 +3,7 @@ from django.contrib import messages
 from django.utils import timezone
 from .models import Order, OrderItem, ProductShipping
 from .emails import send_order_confirmation_email
-from .prodigi import fetch_prodigi_order
-from .tracking import sync_order_shipping_from_prodigi
+from .tracking import refresh_order_from_prodigi
 from openeire_api.admin import custom_admin_site
 
 class OrderItemInline(admin.TabularInline):
@@ -35,6 +34,7 @@ class OrderAdmin(admin.ModelAdmin):
                        'confirmation_email_sent_at', 'confirmation_email_failed_at',
                        'confirmation_email_error', 'prodigi_order_id',
                        'prodigi_status', 'prodigi_last_callback_at',
+                       'prodigi_last_polled_at',
                        'prodigi_shipments', 'tracking_email_sent_at',
                        'tracking_email_signature')
 
@@ -47,6 +47,7 @@ class OrderAdmin(admin.ModelAdmin):
         'date',
         'personal_terms_version',
         'prodigi_status',
+        'prodigi_last_polled_at',
         'tracking_email_sent_at',
         'confirmation_email_status',
         'confirmation_email_sent_at',
@@ -118,8 +119,7 @@ class OrderAdmin(admin.ModelAdmin):
                 continue
 
             try:
-                prodigi_order = fetch_prodigi_order(order.prodigi_order_id)
-                sync_result = sync_order_shipping_from_prodigi(order, prodigi_order)
+                sync_result = refresh_order_from_prodigi(order, mark_polled=True)
                 refreshed_count += 1
                 if sync_result["email_sent"]:
                     emailed_count += 1
