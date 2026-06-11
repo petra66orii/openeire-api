@@ -26,13 +26,22 @@ class NewsletterSignupView(generics.CreateAPIView):
     throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = "newsletter_signup"
 
+    def perform_create(self, serializer):
+        subscriber = serializer.save()
+        sync_subscriber_to_brevo(subscriber, allow_disabled=True)
+        self.instance = subscriber
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        subscriber = serializer.save()
-        sync_subscriber_to_brevo(subscriber, allow_disabled=True)
-        response_serializer = self.get_serializer(subscriber)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        response_serializer = self.get_serializer(self.instance)
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+            headers=headers,
+        )
 
 class ContactFormView(APIView):
     permission_classes = [AllowAny]

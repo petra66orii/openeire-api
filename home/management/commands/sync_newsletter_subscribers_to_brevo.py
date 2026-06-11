@@ -1,6 +1,10 @@
 from django.core.management.base import BaseCommand
 
-from home.brevo import brevo_newsletter_enabled, sync_subscriber_to_brevo
+from home.brevo import (
+    brevo_newsletter_configured,
+    brevo_newsletter_enabled,
+    sync_subscriber_to_brevo,
+)
 from home.models import NewsletterSubscriber
 
 
@@ -23,6 +27,9 @@ class Command(BaseCommand):
         if not brevo_newsletter_enabled():
             self.stdout.write("Brevo sync is disabled; no sync attempted.")
             return
+        if not brevo_newsletter_configured():
+            self.stdout.write("Brevo sync is enabled but not fully configured; no sync attempted.")
+            return
 
         synced_count = 0
         failed_count = 0
@@ -31,7 +38,12 @@ class Command(BaseCommand):
             if dry_run:
                 self.stdout.write(f"Would sync {subscriber.email}")
                 continue
-            synced, status_label = sync_subscriber_to_brevo(subscriber, allow_disabled=False)
+            try:
+                synced, status_label = sync_subscriber_to_brevo(subscriber, allow_disabled=False)
+            except RuntimeError as exc:
+                failed_count += 1
+                self.stderr.write(f"Failed to sync {subscriber.email}: {exc}")
+                continue
             if synced or status_label == "synced":
                 synced_count += 1
             else:

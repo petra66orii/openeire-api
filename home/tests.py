@@ -167,6 +167,17 @@ class NewsletterBrevoSyncTests(TestCase):
         self.assertEqual(subscriber.brevo_sync_status, "")
         mock_post.assert_not_called()
 
+    @override_settings(BREVO_ENABLED=True, BREVO_API_KEY="", BREVO_NEWSLETTER_LIST_ID=None)
+    @patch("home.brevo.requests.post")
+    def test_newsletter_backfill_exits_cleanly_when_brevo_config_is_incomplete(self, mock_post):
+        NewsletterSubscriber.objects.create(email="pending@example.com", brevo_sync_status="")
+        stdout = StringIO()
+
+        call_command("sync_newsletter_subscribers_to_brevo", stdout=stdout)
+
+        self.assertIn("not fully configured", stdout.getvalue())
+        mock_post.assert_not_called()
+
     @override_settings(BREVO_ENABLED=True, BREVO_API_KEY="brevo-key", BREVO_NEWSLETTER_LIST_ID=7)
     @patch("home.brevo.requests.post")
     def test_newsletter_backfill_handles_brevo_failure_without_damaging_local_subscriber(self, mock_post):

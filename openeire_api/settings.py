@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from openeire_api.mail_utils import (
 )
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +27,17 @@ DEBUG = os.getenv('DEBUG') == 'True'
 RUNNING_TESTS = "test" in sys.argv
 USING_TEST_SETTINGS = os.getenv("DJANGO_SETTINGS_MODULE", "").endswith("settings_test")
 IS_TEST_ENV = RUNNING_TESTS or USING_TEST_SETTINGS
+
+
+def _safe_int_env(name, default=None):
+    raw_value = str(os.getenv(name, "") or "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer value for %s; using %s instead.", name, default)
+        return default
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY')
@@ -507,8 +520,9 @@ BREVO_ENABLED = env_bool(
     default=False,
 )
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
-_raw_brevo_list_id = str(os.getenv("BREVO_NEWSLETTER_LIST_ID", "") or "").strip()
-BREVO_NEWSLETTER_LIST_ID = int(_raw_brevo_list_id) if _raw_brevo_list_id else None
+BREVO_NEWSLETTER_LIST_ID = _safe_int_env("BREVO_NEWSLETTER_LIST_ID", default=None)
+BREVO_CONNECT_TIMEOUT_SECONDS = float(os.getenv("BREVO_CONNECT_TIMEOUT_SECONDS", "3"))
+BREVO_READ_TIMEOUT_SECONDS = float(os.getenv("BREVO_READ_TIMEOUT_SECONDS", "8"))
 if (
     EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
     and not IS_TEST_ENV

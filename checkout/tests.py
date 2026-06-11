@@ -2470,6 +2470,24 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.data["error"], "Invalid discount code.")
         mock_create.assert_not_called()
 
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_cart_quantity_is_rejected(self, mock_create):
+        payload = self._physical_checkout_payload(quantity=0)
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        self.assertEqual(
+            response.data["error"],
+            "Cart quantity must be a whole number of at least 1.",
+        )
+        mock_create.assert_not_called()
+
     @override_settings(WELCOME_DISCOUNT_ENABLED=False)
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_disabled_discount_code_is_rejected(self, mock_create):

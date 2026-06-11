@@ -42,6 +42,8 @@ Set values for the variables used by settings and integrations:
   - `BREVO_ENABLED`
   - `BREVO_API_KEY`
   - `BREVO_NEWSLETTER_LIST_ID`
+  - `BREVO_CONNECT_TIMEOUT_SECONDS` (optional)
+  - `BREVO_READ_TIMEOUT_SECONDS` (optional)
 - Stripe:
   - `STRIPE_PUBLIC_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 - Launch welcome discount:

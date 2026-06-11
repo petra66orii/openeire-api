@@ -21,6 +21,12 @@ def brevo_newsletter_configured() -> bool:
     )
 
 
+def brevo_timeout() -> tuple[float, float]:
+    connect_timeout = float(getattr(settings, "BREVO_CONNECT_TIMEOUT_SECONDS", 3) or 3)
+    read_timeout = float(getattr(settings, "BREVO_READ_TIMEOUT_SECONDS", 8) or 8)
+    return connect_timeout, read_timeout
+
+
 def _response_text(response) -> str:
     try:
         return str(response.text or "")
@@ -88,7 +94,7 @@ def sync_subscriber_to_brevo(subscriber, *, allow_disabled: bool = True) -> Tupl
                 "api-key": api_key,
             },
             json=payload,
-            timeout=(5, 20),
+            timeout=brevo_timeout(),
         )
         if _is_duplicate_contact_response(response):
             subscriber.brevo_synced_at = timezone.now()

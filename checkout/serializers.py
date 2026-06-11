@@ -28,6 +28,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
     # Custom fields to receive product identity from the frontend
     product_id = serializers.IntegerField(write_only=True)
     product_type = serializers.CharField(write_only=True)
+    quantity = serializers.IntegerField(min_value=1)
     
     # 👇 NEW: Accept the options object (e.g. { license: '4k' })
     options = serializers.JSONField(write_only=True, required=False)

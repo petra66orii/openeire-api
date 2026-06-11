@@ -79,12 +79,55 @@ def _configured_stripe_payment_method_types():
     return ["card"]
 
 
+def _safe_decimal_from_metadata(value, *, field_name, event_id=None):
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return Decimal("0")
+    try:
+        return Decimal(raw_value)
+    except Exception:
+        logger.warning(
+            "Stripe metadata field %s was not a valid decimal; defaulting to 0. event_id=%s raw_value=%r",
+            field_name,
+            event_id or "unknown",
+            raw_value,
+        )
+        return Decimal("0")
+
+
 def _extract_checkout_customer_email(*, request, shipping_details):
     if request.user.is_authenticated:
         return _validated_email_or_none(request.user.email)
     if isinstance(shipping_details, dict):
         return _validated_email_or_none(shipping_details.get("email"))
     return None
+
+
+def _validated_cart_quantity(value):
+    if isinstance(value, bool):
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    try:
+        quantity = int(value)
+    except (TypeError, ValueError):
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    if quantity < 1:
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    return quantity
 
 
 def _resolve_cart_pricing(cart):
@@ -104,7 +147,7 @@ def _resolve_cart_pricing(cart):
 
         product_id = item['product_id']
         product_type = item['product_type']
-        quantity = item.get('quantity', 1)
+        quantity = _validated_cart_quantity(item.get('quantity', 1))
 
         model_class = model_map.get(product_type)
         if not model_class:
@@ -744,8 +787,16 @@ class StripeWebhookView(APIView):
                 shipping_cost = float(metadata.get('shipping_cost', 0.00))
                 shipping_method = metadata.get('shipping_method', 'budget')
                 discount_code = normalize_discount_code(metadata.get('discount_code'))
-                discount_amount = Decimal(str(metadata.get('discount_amount', '0') or '0'))
-                discount_percent = Decimal(str(metadata.get('discount_percent', '0') or '0'))
+                discount_amount = _safe_decimal_from_metadata(
+                    metadata.get('discount_amount', '0'),
+                    field_name="discount_amount",
+                    event_id=event_id,
+                )
+                discount_percent = _safe_decimal_from_metadata(
+                    metadata.get('discount_percent', '0'),
+                    field_name="discount_percent",
+                    event_id=event_id,
+                )
                 discount_label = str(metadata.get('discount_label', '') or '').strip()
 
                 # Skip order creation for non-cart flows (e.g., Payment Links)

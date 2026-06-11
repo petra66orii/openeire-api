@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+import logging
 from typing import Optional
 
 from django.conf import settings
@@ -9,6 +10,7 @@ from .models import DiscountRedemption
 
 
 ZERO = Decimal("0.00")
+logger = logging.getLogger(__name__)
 
 
 def normalize_discount_code(value) -> str:
@@ -40,7 +42,22 @@ def welcome_discount_code() -> str:
 
 def welcome_discount_percent() -> Decimal:
     raw_value = str(getattr(settings, "WELCOME_DISCOUNT_PERCENT", "10") or "10").strip()
-    return Decimal(raw_value)
+    try:
+        percent = Decimal(raw_value)
+    except Exception:
+        logger.warning(
+            "Invalid WELCOME_DISCOUNT_PERCENT value %r; defaulting to 10.",
+            raw_value,
+        )
+        return Decimal("10")
+
+    if percent < ZERO:
+        logger.warning("WELCOME_DISCOUNT_PERCENT was below 0; clamping to 0.")
+        return ZERO
+    if percent > Decimal("100"):
+        logger.warning("WELCOME_DISCOUNT_PERCENT was above 100; clamping to 100.")
+        return Decimal("100")
+    return percent
 
 
 def welcome_discount_label() -> str:
