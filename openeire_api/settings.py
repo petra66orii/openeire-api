@@ -442,28 +442,31 @@ if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
 
 SECURE_SSL_REDIRECT = env_bool(
     os.getenv("SECURE_SSL_REDIRECT"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SESSION_COOKIE_SECURE = env_bool(
     os.getenv("SESSION_COOKIE_SECURE"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 CSRF_COOKIE_SECURE = env_bool(
     os.getenv("CSRF_COOKIE_SECURE"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
 CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
 SECURE_HSTS_SECONDS = int(
-    os.getenv("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0")
+    os.getenv(
+        "SECURE_HSTS_SECONDS",
+        "31536000" if (not DEBUG and not IS_TEST_ENV) else "0",
+    )
 )
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool(
     os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SECURE_HSTS_PRELOAD = env_bool(
     os.getenv("SECURE_HSTS_PRELOAD"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "strict-origin-when-cross-origin")
 X_FRAME_OPTIONS = os.getenv("X_FRAME_OPTIONS", "DENY")
@@ -499,6 +502,13 @@ LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     if email.strip()
 ]
 LICENCE_OFFER_EXPIRY_DAYS = int(os.getenv('LICENCE_OFFER_EXPIRY_DAYS', '7'))
+BREVO_ENABLED = env_bool(
+    os.getenv("BREVO_ENABLED"),
+    default=False,
+)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+_raw_brevo_list_id = str(os.getenv("BREVO_NEWSLETTER_LIST_ID", "") or "").strip()
+BREVO_NEWSLETTER_LIST_ID = int(_raw_brevo_list_id) if _raw_brevo_list_id else None
 if (
     EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
     and not IS_TEST_ENV
@@ -538,6 +548,12 @@ FREE_SHIPPING_ENABLED = env_bool(
     os.getenv("FREE_SHIPPING_ENABLED"),
     default=False,
 )
+WELCOME_DISCOUNT_ENABLED = env_bool(
+    os.getenv("WELCOME_DISCOUNT_ENABLED"),
+    default=False,
+)
+WELCOME_DISCOUNT_CODE = os.getenv("WELCOME_DISCOUNT_CODE", "WELCOME10")
+WELCOME_DISCOUNT_PERCENT = os.getenv("WELCOME_DISCOUNT_PERCENT", "10")
 FREE_SHIPPING_THRESHOLD = os.getenv("FREE_SHIPPING_THRESHOLD", "150.00")
 FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
     code.strip().upper()

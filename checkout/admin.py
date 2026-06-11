@@ -27,7 +27,8 @@ class OrderAdmin(admin.ModelAdmin):
 
     # Make all fields read-only in the detail view
     readonly_fields = ('order_number', 'user_profile', 'date', 'delivery_cost',
-                       'order_total', 'total_price', 'stripe_pid', 'first_name',
+                       'order_total', 'total_price', 'discount_code', 'discount_amount',
+                       'discount_percent', 'discount_label', 'stripe_pid', 'first_name',
                        'email', 'phone_number', 'country', 'postcode', 'town',
                        'street_address1', 'street_address2', 'county',
                        'personal_terms_version', 'confirmation_email_status',
@@ -44,6 +45,7 @@ class OrderAdmin(admin.ModelAdmin):
         'first_name',
         'email',
         'order_total',
+        'discount_amount',
         'date',
         'personal_terms_version',
         'prodigi_status',

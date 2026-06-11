@@ -76,6 +76,8 @@ Recommended operator checks:
 - Inspect `StripeWebhookEvent` records for `FAILED`.
 - Re-deliver Stripe webhook events from Stripe dashboard when needed.
 - Verify `LicenseRequest` status transitions and audit logs in admin.
+- Review `NewsletterSubscriber` records in admin for `brevo_sync_status`, `brevo_synced_at`, and `brevo_sync_error` after signup/import activity.
+- Review `Order.discount_code`, `Order.discount_amount`, and any related `DiscountRedemption` when validating launch discount usage.
 - For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
 - Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin. Tracking callbacks are disabled unless it is set.
 - Set `PRODIGI_CALLBACK_TOKEN` if you want the callback endpoint protected with a shared secret; when configured, the generated Prodigi callback URL appends `?token=...`.
@@ -157,6 +159,28 @@ Operational practice:
 ### Order created but fulfillment/email failed
 - Cause: downstream provider issue (Prodigi/SMTP).
 - Fix: inspect logs, verify provider credentials and network access, retry manually where appropriate.
+
+### Newsletter subscriber saved locally but not in Brevo
+- Cause: `BREVO_ENABLED` is false, Brevo credentials/list id are missing, or the Brevo API returned an error.
+- Fix:
+  1. Check `NewsletterSubscriber.brevo_sync_status` and `brevo_sync_error` in admin.
+  2. Verify:
+     - `BREVO_ENABLED=true`
+     - `BREVO_API_KEY`
+     - `BREVO_NEWSLETTER_LIST_ID`
+  3. Re-run the backfill:
+     - `python manage.py sync_newsletter_subscribers_to_brevo`
+     - or preview first with `--dry-run`
+
+### Welcome code rejected unexpectedly
+- Cause: invalid/disabled code, cart has no eligible physical art prints, or the normalized email has already redeemed the code on a successful paid order.
+- Fix:
+  1. Verify:
+     - `WELCOME_DISCOUNT_ENABLED=true`
+     - `WELCOME_DISCOUNT_CODE=WELCOME10`
+     - `WELCOME_DISCOUNT_PERCENT=10`
+  2. Check the cart contains a physical print variant.
+  3. Check existing `DiscountRedemption` records for the customer's normalized email.
 
 ### Prodigi order exists but image/cost remains pending
 - Cause: Prodigi is still fetching or processing the print asset, or sandbox pricing has not finalized yet.

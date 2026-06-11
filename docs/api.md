@@ -273,10 +273,32 @@ No DRF routers were detected; endpoints are path-based class views.
     - item fields include `product_id`, `product_type` (`photo`, `video`, `physical`), `quantity`, optional `options`
   - `shipping_details` (object, required for physical items)
   - `shipping_method` (`budget` default, `standard`, `express`)
+  - `discount_code` (optional; currently supports the universal launch code only)
   - `save_info` (optional boolean-like)
 - Response:
-  - `{ "clientSecret", "shippingCost", "totalPrice" }`
+  - `{ "clientSecret", "shippingCost", "discountAmount", "discountCode", "discountLabel", "totalPrice" }`
   - Validation errors for invalid cart/address/options.
+
+### `POST /api/checkout/validate-discount/`
+- Purpose: Validate the universal welcome code before checkout.
+- Auth:
+  - Public for physical-only carts.
+  - Authenticated users may also validate while signed in.
+- Request:
+  - `cart` (required array)
+  - `email` (required for guests; authenticated users fall back to account email)
+  - `discount_code` (required)
+- Rules:
+  - Only applies to physical art print variants.
+  - Does not discount shipping.
+  - Uses one successful paid order per normalized email address.
+- Response:
+  - Success: `{ "code", "discountAmount", "discountPercent", "discountLabel", "eligibleSubtotal" }`
+  - Failure: clear `400` messages such as:
+    - `Invalid discount code.`
+    - `This discount code is not available right now.`
+    - `This code applies to art prints only.`
+    - `This welcome code has already been used for this email address.`
 
 ### `POST /api/checkout/wh/`
 - Purpose: Stripe webhook receiver.
@@ -371,6 +393,12 @@ No DRF routers were detected; endpoints are path-based class views.
 - Auth: Public.
 - Request:
   - `email`
+  - `first_name` (optional)
+  - `source` (optional; e.g. `footer`, `newsletter_modal`)
+- Behavior:
+  - Always saves the subscriber locally first.
+  - Optionally syncs to Brevo when enabled/configured.
+  - Duplicate local signups do not error; the existing subscriber is reused/updated.
 
 ### `POST /api/home/contact/`
 - Purpose: Submit contact form and send email to configured recipient.

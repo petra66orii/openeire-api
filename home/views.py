@@ -7,6 +7,7 @@ from django.conf import settings
 from rest_framework.permissions import AllowAny
 from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
 from openeire_api.throttling import SharedScopedRateThrottle
+from .brevo import sync_subscriber_to_brevo
 from .models import Testimonial, NewsletterSubscriber
 from .serializers import TestimonialSerializer, NewsletterSubscriberSerializer, ContactFormSerializer
 
@@ -24,6 +25,14 @@ class NewsletterSignupView(generics.CreateAPIView):
     permission_classes = [AllowAny]
     throttle_classes = [SharedScopedRateThrottle]
     throttle_scope = "newsletter_signup"
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        subscriber = serializer.save()
+        sync_subscriber_to_brevo(subscriber, allow_disabled=True)
+        response_serializer = self.get_serializer(subscriber)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 class ContactFormView(APIView):
     permission_classes = [AllowAny]
