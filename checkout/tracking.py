@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.mail import EmailMessage
 from django.db import transaction
 from django.db.models import Q
+from django.db.models.functions import Trim
 from django.template.loader import render_to_string
 from django.utils import timezone
 
@@ -291,7 +292,8 @@ def get_prodigi_sync_candidates(*, lookback_days: int = 90):
             date__gte=cutoff,
             prodigi_order_id__isnull=False,
         )
-        .exclude(prodigi_order_id="")
+        .annotate(prodigi_order_id_trimmed=Trim("prodigi_order_id"))
+        .exclude(prodigi_order_id_trimmed="")
         .filter(
             Q(prodigi_status__isnull=True)
             | Q(prodigi_status="")

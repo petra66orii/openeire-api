@@ -24,7 +24,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--debug-candidates",
             action="store_true",
-            help="Print recent order candidate/exclusion reasons before running the sync.",
+            help="Print recent order candidate/exclusion reasons and exit without syncing.",
         )
 
     def handle(self, *args, **options):
@@ -56,6 +56,8 @@ class Command(BaseCommand):
                         prodigi_last_polled_at=row["prodigi_last_polled_at"] or "n/a",
                     )
                 )
+            self.stdout.write("Debug mode only: no Prodigi sync was run.")
+            return
 
         logger.info(
             "Starting scheduled Prodigi shipment sync fallback. candidate_count=%s lookback_days=%s",
