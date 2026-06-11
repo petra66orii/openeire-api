@@ -34,7 +34,8 @@ from products.models import (
     PersonalDownloadToken,
     generate_variants_for_photo,
 )
-from .models import Order, OrderItem, ProductShipping
+from .discounts import record_discount_redemption
+from .models import DiscountRedemption, Order, OrderItem, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import (
     _get_prodigi_asset_url,
@@ -881,7 +882,17 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             },
         }
 
-    def _physical_payment_intent_event(self, *, event_id="evt_physical_retry", payment_intent_id="pi_physical_retry"):
+    def _physical_payment_intent_event(
+        self,
+        *,
+        event_id="evt_physical_retry",
+        payment_intent_id="pi_physical_retry",
+        receipt_email="buyer@example.com",
+        discount_code="",
+        discount_amount="0.00",
+        discount_percent="0",
+        discount_label="",
+    ):
         cart = [
             {
                 "product_id": self.variant.id,
@@ -896,13 +907,17 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             "data": {
                 "object": {
                     "id": payment_intent_id,
-                    "receipt_email": "buyer@example.com",
+                    "receipt_email": receipt_email,
                     "metadata": {
                         "cart": json.dumps(cart),
                         "username": "Guest",
                         "save_info": "false",
                         "shipping_cost": "8.45",
                         "shipping_method": "budget",
+                        "discount_code": discount_code,
+                        "discount_amount": discount_amount,
+                        "discount_percent": discount_percent,
+                        "discount_label": discount_label,
                     },
                     "shipping": {
                         "name": "Buyer",
@@ -1381,6 +1396,88 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(order.prodigi_status, "InProduction")
         self.assertEqual(order.prodigi_shipments, [])
         self.assertIsNone(order.prodigi_last_callback_at)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_created_order_stores_discount_fields_and_redemption(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        mock_construct.return_value = self._physical_payment_intent_event(
+            event_id="evt_physical_discount",
+            payment_intent_id="pi_physical_discount",
+            discount_code="WELCOME10",
+            discount_amount="9.90",
+            discount_percent="10",
+            discount_label="WELCOME10 (10% off art prints)",
+        )
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_prodigi_discount",
+                "status": {"stage": "InProduction"},
+                "merchantReference": "",
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.discount_code, "WELCOME10")
+        self.assertEqual(order.discount_amount, Decimal("9.90"))
+        self.assertEqual(order.discount_percent, Decimal("10"))
+        self.assertEqual(order.discount_label, "WELCOME10 (10% off art prints)")
+        self.assertEqual(order.total_price, Decimal("97.55"))
+        self.assertTrue(DiscountRedemption.objects.filter(order=order, code="WELCOME10").exists())
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_webhook_retry_does_not_duplicate_discount_redemption(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        mock_construct.return_value = self._physical_payment_intent_event(
+            event_id="evt_physical_discount_retry",
+            payment_intent_id="pi_physical_discount_retry",
+            discount_code="WELCOME10",
+            discount_amount="9.90",
+            discount_percent="10",
+            discount_label="WELCOME10 (10% off art prints)",
+        )
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_prodigi_discount_retry",
+                "status": {"stage": "InProduction"},
+                "merchantReference": "",
+                "shipments": [],
+            }
+        }
+
+        first_response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+        second_response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(DiscountRedemption.objects.filter(order=order).count(), 1)
 
     @patch("checkout.views.create_prodigi_order", side_effect=RuntimeError("prodigi offline"))
     @patch("checkout.views.stripe.Webhook.construct_event")
@@ -1924,6 +2021,9 @@ class ProdigiShipmentSyncCommandTests(TestCase):
     FREE_SHIPPING_ENABLED=True,
     FREE_SHIPPING_THRESHOLD="150.00",
     FREE_SHIPPING_ELIGIBLE_COUNTRIES=["IE"],
+    WELCOME_DISCOUNT_ENABLED=True,
+    WELCOME_DISCOUNT_CODE="WELCOME10",
+    WELCOME_DISCOUNT_PERCENT="10",
 )
 class CreatePaymentIntentSecurityTests(TestCase):
     def setUp(self):
@@ -1949,6 +2049,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
             high_res_file=high_res,
             price=Decimal("20.00"),
             is_active=True,
+            is_printable=True,
         )
         self.variant = ProductVariant.objects.create(
             photo=self.photo,
@@ -1975,6 +2076,31 @@ class CreatePaymentIntentSecurityTests(TestCase):
             password="StrongPass123!",
         )
         self.url = reverse("create_payment_intent")
+        self.validate_discount_url = reverse("validate_discount")
+
+    def _physical_checkout_payload(self, *, quantity=1, email="buyer@example.com", discount_code=""):
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": quantity,
+                }
+            ],
+            "shipping_details": {
+                "email": email,
+                "address": {
+                    "line1": "1 Test Street",
+                    "city": "Dublin",
+                    "country": "IE",
+                    "postal_code": "D01 F5P2",
+                    "state": "Dublin",
+                },
+            },
+        }
+        if discount_code:
+            payload["discount_code"] = discount_code
+        return payload
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_digital_license_option_is_ignored(self, mock_create):
@@ -2268,25 +2394,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.photo.is_printable = True
         self.photo.save(update_fields=["is_printable"])
         mock_create.return_value = Mock(client_secret="cs_test_123")
-        payload = {
-            "cart": [
-                {
-                    "product_id": self.variant.id,
-                    "product_type": "physical",
-                    "quantity": 1,
-                }
-            ],
-            "shipping_details": {
-                "email": "buyer@example.com",
-                "address": {
-                    "line1": "1 Test Street",
-                    "city": "Dublin",
-                    "country": "IE",
-                    "postal_code": "D01 F5P2",
-                    "state": "Dublin",
-                },
-            },
-        }
+        payload = self._physical_checkout_payload()
         response = self.client.post(
             self.url,
             data=json.dumps(payload),
@@ -2298,6 +2406,190 @@ class CreatePaymentIntentSecurityTests(TestCase):
         mock_create.assert_called_once()
         sent_metadata = mock_create.call_args.kwargs["metadata"]
         self.assertEqual(sent_metadata["user_id"], "")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_valid_welcome10_applies_to_physical_art_print_subtotal_only(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = self._physical_checkout_payload(discount_code="WELCOME10")
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["shippingCost"], 8.45)
+        self.assertEqual(response.data["discountAmount"], 9.9)
+        self.assertEqual(response.data["discountCode"], "WELCOME10")
+        self.assertEqual(response.data["totalPrice"], 97.55)
+        self.assertEqual(mock_create.call_args.kwargs["amount"], 9755)
+        metadata = mock_create.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["discount_code"], "WELCOME10")
+        self.assertEqual(metadata["discount_amount"], "9.90")
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_digital_items_do_not_accept_welcome_discount(self, mock_create):
+        self.client.force_authenticate(user=self.user)
+        payload = {
+            "cart": [
+                {
+                    "product_id": self.photo.id,
+                    "product_type": "photo",
+                    "quantity": 1,
+                    "options": {"license": "hd"},
+                }
+            ],
+            "shipping_details": {"email": "buyer@example.com"},
+            "discount_code": "WELCOME10",
+        }
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"], "This code applies to art prints only.")
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_discount_code_is_rejected(self, mock_create):
+        payload = self._physical_checkout_payload(discount_code="NOPE10")
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"], "Invalid discount code.")
+        mock_create.assert_not_called()
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_invalid_cart_quantity_is_rejected(self, mock_create):
+        payload = self._physical_checkout_payload(quantity=0)
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_CART_PAYLOAD")
+        self.assertEqual(
+            response.data["error"],
+            "Cart quantity must be a whole number of at least 1.",
+        )
+        mock_create.assert_not_called()
+
+    @override_settings(WELCOME_DISCOUNT_ENABLED=False)
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_disabled_discount_code_is_rejected(self, mock_create):
+        payload = self._physical_checkout_payload(discount_code="WELCOME10")
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"], "This discount code is not available right now.")
+        mock_create.assert_not_called()
+
+    def test_validate_discount_endpoint_accepts_first_use(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        payload = {
+            "cart": self._physical_checkout_payload()["cart"],
+            "email": "buyer@example.com",
+            "discount_code": "WELCOME10",
+        }
+
+        response = self.client.post(
+            self.validate_discount_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["code"], "WELCOME10")
+        self.assertEqual(response.data["discountAmount"], 9.9)
+        self.assertEqual(DiscountRedemption.objects.count(), 0)
+
+    def test_validate_discount_endpoint_rejects_second_use_for_same_email_case_insensitive(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        order = Order.objects.create(
+            email="Buyer@Example.com",
+            stripe_pid="pi_discount_used",
+            discount_code="WELCOME10",
+            discount_amount=Decimal("9.90"),
+        )
+        record_discount_redemption(order)
+        payload = {
+            "cart": self._physical_checkout_payload()["cart"],
+            "email": " buyer@example.com ",
+            "discount_code": "WELCOME10",
+        }
+
+        response = self.client.post(
+            self.validate_discount_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "This welcome code has already been used for this email address.",
+        )
+
+    def test_validate_discount_endpoint_allows_same_code_for_different_email(self):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        order = Order.objects.create(
+            email="buyer@example.com",
+            stripe_pid="pi_discount_used_other",
+            discount_code="WELCOME10",
+            discount_amount=Decimal("9.90"),
+        )
+        record_discount_redemption(order)
+        payload = {
+            "cart": self._physical_checkout_payload()["cart"],
+            "email": "different@example.com",
+            "discount_code": "WELCOME10",
+        }
+
+        response = self.client.post(
+            self.validate_discount_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_payment_intent_creation_does_not_mark_discount_as_used(self, mock_create):
+        self.photo.is_printable = True
+        self.photo.save(update_fields=["is_printable"])
+        mock_create.return_value = Mock(client_secret="cs_test_123")
+        payload = self._physical_checkout_payload(discount_code="WELCOME10", email="buyer@example.com")
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DiscountRedemption.objects.count(), 0)
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_physical_cart_over_threshold_gets_free_shipping(self, mock_create):

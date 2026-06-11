@@ -9,4 +9,12 @@ class TestimonialAdmin(admin.ModelAdmin):
 
 @admin.register(NewsletterSubscriber, site=custom_admin_site)
 class NewsletterSubscriberAdmin(admin.ModelAdmin):
-    list_display = ('email', 'created_at')
+    list_display = (
+        'email',
+        'first_name',
+        'source',
+        'brevo_sync_status',
+        'brevo_synced_at',
+        'created_at',
+    )
+    search_fields = ('email', 'first_name', 'source')

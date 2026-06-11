@@ -39,8 +39,17 @@ Set values for the variables used by settings and integrations:
   - `LICENSING_FROM_EMAIL` (optional, falls back to `DEFAULT_FROM_EMAIL`)
   - `LICENSOR_CONTACT_EMAIL` (optional, falls back to `LICENSING_FROM_EMAIL`)
   - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
+  - `BREVO_ENABLED`
+  - `BREVO_API_KEY`
+  - `BREVO_NEWSLETTER_LIST_ID`
+  - `BREVO_CONNECT_TIMEOUT_SECONDS` (optional)
+  - `BREVO_READ_TIMEOUT_SECONDS` (optional)
 - Stripe:
   - `STRIPE_PUBLIC_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
+- Launch welcome discount:
+  - `WELCOME_DISCOUNT_ENABLED`
+  - `WELCOME_DISCOUNT_CODE` (defaults to `WELCOME10`)
+  - `WELCOME_DISCOUNT_PERCENT` (defaults to `10`)
 - Prodigi:
   - `PRODIGI_API_KEY`, `PRODIGI_SANDBOX`, `SITE_URL`
   - `PRODIGI_CALLBACK_BASE_URL`
@@ -115,8 +124,12 @@ This repository is compatible with Render-style deployment (environment-driven s
 
 ## 8. Post-Deploy Validation Checklist
 - `GET /api/home/testimonials/` returns `200`.
+- `POST /api/home/newsletter-signup/` saves a subscriber locally whether or not Brevo is enabled.
+- If Brevo is enabled, confirm new subscribers show `brevo_sync_status=synced` in Django admin.
 - Auth login/refresh flow works in your selected mode (header token and/or cookie mode).
 - Throttled public endpoints enforce expected `429` behavior across multiple instances.
+- `POST /api/checkout/validate-discount/` accepts `WELCOME10` only for eligible physical print carts.
+- `POST /api/checkout/create-payment-intent/` stores `discount_code` / `discount_amount` in Stripe metadata and returns the discounted total.
 - Stripe webhook endpoint receives signed events successfully.
 - Order flow creates order records and sends confirmation email.
 - Prodigi callback endpoint is reachable at `/api/checkout/prodigi/callback/` from the public backend origin.
@@ -154,3 +167,21 @@ Sandbox verification steps:
    - `prodigi_last_polled_at`
    - `tracking_email_sent_at`
 5. Confirm the customer receives the shipping/dispatched email exactly once.
+
+## 9. Newsletter Backfill to Brevo
+
+Manual run from Render Shell:
+- `python manage.py sync_newsletter_subscribers_to_brevo`
+- preview only: `python manage.py sync_newsletter_subscribers_to_brevo --dry-run`
+
+Behavior:
+- Local subscribers remain the source of truth.
+- Only subscribers not yet marked `synced` are retried.
+- Duplicate contacts already present in Brevo are treated as already synced.
+
+## 10. Launch Discount Notes
+
+- `WELCOME10` is validated and applied by the backend only.
+- The discount applies to physical art print variants only.
+- Shipping, digital downloads, commercial licences, and unrelated future services are excluded.
+- One successful paid order is allowed per normalized email address.

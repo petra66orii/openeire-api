@@ -1,4 +1,5 @@
 from urllib.parse import urljoin
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
@@ -27,6 +28,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
     # Custom fields to receive product identity from the frontend
     product_id = serializers.IntegerField(write_only=True)
     product_type = serializers.CharField(write_only=True)
+    quantity = serializers.IntegerField(min_value=1)
     
     # 👇 NEW: Accept the options object (e.g. { license: '4k' })
     options = serializers.JSONField(write_only=True, required=False)
@@ -59,6 +61,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'street_address1', 'street_address2', 
             'town', 'county', 'postcode', 'country', 
             'delivery_cost', 'order_total', 'total_price', 
+            'discount_code', 'discount_amount', 'discount_percent', 'discount_label',
             'stripe_pid', 'items', 'shipping_method', 'personal_terms_version'
         )
         read_only_fields = ('order_number', 'delivery_cost', 'order_total', 'total_price', 'personal_terms_version')
@@ -66,6 +69,10 @@ class OrderSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         items_data = validated_data.pop('items')
         user_profile = validated_data.pop('user_profile', None)
+        discount_code = str(validated_data.pop('discount_code', '') or '').strip().upper()
+        discount_amount = Decimal(str(validated_data.pop('discount_amount', '0') or '0'))
+        discount_percent = Decimal(str(validated_data.pop('discount_percent', '0') or '0'))
+        discount_label = str(validated_data.pop('discount_label', '') or '').strip()
         
         # 1. Capture the shipping country from the order data
         shipping_country = validated_data.get('country') 
@@ -171,7 +178,11 @@ class OrderSerializer(serializers.ModelSerializer):
             # 3. Save the calculated values to the order
             order.order_total = order_total
             order.delivery_cost = calculated_delivery_cost # Update the field
-            order.total_price = order.order_total + order.delivery_cost
+            order.discount_code = discount_code
+            order.discount_amount = discount_amount
+            order.discount_percent = discount_percent
+            order.discount_label = discount_label
+            order.total_price = order.order_total + order.delivery_cost - order.discount_amount
             if has_consumer_digital_item:
                 order.personal_terms_version = get_personal_terms_version()
             order.save()
@@ -300,5 +311,5 @@ class OrderHistoryListSerializer(serializers.ModelSerializer):
         fields = (
             'order_number', 'date', 'order_total', 'total_price', 
             'street_address1', 'town', 'country', 'items', 'shipping_method', 'delivery_cost',
-            'personal_terms_version',
+            'personal_terms_version', 'discount_code', 'discount_amount', 'discount_percent', 'discount_label',
         )

@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from openeire_api.mail_utils import (
 )
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +27,17 @@ DEBUG = os.getenv('DEBUG') == 'True'
 RUNNING_TESTS = "test" in sys.argv
 USING_TEST_SETTINGS = os.getenv("DJANGO_SETTINGS_MODULE", "").endswith("settings_test")
 IS_TEST_ENV = RUNNING_TESTS or USING_TEST_SETTINGS
+
+
+def _safe_int_env(name, default=None):
+    raw_value = str(os.getenv(name, "") or "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer value for %s; using %s instead.", name, default)
+        return default
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY')
@@ -442,28 +455,31 @@ if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
 
 SECURE_SSL_REDIRECT = env_bool(
     os.getenv("SECURE_SSL_REDIRECT"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SESSION_COOKIE_SECURE = env_bool(
     os.getenv("SESSION_COOKIE_SECURE"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 CSRF_COOKIE_SECURE = env_bool(
     os.getenv("CSRF_COOKIE_SECURE"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
 CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
 SECURE_HSTS_SECONDS = int(
-    os.getenv("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0")
+    os.getenv(
+        "SECURE_HSTS_SECONDS",
+        "31536000" if (not DEBUG and not IS_TEST_ENV) else "0",
+    )
 )
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool(
     os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SECURE_HSTS_PRELOAD = env_bool(
     os.getenv("SECURE_HSTS_PRELOAD"),
-    default=(not DEBUG),
+    default=(not DEBUG and not IS_TEST_ENV),
 )
 SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "strict-origin-when-cross-origin")
 X_FRAME_OPTIONS = os.getenv("X_FRAME_OPTIONS", "DENY")
@@ -499,6 +515,14 @@ LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     if email.strip()
 ]
 LICENCE_OFFER_EXPIRY_DAYS = int(os.getenv('LICENCE_OFFER_EXPIRY_DAYS', '7'))
+BREVO_ENABLED = env_bool(
+    os.getenv("BREVO_ENABLED"),
+    default=False,
+)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+BREVO_NEWSLETTER_LIST_ID = _safe_int_env("BREVO_NEWSLETTER_LIST_ID", default=None)
+BREVO_CONNECT_TIMEOUT_SECONDS = float(os.getenv("BREVO_CONNECT_TIMEOUT_SECONDS", "3"))
+BREVO_READ_TIMEOUT_SECONDS = float(os.getenv("BREVO_READ_TIMEOUT_SECONDS", "8"))
 if (
     EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
     and not IS_TEST_ENV
@@ -538,6 +562,12 @@ FREE_SHIPPING_ENABLED = env_bool(
     os.getenv("FREE_SHIPPING_ENABLED"),
     default=False,
 )
+WELCOME_DISCOUNT_ENABLED = env_bool(
+    os.getenv("WELCOME_DISCOUNT_ENABLED"),
+    default=False,
+)
+WELCOME_DISCOUNT_CODE = os.getenv("WELCOME_DISCOUNT_CODE", "WELCOME10")
+WELCOME_DISCOUNT_PERCENT = os.getenv("WELCOME_DISCOUNT_PERCENT", "10")
 FREE_SHIPPING_THRESHOLD = os.getenv("FREE_SHIPPING_THRESHOLD", "150.00")
 FREE_SHIPPING_ELIGIBLE_COUNTRIES = [
     code.strip().upper()

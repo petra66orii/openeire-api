@@ -36,6 +36,7 @@ from products.personal_downloads import ensure_personal_download_token
 from userprofiles.models import UserProfile
 from .models import Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer
+from .discounts import evaluate_discount, normalize_discount_code, record_discount_redemption
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, fetch_prodigi_order
 from .order_claiming import claim_guest_orders_for_user
@@ -78,6 +79,125 @@ def _configured_stripe_payment_method_types():
     return ["card"]
 
 
+def _safe_decimal_from_metadata(value, *, field_name, event_id=None):
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return Decimal("0")
+    try:
+        return Decimal(raw_value)
+    except Exception:
+        logger.warning(
+            "Stripe metadata field %s was not a valid decimal; defaulting to 0. event_id=%s raw_value=%r",
+            field_name,
+            event_id or "unknown",
+            raw_value,
+        )
+        return Decimal("0")
+
+
+def _extract_checkout_customer_email(*, request, shipping_details):
+    if request.user.is_authenticated:
+        return _validated_email_or_none(request.user.email)
+    if isinstance(shipping_details, dict):
+        return _validated_email_or_none(shipping_details.get("email"))
+    return None
+
+
+def _validated_cart_quantity(value):
+    if isinstance(value, bool):
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    try:
+        quantity = int(value)
+    except (TypeError, ValueError):
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    if quantity < 1:
+        raise DRFValidationError(
+            {
+                "code": "INVALID_CART_PAYLOAD",
+                "error": "Cart quantity must be a whole number of at least 1.",
+            }
+        )
+    return quantity
+
+
+def _resolve_cart_pricing(cart):
+    total = Decimal("0.00")
+    eligible_physical_subtotal = Decimal("0.00")
+    model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
+    physical_line_items = []
+
+    for item in cart:
+        if not isinstance(item, dict):
+            raise DRFValidationError(
+                {
+                    "code": "INVALID_CART_PAYLOAD",
+                    "error": "Invalid cart item payload. Expected an object.",
+                }
+            )
+
+        product_id = item['product_id']
+        product_type = item['product_type']
+        quantity = _validated_cart_quantity(item.get('quantity', 1))
+
+        model_class = model_map.get(product_type)
+        if not model_class:
+            continue
+
+        if product_type == 'physical':
+            product_instance = model_class.objects.get(
+                id=product_id,
+                photo__is_active=True,
+                photo__is_printable=True,
+            )
+        elif product_type == 'photo':
+            product_instance = model_class.objects.get(id=product_id, is_active=True)
+        elif product_type == 'video':
+            product_instance = model_class.objects.get(id=product_id, is_active=True)
+        else:
+            product_instance = model_class.objects.get(id=product_id)
+
+        if product_type in ['photo', 'video']:
+            if not asset_file_exists(product_instance):
+                raise DRFValidationError(
+                    {
+                        "code": "DIGITAL_ASSET_UNAVAILABLE",
+                        "error": f"Digital product {product_id} is unavailable for delivery.",
+                    }
+                )
+            options = item.get('options') or {}
+            if not isinstance(options, dict):
+                raise DRFValidationError(
+                    {"error": f"Invalid options payload for digital item {product_id}."}
+                )
+            price_str = product_instance.price
+        else:
+            price_str = getattr(product_instance, 'price', '0')
+
+        price = Decimal(str(price_str))
+        line_total = price * quantity
+        total += line_total
+
+        if product_type == 'physical':
+            eligible_physical_subtotal += line_total
+            physical_line_items.append((product_instance, quantity))
+
+    return {
+        "cart_total": total,
+        "eligible_physical_subtotal": eligible_physical_subtotal,
+        "physical_line_items": physical_line_items,
+    }
+
+
 class CreatePaymentIntentView(APIView):
     permission_classes = [AllowAny]
 
@@ -107,10 +227,6 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        total = Decimal("0.00")
-        model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
-        physical_line_items = []
-
         # Safely extract the country from shipping details (default to IE if missing)
         shipping_country = 'IE'
         address_payload_invalid = False
@@ -175,61 +291,12 @@ class CreatePaymentIntentView(APIView):
             shipping_country = str(address.get("country", "")).strip().upper()
 
         try:
-            for item in cart:
-                if not isinstance(item, dict):
-                    return Response(
-                        {
-                            "code": "INVALID_CART_PAYLOAD",
-                            "error": "Invalid cart item payload. Expected an object.",
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                product_id = item['product_id']
-                product_type = item['product_type']
-                quantity = item.get('quantity', 1)
-                
-                model_class = model_map.get(product_type)
-                if not model_class: continue
-
-                if product_type == 'physical':
-                    product_instance = model_class.objects.get(
-                        id=product_id,
-                        photo__is_active=True,
-                        photo__is_printable=True,
-                    )
-                elif product_type == 'photo':
-                    product_instance = model_class.objects.get(id=product_id, is_active=True)
-                elif product_type == 'video':
-                    product_instance = model_class.objects.get(id=product_id, is_active=True)
-                else:
-                    product_instance = model_class.objects.get(id=product_id)
-                
-                # Digital items use a single price; physical variants use their own price.
-                if product_type in ['photo', 'video']:
-                    if not asset_file_exists(product_instance):
-                        return Response(
-                            {
-                                "code": "DIGITAL_ASSET_UNAVAILABLE",
-                                "error": f"Digital product {product_id} is unavailable for delivery.",
-                            },
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    options = item.get('options') or {}
-                    if not isinstance(options, dict):
-                        return Response(
-                            {"error": f"Invalid options payload for digital item {product_id}."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    price_str = product_instance.price
-                else:
-                    price_str = getattr(product_instance, 'price', '0')
-                    
-                price = Decimal(str(price_str))
-                total += price * quantity
-
-                if product_type == 'physical':
-                    physical_line_items.append((product_instance, quantity))
-
+            pricing = _resolve_cart_pricing(cart)
+            total = pricing["cart_total"]
+            physical_line_items = pricing["physical_line_items"]
+            eligible_physical_subtotal = pricing["eligible_physical_subtotal"]
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
         except (KeyError, TypeError, ValueError, ObjectDoesNotExist) as e:
             logger.warning(
                 "CreatePaymentIntentView received invalid cart data "
@@ -268,24 +335,38 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         shipping_cost = shipping_quote.delivery_cost
-        grand_total = total + shipping_cost
+        customer_email = _extract_checkout_customer_email(
+            request=request,
+            shipping_details=shipping_details,
+        )
+        if request.user.is_authenticated and not customer_email:
+            return Response(
+                {
+                    "code": "ACCOUNT_EMAIL_REQUIRED",
+                    "error": "Add a valid email address to your account before checkout.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        requested_discount_code = request.data.get("discount_code")
+        discount_result = evaluate_discount(
+            code=requested_discount_code,
+            customer_email=customer_email,
+            eligible_physical_subtotal=eligible_physical_subtotal,
+        )
+        if normalize_discount_code(requested_discount_code) and not discount_result.valid:
+            return Response(
+                {
+                    "code": "DISCOUNT_INVALID",
+                    "error": discount_result.message or "Invalid discount code.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        grand_total = total + shipping_cost - discount_result.amount
         amount_in_cents = int(
             (grand_total * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         )
-
-        customer_email = None
-        if request.user.is_authenticated:
-            customer_email = _validated_email_or_none(request.user.email)
-            if not customer_email:
-                return Response(
-                    {
-                        "code": "ACCOUNT_EMAIL_REQUIRED",
-                        "error": "Add a valid email address to your account before checkout.",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        elif isinstance(shipping_details, dict):
-            customer_email = shipping_details.get('email')
 
         try:
             metadata = {
@@ -294,7 +375,11 @@ class CreatePaymentIntentView(APIView):
                 'user_id': str(request.user.id) if request.user.is_authenticated else '',
                 'save_info': str(request.data.get('save_info', False)).lower(),
                 'shipping_cost': str(shipping_cost),
-                'shipping_method': shipping_method # Store method in metadata for Webhook
+                'shipping_method': shipping_method,
+                'discount_code': discount_result.code,
+                'discount_amount': str(discount_result.amount),
+                'discount_percent': str(discount_result.percent),
+                'discount_label': discount_result.label,
             }
 
             intent = stripe.PaymentIntent.create(
@@ -308,6 +393,9 @@ class CreatePaymentIntentView(APIView):
             return Response({
                 'clientSecret': intent.client_secret,
                 'shippingCost': float(shipping_cost),
+                'discountAmount': float(discount_result.amount),
+                'discountCode': discount_result.code,
+                'discountLabel': discount_result.label,
                 'totalPrice': float(grand_total),
                 'freeShippingApplied': shipping_quote.free_shipping_applied,
                 'freeShippingThreshold': float(get_free_shipping_threshold()),
@@ -328,6 +416,76 @@ class CreatePaymentIntentView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+class DiscountValidationView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        cart = request.data.get("cart")
+        if not isinstance(cart, list) or not cart:
+            return Response(
+                {"code": "INVALID_CART_PAYLOAD", "error": "Cart is empty."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        requested_discount_code = request.data.get("discount_code")
+        if not normalize_discount_code(requested_discount_code):
+            return Response(
+                {"code": "DISCOUNT_REQUIRED", "error": "Discount code is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        email = _extract_checkout_customer_email(
+            request=request,
+            shipping_details={"email": request.data.get("email")},
+        )
+        if not email:
+            return Response(
+                {
+                    "code": "EMAIL_REQUIRED",
+                    "error": "Email address is required to validate this welcome code.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            pricing = _resolve_cart_pricing(cart)
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except (KeyError, TypeError, ValueError, ObjectDoesNotExist):
+            return Response(
+                {
+                    "code": "INVALID_CART_PAYLOAD",
+                    "error": "Invalid cart data provided.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        discount_result = evaluate_discount(
+            code=requested_discount_code,
+            customer_email=email,
+            eligible_physical_subtotal=pricing["eligible_physical_subtotal"],
+        )
+        if not discount_result.valid:
+            return Response(
+                {
+                    "code": "DISCOUNT_INVALID",
+                    "error": discount_result.message or "Invalid discount code.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "code": discount_result.code,
+                "discountAmount": float(discount_result.amount),
+                "discountPercent": float(discount_result.percent),
+                "discountLabel": discount_result.label,
+                "eligibleSubtotal": float(pricing["eligible_physical_subtotal"]),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class StripeWebhookView(APIView):
@@ -628,6 +786,18 @@ class StripeWebhookView(APIView):
 
                 shipping_cost = float(metadata.get('shipping_cost', 0.00))
                 shipping_method = metadata.get('shipping_method', 'budget')
+                discount_code = normalize_discount_code(metadata.get('discount_code'))
+                discount_amount = _safe_decimal_from_metadata(
+                    metadata.get('discount_amount', '0'),
+                    field_name="discount_amount",
+                    event_id=event_id,
+                )
+                discount_percent = _safe_decimal_from_metadata(
+                    metadata.get('discount_percent', '0'),
+                    field_name="discount_percent",
+                    event_id=event_id,
+                )
+                discount_label = str(metadata.get('discount_label', '') or '').strip()
 
                 # Skip order creation for non-cart flows (e.g., Payment Links)
                 try:
@@ -660,7 +830,11 @@ class StripeWebhookView(APIView):
                     'county': address_details.get('state', ''),
                     'items': cart_items,
                     'delivery_cost': shipping_cost,
-                    'shipping_method': shipping_method, # NEW: Pass this to the serializer
+                    'shipping_method': shipping_method,
+                    'discount_code': discount_code,
+                    'discount_amount': discount_amount,
+                    'discount_percent': discount_percent,
+                    'discount_label': discount_label,
                 }
 
                 # 4. Check for User Profile
@@ -731,6 +905,22 @@ class StripeWebhookView(APIView):
                     )
 
                 if order and not processing_error:
+                    if discount_code and order.discount_code != discount_code:
+                        order.discount_code = discount_code
+                        order.discount_amount = discount_amount
+                        order.discount_percent = discount_percent
+                        order.discount_label = discount_label
+                        order.total_price = order.order_total + order.delivery_cost - order.discount_amount
+                        order.save(
+                            update_fields=[
+                                "discount_code",
+                                "discount_amount",
+                                "discount_percent",
+                                "discount_label",
+                                "total_price",
+                            ]
+                        )
+
                     if order.confirmation_email_status != 'SENT':
                         try:
                             send_order_confirmation_email(order, request=request)
@@ -775,6 +965,14 @@ class StripeWebhookView(APIView):
                         logger.exception(
                             "Failed to fulfill order after webhook processing. order_number=%s",
                             order.order_number,
+                        )
+                    try:
+                        record_discount_redemption(order)
+                    except Exception:
+                        logger.exception(
+                            "Failed to record discount redemption. order_number=%s discount_code=%s",
+                            order.order_number,
+                            order.discount_code,
                         )
 
             elif event_type == 'checkout.session.completed':
