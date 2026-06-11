@@ -1672,7 +1672,25 @@ class ProdigiTrackingCallbackTests(TestCase):
 )
 class ProdigiShipmentSyncCommandTests(TestCase):
     def setUp(self):
-        self.physical_content_type = ContentType.objects.get_for_model(PrintTemplate)
+        preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
+        high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
+        self.photo = Photo.objects.create(
+            title="Prodigi Sync Photo",
+            description="Test description",
+            collection="Test Collection",
+            preview_image=preview,
+            high_res_file=high_res,
+            price=Decimal("25.00"),
+            is_active=True,
+            is_printable=True,
+        )
+        self.variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        self.physical_content_type = ContentType.objects.get_for_model(ProductVariant)
         self.template = PrintTemplate.objects.create(
             material="eco_canvas",
             size="12x18",
@@ -1696,7 +1714,7 @@ class ProdigiShipmentSyncCommandTests(TestCase):
             quantity=1,
             item_total=Decimal("99.00"),
             content_type=self.physical_content_type,
-            object_id=self.template.id,
+            object_id=self.variant.id,
             details={"product_type": "physical"},
         )
         return order
@@ -1848,6 +1866,34 @@ class ProdigiShipmentSyncCommandTests(TestCase):
         self.assertEqual(recent_order.prodigi_status, "Shipped")
         self.assertEqual(stale_order.prodigi_status, "InProgress")
         self.assertIsNone(stale_order.prodigi_last_polled_at)
+
+    @patch("checkout.tracking.fetch_prodigi_order", side_effect=RuntimeError("debug lookup skipped"))
+    def test_debug_candidates_reports_real_physical_order_shape(self, _mock_fetch_prodigi_order):
+        eligible_order = self._create_physical_order(
+            prodigi_order_id="ord_prodigi_debug",
+            prodigi_status="InProgress",
+        )
+        excluded_order = self._create_physical_order(
+            prodigi_order_id="ord_prodigi_done",
+            prodigi_status="Shipped",
+            tracking_email_sent_at=timezone.now(),
+            prodigi_last_polled_at=timezone.now(),
+        )
+        no_prodigi_order = self._create_physical_order(prodigi_order_id=None)
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", "--debug-candidates", stdout=stdout)
+
+        output = stdout.getvalue()
+        self.assertIn(eligible_order.order_number, output)
+        self.assertIn("included=true", output)
+        self.assertIn("status_not_final", output)
+        self.assertIn("tracking_email_not_sent", output)
+        self.assertIn("never_polled", output)
+        self.assertIn(excluded_order.order_number, output)
+        self.assertIn("already_synced", output)
+        self.assertIn(no_prodigi_order.order_number, output)
+        self.assertIn("missing_prodigi_order_id", output)
 
 
 @override_settings(

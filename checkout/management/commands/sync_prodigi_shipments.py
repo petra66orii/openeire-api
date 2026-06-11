@@ -2,7 +2,11 @@ import logging
 
 from django.core.management.base import BaseCommand
 
-from checkout.tracking import get_prodigi_sync_candidates, refresh_order_from_prodigi
+from checkout.tracking import (
+    get_prodigi_sync_candidates,
+    get_prodigi_sync_debug_rows,
+    refresh_order_from_prodigi,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +21,41 @@ class Command(BaseCommand):
             default=90,
             help="Look back this many days for candidate Prodigi orders. Defaults to 90.",
         )
+        parser.add_argument(
+            "--debug-candidates",
+            action="store_true",
+            help="Print recent order candidate/exclusion reasons before running the sync.",
+        )
 
     def handle(self, *args, **options):
         lookback_days = max(int(options["days"] or 0), 1)
+        debug_candidates = bool(options.get("debug_candidates"))
         candidates = list(
-            get_prodigi_sync_candidates(lookback_days=lookback_days).order_by("-date")
+            get_prodigi_sync_candidates(lookback_days=lookback_days)
         )
+
+        if debug_candidates:
+            debug_rows = get_prodigi_sync_debug_rows(lookback_days=lookback_days)
+            self.stdout.write(
+                f"Candidate debug for recent orders in the last {lookback_days} day(s):"
+            )
+            if not debug_rows:
+                self.stdout.write("  (no recent orders found)")
+            for row in debug_rows:
+                self.stdout.write(
+                    "  - order_number={order_number} prodigi_order_id={prodigi_order_id} "
+                    "status={prodigi_status} included={included} reasons={reasons} "
+                    "tracking_email_sent_at={tracking_email_sent_at} "
+                    "prodigi_last_polled_at={prodigi_last_polled_at}".format(
+                        order_number=row["order_number"],
+                        prodigi_order_id=row["prodigi_order_id"],
+                        prodigi_status=row["prodigi_status"],
+                        included=str(row["included"]).lower(),
+                        reasons=",".join(row["reasons"]),
+                        tracking_email_sent_at=row["tracking_email_sent_at"] or "n/a",
+                        prodigi_last_polled_at=row["prodigi_last_polled_at"] or "n/a",
+                    )
+                )
 
         logger.info(
             "Starting scheduled Prodigi shipment sync fallback. candidate_count=%s lookback_days=%s",
