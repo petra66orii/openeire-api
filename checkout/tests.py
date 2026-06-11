@@ -1672,7 +1672,36 @@ class ProdigiTrackingCallbackTests(TestCase):
 )
 class ProdigiShipmentSyncCommandTests(TestCase):
     def setUp(self):
-        self.physical_content_type = ContentType.objects.get_for_model(PrintTemplate)
+        base_media_root = Path(__file__).resolve().parent.parent / ".test_media"
+        self.media_root = base_media_root / uuid.uuid4().hex
+        self.media_root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.media_root, ignore_errors=True)
+        self._media_settings = self.settings(MEDIA_ROOT=self.media_root)
+        self._media_settings.enable()
+        self.addCleanup(self._media_settings.disable)
+
+        post_save.disconnect(generate_variants_for_photo, sender=Photo)
+        self.addCleanup(post_save.connect, generate_variants_for_photo, sender=Photo)
+
+        preview = SimpleUploadedFile("preview.jpg", b"preview", content_type="image/jpeg")
+        high_res = SimpleUploadedFile("high_res.jpg", b"high_res", content_type="image/jpeg")
+        self.photo = Photo.objects.create(
+            title="Prodigi Sync Photo",
+            description="Test description",
+            collection="Test Collection",
+            preview_image=preview,
+            high_res_file=high_res,
+            price=Decimal("25.00"),
+            is_active=True,
+            is_printable=True,
+        )
+        self.variant = ProductVariant.objects.create(
+            photo=self.photo,
+            material="eco_canvas",
+            size="12x18",
+            price=Decimal("99.00"),
+        )
+        self.physical_content_type = ContentType.objects.get_for_model(ProductVariant)
         self.template = PrintTemplate.objects.create(
             material="eco_canvas",
             size="12x18",
@@ -1696,7 +1725,7 @@ class ProdigiShipmentSyncCommandTests(TestCase):
             quantity=1,
             item_total=Decimal("99.00"),
             content_type=self.physical_content_type,
-            object_id=self.template.id,
+            object_id=self.variant.id,
             details={"product_type": "physical"},
         )
         return order
@@ -1828,6 +1857,16 @@ class ProdigiShipmentSyncCommandTests(TestCase):
         self.assertIn("Found 0 candidate Prodigi order(s)", stdout.getvalue())
 
     @patch("checkout.tracking.fetch_prodigi_order")
+    def test_command_ignores_orders_with_whitespace_only_prodigi_order_id(self, mock_fetch_prodigi_order):
+        self._create_physical_order(prodigi_order_id="   ")
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", stdout=stdout)
+
+        mock_fetch_prodigi_order.assert_not_called()
+        self.assertIn("Found 0 candidate Prodigi order(s)", stdout.getvalue())
+
+    @patch("checkout.tracking.fetch_prodigi_order")
     def test_command_limits_to_recent_candidate_orders(self, mock_fetch_prodigi_order):
         recent_order = self._create_physical_order(prodigi_order_id="ord_prodigi_recent")
         stale_order = self._create_physical_order(prodigi_order_id="ord_prodigi_stale")
@@ -1848,6 +1887,36 @@ class ProdigiShipmentSyncCommandTests(TestCase):
         self.assertEqual(recent_order.prodigi_status, "Shipped")
         self.assertEqual(stale_order.prodigi_status, "InProgress")
         self.assertIsNone(stale_order.prodigi_last_polled_at)
+
+    @patch("checkout.tracking.fetch_prodigi_order")
+    def test_debug_candidates_reports_real_physical_order_shape(self, mock_fetch_prodigi_order):
+        eligible_order = self._create_physical_order(
+            prodigi_order_id="ord_prodigi_debug",
+            prodigi_status="InProgress",
+        )
+        excluded_order = self._create_physical_order(
+            prodigi_order_id="ord_prodigi_done",
+            prodigi_status="Shipped",
+            tracking_email_sent_at=timezone.now(),
+            prodigi_last_polled_at=timezone.now(),
+        )
+        no_prodigi_order = self._create_physical_order(prodigi_order_id=None)
+        stdout = StringIO()
+
+        call_command("sync_prodigi_shipments", "--debug-candidates", stdout=stdout)
+
+        mock_fetch_prodigi_order.assert_not_called()
+        output = stdout.getvalue()
+        self.assertIn(eligible_order.order_number, output)
+        self.assertIn("included=true", output)
+        self.assertIn("status_not_final", output)
+        self.assertIn("tracking_email_not_sent", output)
+        self.assertIn("never_polled", output)
+        self.assertIn(excluded_order.order_number, output)
+        self.assertIn("already_synced", output)
+        self.assertIn(no_prodigi_order.order_number, output)
+        self.assertIn("missing_prodigi_order_id", output)
+        self.assertIn("Debug mode only: no Prodigi sync was run.", output)
 
 
 @override_settings(

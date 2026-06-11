@@ -2,17 +2,16 @@ import hashlib
 import json
 import logging
 from datetime import timedelta
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from django.conf import settings
-from django.contrib.contenttypes.models import ContentType
 from django.core.mail import EmailMessage
 from django.db import transaction
 from django.db.models import Q
+from django.db.models.functions import Trim
 from django.template.loader import render_to_string
 from django.utils import timezone
 
-from products.models import PrintTemplate
 from openeire_api.mail_utils import get_contact_email_address, get_default_from_email
 
 from .models import Order
@@ -262,8 +261,29 @@ def refresh_order_from_prodigi(order, *, mark_polled: bool = False):
     return sync_result
 
 
+def _has_prodigi_order_id(order) -> bool:
+    return bool(str(order.prodigi_order_id or "").strip())
+
+
+def get_prodigi_sync_candidate_status(order) -> Tuple[bool, List[str]]:
+    reasons: List[str] = []
+
+    if not _has_prodigi_order_id(order):
+        return False, ["missing_prodigi_order_id"]
+
+    if order.prodigi_status not in FINAL_PRODIGI_SYNC_STATES:
+        reasons.append("status_not_final")
+    if order.tracking_email_sent_at is None:
+        reasons.append("tracking_email_not_sent")
+    if order.prodigi_last_polled_at is None:
+        reasons.append("never_polled")
+
+    if reasons:
+        return True, reasons
+    return False, ["already_synced"]
+
+
 def get_prodigi_sync_candidates(*, lookback_days: int = 90):
-    physical_content_type = ContentType.objects.get_for_model(PrintTemplate)
     lookback_days = max(int(lookback_days or 0), 1)
     cutoff = timezone.now() - timedelta(days=lookback_days)
 
@@ -271,9 +291,9 @@ def get_prodigi_sync_candidates(*, lookback_days: int = 90):
         Order.objects.filter(
             date__gte=cutoff,
             prodigi_order_id__isnull=False,
-            items__content_type=physical_content_type,
         )
-        .exclude(prodigi_order_id="")
+        .annotate(prodigi_order_id_trimmed=Trim("prodigi_order_id"))
+        .exclude(prodigi_order_id_trimmed="")
         .filter(
             Q(prodigi_status__isnull=True)
             | Q(prodigi_status="")
@@ -281,8 +301,30 @@ def get_prodigi_sync_candidates(*, lookback_days: int = 90):
             | Q(tracking_email_sent_at__isnull=True)
             | Q(prodigi_last_polled_at__isnull=True)
         )
-        .distinct()
+        .order_by("-date")
     )
+
+
+def get_prodigi_sync_debug_rows(*, lookback_days: int = 90):
+    lookback_days = max(int(lookback_days or 0), 1)
+    cutoff = timezone.now() - timedelta(days=lookback_days)
+    rows = []
+
+    for order in Order.objects.filter(date__gte=cutoff).order_by("-date"):
+        included, reasons = get_prodigi_sync_candidate_status(order)
+        rows.append(
+            {
+                "order_number": order.order_number,
+                "prodigi_order_id": str(order.prodigi_order_id or "").strip() or "n/a",
+                "prodigi_status": str(order.prodigi_status or "").strip() or "n/a",
+                "tracking_email_sent_at": order.tracking_email_sent_at,
+                "prodigi_last_polled_at": order.prodigi_last_polled_at,
+                "included": included,
+                "reasons": reasons,
+            }
+        )
+
+    return rows
 
 
 def send_tracking_email(order, shipments: Iterable[dict], *, order_stage: object = ""):
