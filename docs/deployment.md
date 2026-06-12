@@ -40,6 +40,7 @@ Set values for the variables used by settings and integrations:
   - `LICENSOR_CONTACT_EMAIL` (optional, falls back to `LICENSING_FROM_EMAIL`)
   - `REALESTATE_NOTIFICATION_EMAIL` (defaults to `shoots@openeire.ie`)
   - `REALESTATE_REPLY_TO_EMAIL` (defaults to `shoots@openeire.ie`)
+  - `REALESTATE_ADMIN_BASE_URL` (optional; used to build absolute admin links in internal enquiry emails)
   - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
   - `BREVO_ENABLED`
   - `BREVO_API_KEY`

@@ -93,6 +93,6 @@ class RealEstateEnquiry(models.Model):
     def get_add_on_labels(self):
         return [self.ADD_ON_LABELS.get(key, key) for key in (self.add_ons or [])]
 
-    def get_add_ons_display(self):
+    def get_add_ons_summary(self):
         labels = self.get_add_on_labels()
         return ", ".join(labels) if labels else "None"

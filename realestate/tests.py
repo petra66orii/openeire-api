@@ -89,6 +89,19 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertIn("name", response.data)
         self.assertEqual(RealEstateEnquiry.objects.count(), 0)
 
+    def test_whitespace_only_required_text_fields_are_rejected(self):
+        payload = {
+            **self.payload,
+            "name": "   ",
+            "phone": "   ",
+        }
+
+        response = self.client.post(self.url, data=payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("name", response.data)
+        self.assertEqual(RealEstateEnquiry.objects.count(), 0)
+
     def test_invalid_preferred_package_is_rejected(self):
         payload = {**self.payload, "preferred_package": "ultimate"}
 

@@ -517,6 +517,7 @@ REALESTATE_NOTIFICATION_EMAIL = extract_email_address(
 REALESTATE_REPLY_TO_EMAIL = extract_email_address(
     os.getenv("REALESTATE_REPLY_TO_EMAIL") or "shoots@openeire.ie"
 )
+REALESTATE_ADMIN_BASE_URL = os.getenv("REALESTATE_ADMIN_BASE_URL")
 LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     email.strip()
     for email in os.getenv('LICENCE_ADMIN_NOTIFICATION_RECIPIENTS', '').split(',')

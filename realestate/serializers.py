@@ -4,6 +4,14 @@ from .models import RealEstateEnquiry
 
 
 class RealEstateEnquirySerializer(serializers.ModelSerializer):
+    REQUIRED_TEXT_FIELDS = (
+        "name",
+        "phone",
+        "property_address",
+        "county",
+        "property_type",
+    )
+
     add_ons = serializers.ListField(
         child=serializers.CharField(),
         required=False,
@@ -62,5 +70,10 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         attrs["property_address"] = str(attrs.get("property_address", "") or "").strip()
         attrs["phone"] = str(attrs.get("phone", "") or "").strip()
         attrs["name"] = str(attrs.get("name", "") or "").strip()
-        return attrs
 
+        for field_name in self.REQUIRED_TEXT_FIELDS:
+            if field_name in attrs and not attrs[field_name]:
+                raise serializers.ValidationError(
+                    {field_name: "This field may not be blank."}
+                )
+        return attrs

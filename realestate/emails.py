@@ -33,7 +33,6 @@ def build_realestate_admin_url(enquiry, request=None):
     )
     admin_base_url = (
         getattr(settings, "REALESTATE_ADMIN_BASE_URL", None)
-        or os.getenv("REALESTATE_ADMIN_BASE_URL")
         or getattr(settings, "SITE_URL", None)
         or os.getenv("SITE_URL")
     )
@@ -64,7 +63,7 @@ def send_realestate_internal_notification_email(enquiry, request=None):
         f"How heard: {enquiry.get_how_heard_display() or 'Not provided'}\n\n"
         "Shoot request\n"
         f"Package: {enquiry.get_preferred_package_summary()}\n"
-        f"Add-ons: {enquiry.get_add_ons_display()}\n"
+        f"Add-ons: {enquiry.get_add_ons_summary()}\n"
         f"Property type: {enquiry.property_type}\n"
         f"Address: {enquiry.property_address}, {enquiry.county}\n"
         f"Eircode: {enquiry.eircode or 'Not provided'}\n"
@@ -90,10 +89,10 @@ def send_realestate_internal_notification_email(enquiry, request=None):
 
 
 def send_realestate_client_confirmation_email(enquiry):
-    subject = "Property Shoot Request Received - OpenÉire Studios"
+    subject = "Property Shoot Request Received - Open\u00C9ire Studios"
     body = (
         f"Hi {enquiry.name},\n\n"
-        "Thanks for getting in touch with OpenÉire Studios.\n\n"
+        "Thanks for getting in touch with Open\u00C9ire Studios.\n\n"
         f"We've received your property shoot request for {enquiry.property_address} "
         "and will review the details, requested package and preferred date.\n\n"
         "We'll come back to you within 24 hours to confirm the next steps.\n\n"
@@ -102,7 +101,7 @@ def send_realestate_client_confirmation_email(enquiry):
         f"Preferred date: {_format_date(enquiry.preferred_date)}\n"
         f"Property address: {enquiry.property_address}, {enquiry.county}\n\n"
         "If you have any questions in the meantime, you can simply reply to this email.\n\n"
-        "OpenÉire Studios\n"
+        "Open\u00C9ire Studios\n"
         "shoots@openeire.ie\n"
     )
     email = EmailMessage(
