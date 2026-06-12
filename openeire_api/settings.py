@@ -130,6 +130,7 @@ INSTALLED_APPS = [
     'checkout',
     'blog',
     'home',
+    'realestate',
     'taggit',
 ]
 
@@ -202,6 +203,7 @@ REST_FRAMEWORK = {
         'license_request': '10/hour',
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
+        'real_estate_enquiry': '5/hour',
         'prodigi_callback': '30/minute',
     },
 }
@@ -509,6 +511,13 @@ LICENSING_FROM_EMAIL = format_branded_sender(
 LICENSOR_CONTACT_EMAIL = extract_email_address(
     os.getenv('LICENSOR_CONTACT_EMAIL') or LICENSING_FROM_EMAIL
 )
+REALESTATE_NOTIFICATION_EMAIL = extract_email_address(
+    os.getenv("REALESTATE_NOTIFICATION_EMAIL") or "shoots@openeire.ie"
+)
+REALESTATE_REPLY_TO_EMAIL = extract_email_address(
+    os.getenv("REALESTATE_REPLY_TO_EMAIL") or "shoots@openeire.ie"
+)
+REALESTATE_ADMIN_BASE_URL = os.getenv("REALESTATE_ADMIN_BASE_URL")
 LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     email.strip()
     for email in os.getenv('LICENCE_ADMIN_NOTIFICATION_RECIPIENTS', '').split(',')

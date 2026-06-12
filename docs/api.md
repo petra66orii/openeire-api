@@ -407,3 +407,70 @@ No DRF routers were detected; endpoints are path-based class views.
   - `name`, `email`, `subject`, `message`
 - Response:
   - Success message or generic email failure error.
+
+---
+
+## Real Estate (`/api/real-estate/`)
+
+### `POST /api/real-estate/enquiries/`
+- Purpose: Submit a real estate photography / videography shoot enquiry.
+- Auth: Public.
+- Throttle scope: `real_estate_enquiry`.
+- Request:
+  - `name` (required)
+  - `email` (required)
+  - `phone` (required)
+  - `client_type` (required)
+    - `estate_agent`, `developer`, `private_seller`, `landlord`, `other`
+  - `property_address` (required)
+  - `county` (required)
+  - `property_type` (required)
+  - `preferred_package` (required)
+    - `essential`, `starter`, `pro`, `premium`, `custom`, `not_sure`
+  - `consent_to_contact` (required, must be `true`)
+  - `company_name` (optional)
+  - `eircode` (optional)
+  - `add_ons` (optional list)
+    - `additional_stills`
+    - `floor_plan`
+    - `rush_delivery`
+    - `extended_drone_video`
+    - `additional_social_cuts`
+    - `travel_supplement`
+  - `preferred_date` (optional `YYYY-MM-DD`)
+  - `how_heard` (optional)
+    - `google`, `instagram`, `facebook`, `linkedin`, `referral`, `estate_agent_colleague`, `openeire_website`, `other`, `not_sure`
+  - `message` (optional)
+- Example request:
+```json
+{
+  "name": "Jane Agent",
+  "email": "jane@example.com",
+  "phone": "+353 87 123 4567",
+  "company_name": "Example Estate Agents",
+  "client_type": "estate_agent",
+  "property_address": "Example House, Salthill, Galway",
+  "eircode": "H91 XXXX",
+  "county": "Galway",
+  "property_type": "Detached house",
+  "preferred_package": "pro",
+  "add_ons": ["floor_plan", "additional_social_cuts"],
+  "preferred_date": "2026-06-20",
+  "how_heard": "google",
+  "message": "Vendor prefers morning access. Interested in drone video if weather allows.",
+  "consent_to_contact": true
+}
+```
+- Success response:
+```json
+{
+  "id": 1,
+  "status": "new",
+  "message": "Enquiry received successfully."
+}
+```
+- Behavior:
+  - Saves the enquiry in Django admin.
+  - Sends an internal notification email.
+  - Sends a client confirmation email.
+  - If email delivery fails, the enquiry remains saved and the API still returns success.

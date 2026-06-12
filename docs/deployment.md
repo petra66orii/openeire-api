@@ -38,6 +38,9 @@ Set values for the variables used by settings and integrations:
   - `DEFAULT_FROM_EMAIL`
   - `LICENSING_FROM_EMAIL` (optional, falls back to `DEFAULT_FROM_EMAIL`)
   - `LICENSOR_CONTACT_EMAIL` (optional, falls back to `LICENSING_FROM_EMAIL`)
+  - `REALESTATE_NOTIFICATION_EMAIL` (defaults to `shoots@openeire.ie`)
+  - `REALESTATE_REPLY_TO_EMAIL` (defaults to `shoots@openeire.ie`)
+  - `REALESTATE_ADMIN_BASE_URL` (optional; used to build absolute admin links in internal enquiry emails)
   - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
   - `BREVO_ENABLED`
   - `BREVO_API_KEY`
@@ -126,6 +129,7 @@ This repository is compatible with Render-style deployment (environment-driven s
 - `GET /api/home/testimonials/` returns `200`.
 - `POST /api/home/newsletter-signup/` saves a subscriber locally whether or not Brevo is enabled.
 - If Brevo is enabled, confirm new subscribers show `brevo_sync_status=synced` in Django admin.
+- `POST /api/real-estate/enquiries/` returns `201`, creates a `RealEstateEnquiry`, and sends both emails.
 - Auth login/refresh flow works in your selected mode (header token and/or cookie mode).
 - Throttled public endpoints enforce expected `429` behavior across multiple instances.
 - `POST /api/checkout/validate-discount/` accepts `WELCOME10` only for eligible physical print carts.
@@ -185,3 +189,17 @@ Behavior:
 - The discount applies to physical art print variants only.
 - Shipping, digital downloads, commercial licences, and unrelated future services are excluded.
 - One successful paid order is allowed per normalized email address.
+
+## 11. Real Estate Enquiry Launch Steps
+
+1. Run migrations:
+   - `python manage.py migrate --noinput`
+2. Configure Render env vars:
+   - `REALESTATE_NOTIFICATION_EMAIL=shoots@openeire.ie`
+   - `REALESTATE_REPLY_TO_EMAIL=shoots@openeire.ie`
+3. Submit one test enquiry to:
+   - `POST /api/real-estate/enquiries/`
+4. Verify:
+   - the enquiry appears in Django admin
+   - the internal notification arrives at `shoots@openeire.ie`
+   - the client confirmation email is sent with `Reply-To: shoots@openeire.ie`
