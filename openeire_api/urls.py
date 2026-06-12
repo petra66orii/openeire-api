@@ -22,6 +22,7 @@ urlpatterns = [
     path('api/', include('products.urls')),
     path('api/blog/', include('blog.urls')),
     path('api/home/', include('home.urls')),
+    path('api/real-estate/', include('realestate.urls')),
     path('api/checkout/', include('checkout.urls')),
     path('api/auth/google/', GoogleLogin.as_view(), name='google_login'),
 ]

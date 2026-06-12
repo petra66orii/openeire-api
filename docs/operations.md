@@ -78,6 +78,7 @@ Recommended operator checks:
 - Verify `LicenseRequest` status transitions and audit logs in admin.
 - Review `NewsletterSubscriber` records in admin for `brevo_sync_status`, `brevo_synced_at`, and `brevo_sync_error` after signup/import activity.
 - Review `Order.discount_code`, `Order.discount_amount`, and any related `DiscountRedemption` when validating launch discount usage.
+- Review `RealEstateEnquiry` records in admin for pipeline status, quoted price, preferred date, and follow-up notes.
 - For Prodigi print orders, confirm the provider can load the image asset in sandbox/production. Physical fulfillment now prefers signed private-storage URLs for `high_res_file` assets.
 - Confirm `PRODIGI_CALLBACK_BASE_URL` points at a public backend origin. Tracking callbacks are disabled unless it is set.
 - Set `PRODIGI_CALLBACK_TOKEN` if you want the callback endpoint protected with a shared secret; when configured, the generated Prodigi callback URL appends `?token=...`.
@@ -181,6 +182,19 @@ Operational practice:
      - `WELCOME_DISCOUNT_PERCENT=10`
   2. Check the cart contains a physical print variant.
   3. Check existing `DiscountRedemption` records for the customer's normalized email.
+
+### Real estate enquiry email did not send
+- Cause: SMTP failure or email provider connectivity/auth issue after the enquiry was already saved.
+- Fix:
+  1. Confirm the `RealEstateEnquiry` record exists in admin.
+  2. Verify:
+     - `REALESTATE_NOTIFICATION_EMAIL`
+     - `REALESTATE_REPLY_TO_EMAIL`
+     - SMTP credentials / email backend env vars
+  3. Review application logs for:
+     - `Failed to send internal real estate enquiry notification`
+     - `Failed to send real estate enquiry confirmation email`
+  4. Re-send manually from your mailbox if needed; the API intentionally does not roll back saved enquiries on email failure.
 
 ### Prodigi order exists but image/cost remains pending
 - Cause: Prodigi is still fetching or processing the print asset, or sandbox pricing has not finalized yet.
