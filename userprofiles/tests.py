@@ -150,6 +150,49 @@ class UserProfileCountrySerializationTests(TestCase):
         self.assertEqual(response.json()["country"], "US")
 
 
+class ChangePasswordTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="changepassworduser",
+            email="changepassword@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        self.url = reverse("auth_password_change")
+        self.client.force_authenticate(user=self.user)
+
+    def test_change_password_updates_authenticated_user_password(self):
+        response = self.client.put(
+            self.url,
+            data={
+                "old_password": "StrongPass123!",
+                "new_password": "NewStrongPass456!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("message"), "Password updated successfully")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrongPass456!"))
+
+    def test_change_password_rejects_wrong_current_password(self):
+        response = self.client.put(
+            self.url,
+            data={
+                "old_password": "WrongPass123!",
+                "new_password": "NewStrongPass456!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("old_password", response.json())
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("StrongPass123!"))
+
+
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="noreply@example.com",
