@@ -448,7 +448,7 @@ class ChangePasswordView(generics.UpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         self.object = self.get_object()
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(instance=self.object, data=request.data)
 
         if serializer.is_valid(raise_exception=True):
             # The serializer's .update() method handles password hashing and saving
