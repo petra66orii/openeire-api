@@ -19,7 +19,7 @@ from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from allauth.socialaccount.providers.oauth2.client import OAuth2Client
 from dj_rest_auth.registration.views import SocialLoginView
 from .models import UserProfile
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .serializers import (
     UserProfileSerializer,
@@ -423,7 +423,10 @@ class MyTokenRefreshView(TokenRefreshView):
                 payload["refresh"] = cookie_refresh
 
         serializer = self.get_serializer(data=payload)
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0]) from exc
         response = Response(serializer.validated_data, status=status.HTTP_200_OK)
         access_token = response.data.get("access")
         refresh_token = response.data.get("refresh")

@@ -7,7 +7,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
 from django.core.validators import validate_email
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.urls import reverse
 from urllib.parse import urljoin
 from django.utils import timezone
@@ -33,10 +34,22 @@ from products.licensing import (
 )
 from products.file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from products.personal_downloads import ensure_personal_download_token
+from products.personal_licence import get_personal_terms_version
 from userprofiles.models import UserProfile
-from .models import Order
+from .attempts import (
+    build_request_fingerprint,
+    canonicalize_cart,
+    canonicalize_shipping_details,
+    normalize_checkout_key,
+)
+from .models import CheckoutAttempt, Order
 from .serializers import OrderSerializer, OrderHistoryListSerializer
-from .discounts import evaluate_discount, normalize_discount_code, record_discount_redemption
+from .discounts import (
+    DiscountRedemptionConflict,
+    evaluate_discount,
+    normalize_discount_code,
+    record_discount_redemption,
+)
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, fetch_prodigi_order
 from .order_claiming import claim_guest_orders_for_user
@@ -135,6 +148,7 @@ def _resolve_cart_pricing(cart):
     eligible_physical_subtotal = Decimal("0.00")
     model_map = {'photo': Photo, 'video': Video, 'physical': ProductVariant}
     physical_line_items = []
+    pricing_snapshot = []
 
     for item in cart:
         if not isinstance(item, dict):
@@ -186,6 +200,15 @@ def _resolve_cart_pricing(cart):
         price = Decimal(str(price_str))
         line_total = price * quantity
         total += line_total
+        pricing_snapshot.append(
+            {
+                "product_id": product_id,
+                "product_type": product_type,
+                "quantity": quantity,
+                "unit_price": str(price),
+                "item_total": str(line_total),
+            }
+        )
 
         if product_type == 'physical':
             eligible_physical_subtotal += line_total
@@ -195,29 +218,92 @@ def _resolve_cart_pricing(cart):
         "cart_total": total,
         "eligible_physical_subtotal": eligible_physical_subtotal,
         "physical_line_items": physical_line_items,
+        "pricing_snapshot": pricing_snapshot,
     }
+
+
+def _validate_checkout_attempt_pricing(attempt):
+    cart = attempt.cart_snapshot
+    pricing = attempt.pricing_snapshot
+    if not isinstance(cart, list) or not isinstance(pricing, list) or len(cart) != len(pricing):
+        raise DRFValidationError(
+            {"payment": "The payment-time pricing snapshot is incomplete."}
+        )
+
+    subtotal = Decimal("0.00")
+    try:
+        for cart_item, price_item in zip(cart, pricing):
+            if (
+                int(cart_item["product_id"]) != int(price_item["product_id"])
+                or cart_item["product_type"] != price_item["product_type"]
+                or int(cart_item["quantity"]) != int(price_item["quantity"])
+            ):
+                raise ValueError("Pricing snapshot item mismatch")
+            quantity = int(price_item["quantity"])
+            unit_price = Decimal(str(price_item["unit_price"]))
+            item_total = Decimal(str(price_item["item_total"]))
+            if quantity < 1 or unit_price < 0 or item_total != unit_price * quantity:
+                raise ValueError("Invalid pricing snapshot amount")
+            subtotal += item_total
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        raise DRFValidationError(
+            {"payment": "The payment-time pricing snapshot is invalid."}
+        )
+
+    charged_total = subtotal + attempt.shipping_cost - attempt.discount_amount
+    amount_in_cents = int(
+        (charged_total * Decimal("100")).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+    if charged_total < 0 or amount_in_cents != attempt.expected_amount_cents:
+        raise DRFValidationError(
+            {"payment": "The payment-time pricing snapshot does not match the charge."}
+        )
 
 
 class CreatePaymentIntentView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "checkout_payment_intent"
+
+    @staticmethod
+    def _intent_value(intent, key, default=None):
+        if isinstance(intent, dict):
+            return intent.get(key, default)
+        return getattr(intent, key, default)
+
+    def _response_for_attempt(self, attempt, intent):
+        client_secret = self._intent_value(intent, "client_secret")
+        if not isinstance(client_secret, str) or not client_secret:
+            raise RuntimeError("Stripe did not return a PaymentIntent client secret.")
+        return Response(
+            {
+                "clientSecret": client_secret,
+                "paymentIntentId": attempt.payment_intent_id,
+                "shippingCost": float(attempt.shipping_cost),
+                "discountAmount": float(attempt.discount_amount),
+                "discountCode": attempt.discount_code,
+                "discountLabel": attempt.discount_label,
+                "totalPrice": float(Decimal(attempt.expected_amount_cents) / Decimal("100")),
+                "freeShippingApplied": attempt.free_shipping_applied,
+                "freeShippingThreshold": float(get_free_shipping_threshold()),
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request, *args, **kwargs):
-        cart = request.data.get('cart')
-        shipping_details = request.data.get('shipping_details')
-        
-        # NEW: Get the selected shipping method from the frontend (default to budget)
-        shipping_method = request.data.get('shipping_method', 'budget')
-        
-        if cart is None:
+        raw_cart = request.data.get("cart")
+        if raw_cart is None or raw_cart == []:
             return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
-        if not isinstance(cart, list):
+        if not isinstance(raw_cart, list):
             return Response(
                 {"error": "Invalid cart payload. Expected a list of cart items."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if len(cart) == 0:
-            return Response({"error": "Cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
-        if shipping_details is not None and not isinstance(shipping_details, dict):
+        raw_shipping_details = request.data.get("shipping_details")
+        if raw_shipping_details is not None and not isinstance(raw_shipping_details, dict):
             return Response(
                 {
                     "shipping_details": {
@@ -226,31 +312,53 @@ class CreatePaymentIntentView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        # Safely extract the country from shipping details (default to IE if missing)
-        shipping_country = 'IE'
-        address_payload_invalid = False
-        if shipping_details and isinstance(shipping_details, dict):
-            raw_address = shipping_details.get('address')
-            if raw_address is None:
-                address = {}
-            elif isinstance(raw_address, dict):
-                address = raw_address
-                shipping_country = address.get('country', 'IE')
-            else:
-                address = {}
-                address_payload_invalid = True
-        else:
-            address = {}
+        if (
+            isinstance(raw_shipping_details, dict)
+            and raw_shipping_details.get("address") is not None
+            and not isinstance(raw_shipping_details.get("address"), dict)
+        ):
+            return Response(
+                {"shipping_details": {"address": "Invalid address payload. Expected an object."}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            checkout_key = normalize_checkout_key(request.data.get("checkout_id"))
+            cart = canonicalize_cart(raw_cart)
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        shipping_details = canonicalize_shipping_details(raw_shipping_details)
+        shipping_method = str(request.data.get("shipping_method") or "budget").strip().lower()
+        address = shipping_details.get("address", {})
+        shipping_country = address.get("country") or "IE"
 
         has_physical_items = any(
-            isinstance(item, dict) and item.get("product_type") == "physical"
+            item.get("product_type") == "physical"
             for item in cart
         )
         has_digital_items = any(
-            isinstance(item, dict) and item.get("product_type") in {"photo", "video"}
+            item.get("product_type") in {"photo", "video"}
             for item in cart
         )
+
+        accepts_terms = request.data.get("accepts_terms") is True
+        accepts_privacy = request.data.get("accepts_privacy") is True
+        accepts_personal_use = request.data.get("accepts_personal_use") is True
+        if settings.CHECKOUT_REQUIRE_TERMS_ACCEPTANCE:
+            acceptance_errors = {}
+            if not accepts_terms:
+                acceptance_errors["accepts_terms"] = "Accept the Terms & Conditions before payment."
+            if not accepts_privacy:
+                acceptance_errors["accepts_privacy"] = "Confirm the privacy acknowledgement before payment."
+            if has_digital_items and not accepts_personal_use:
+                acceptance_errors["accepts_personal_use"] = "Accept the personal-use licence terms before payment."
+            if acceptance_errors:
+                return Response(
+                    {"code": "CHECKOUT_ACCEPTANCE_REQUIRED", **acceptance_errors},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         if has_digital_items and not request.user.is_authenticated:
             return Response(
                 {
@@ -260,11 +368,6 @@ class CreatePaymentIntentView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         if has_physical_items:
-            if address_payload_invalid:
-                return Response(
-                    {"shipping_details": {"address": "Invalid address payload. Expected an object."}},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
             shipping_errors = validate_physical_shipping_address(
                 country=address.get("country"),
                 line1=address.get("line1"),
@@ -295,6 +398,7 @@ class CreatePaymentIntentView(APIView):
             total = pricing["cart_total"]
             physical_line_items = pricing["physical_line_items"]
             eligible_physical_subtotal = pricing["eligible_physical_subtotal"]
+            pricing_snapshot = pricing["pricing_snapshot"]
         except DRFValidationError as exc:
             return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
         except (KeyError, TypeError, ValueError, ObjectDoesNotExist) as e:
@@ -339,11 +443,19 @@ class CreatePaymentIntentView(APIView):
             request=request,
             shipping_details=shipping_details,
         )
-        if request.user.is_authenticated and not customer_email:
+        if not customer_email:
             return Response(
                 {
-                    "code": "ACCOUNT_EMAIL_REQUIRED",
-                    "error": "Add a valid email address to your account before checkout.",
+                    "code": (
+                        "ACCOUNT_EMAIL_REQUIRED"
+                        if request.user.is_authenticated
+                        else "EMAIL_REQUIRED"
+                    ),
+                    "error": (
+                        "Add a valid email address to your account before checkout."
+                        if request.user.is_authenticated
+                        else "Add a valid email address before checkout."
+                    ),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -368,38 +480,101 @@ class CreatePaymentIntentView(APIView):
             (grand_total * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         )
 
+        profile = None
+        if request.user.is_authenticated:
+            profile = UserProfile.objects.filter(user=request.user).first()
+        now = timezone.now()
+        fingerprint_payload = {
+            "cart": cart,
+            "shipping_details": shipping_details if has_physical_items else {},
+            "shipping_method": shipping_method if has_physical_items else "budget",
+            "customer_email": customer_email,
+            "user_profile_id": profile.id if profile else None,
+            "save_info": bool(request.data.get("save_info", False)),
+            "shipping_cost": str(shipping_cost),
+            "discount_code": discount_result.code,
+            "discount_amount": str(discount_result.amount),
+            "pricing_snapshot": pricing_snapshot,
+            "expected_amount_cents": amount_in_cents,
+            "accepts_terms": accepts_terms,
+            "accepts_privacy": accepts_privacy,
+            "accepts_personal_use": accepts_personal_use if has_digital_items else False,
+        }
+        request_fingerprint = build_request_fingerprint(fingerprint_payload)
+
+        attempt_defaults = {
+            "user_profile": profile,
+            "request_fingerprint": request_fingerprint,
+            "cart_snapshot": cart,
+            "pricing_snapshot": pricing_snapshot,
+            "shipping_details_snapshot": shipping_details if has_physical_items else {},
+            "shipping_method": shipping_method if has_physical_items else "budget",
+            "customer_email": customer_email,
+            "save_info": bool(request.data.get("save_info", False)),
+            "shipping_cost": shipping_cost,
+            "free_shipping_applied": shipping_quote.free_shipping_applied,
+            "discount_code": discount_result.code,
+            "discount_amount": discount_result.amount,
+            "discount_percent": discount_result.percent,
+            "discount_label": discount_result.label,
+            "expected_amount_cents": amount_in_cents,
+            "currency": "eur",
+            "terms_accepted_at": now if accepts_terms else None,
+            "terms_version": settings.CHECKOUT_TERMS_VERSION if accepts_terms else "",
+            "privacy_accepted_at": now if accepts_privacy else None,
+            "privacy_version": settings.CHECKOUT_PRIVACY_VERSION if accepts_privacy else "",
+            "personal_use_accepted_at": now if has_digital_items and accepts_personal_use else None,
+            "personal_terms_version": get_personal_terms_version() if has_digital_items and accepts_personal_use else "",
+        }
+
         try:
+            attempt, created = CheckoutAttempt.objects.get_or_create(
+                checkout_key=checkout_key,
+                defaults=attempt_defaults,
+            )
+            if not created and attempt.request_fingerprint != request_fingerprint:
+                return Response(
+                    {
+                        "code": "CHECKOUT_STATE_CHANGED",
+                        "error": "Checkout details changed. Prepare payment again.",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if attempt.payment_intent_id:
+                intent = stripe.PaymentIntent.retrieve(attempt.payment_intent_id)
+                return self._response_for_attempt(attempt, intent)
+
             metadata = {
-                'cart': json.dumps(cart),
-                'username': request.user.username if request.user.is_authenticated else 'Guest',
-                'user_id': str(request.user.id) if request.user.is_authenticated else '',
-                'save_info': str(request.data.get('save_info', False)).lower(),
-                'shipping_cost': str(shipping_cost),
-                'shipping_method': shipping_method,
-                'discount_code': discount_result.code,
-                'discount_amount': str(discount_result.amount),
-                'discount_percent': str(discount_result.percent),
-                'discount_label': discount_result.label,
+                "checkout_attempt_id": str(attempt.id),
+                "checkout_flow": "store_checkout_v2",
             }
 
             intent = stripe.PaymentIntent.create(
                 amount=amount_in_cents,
-                currency='eur',
+                currency="eur",
                 payment_method_types=_configured_stripe_payment_method_types(),
                 metadata=metadata,
-                receipt_email=customer_email 
+                receipt_email=customer_email,
+                idempotency_key=f"checkout-{checkout_key}",
             )
-            
-            return Response({
-                'clientSecret': intent.client_secret,
-                'shippingCost': float(shipping_cost),
-                'discountAmount': float(discount_result.amount),
-                'discountCode': discount_result.code,
-                'discountLabel': discount_result.label,
-                'totalPrice': float(grand_total),
-                'freeShippingApplied': shipping_quote.free_shipping_applied,
-                'freeShippingThreshold': float(get_free_shipping_threshold()),
-            }, status=status.HTTP_200_OK)
+
+            intent_id = self._intent_value(intent, "id")
+            if isinstance(intent_id, str) and intent_id:
+                try:
+                    CheckoutAttempt.objects.filter(
+                        pk=attempt.pk,
+                        payment_intent_id__isnull=True,
+                    ).update(payment_intent_id=intent_id)
+                except IntegrityError:
+                    logger.exception(
+                        "PaymentIntent was already attached to another checkout attempt. intent_id=%s",
+                        intent_id,
+                    )
+                    raise
+                attempt.payment_intent_id = intent_id
+
+            return self._response_for_attempt(attempt, intent)
         except Exception:
             logger.exception(
                 "CreatePaymentIntentView failed while creating Stripe intent "
@@ -773,52 +948,120 @@ class StripeWebhookView(APIView):
 
         processing_error = None
         retryable_processing_error = False
+        attempt_id = None
 
         try:
             if event_type == 'payment_intent.succeeded':
                 payment_intent = event['data']['object']
 
-                # 1. Get all data from Stripe
                 metadata = payment_intent.get('metadata', {})
-                cart_items_str = metadata.get('cart', '[]')
-                shipping_details = payment_intent.get('shipping') or {}
-                address_details = shipping_details.get('address') or {}
+                payment_intent_id = str(payment_intent.get('id') or '')
+                attempt = None
+                attempt_id = metadata.get("checkout_attempt_id")
+                if attempt_id:
+                    try:
+                        attempt = (
+                            CheckoutAttempt.objects
+                            .select_related("user_profile__user")
+                            .get(pk=int(attempt_id))
+                        )
+                    except (TypeError, ValueError, CheckoutAttempt.DoesNotExist):
+                        raise DRFValidationError(
+                            {"payment": "The checkout attempt could not be verified."}
+                        )
+                    if attempt.payment_intent_id != payment_intent_id:
+                        raise DRFValidationError(
+                            {"payment": "The PaymentIntent does not match its checkout attempt."}
+                        )
 
-                shipping_cost = float(metadata.get('shipping_cost', 0.00))
-                shipping_method = metadata.get('shipping_method', 'budget')
-                discount_code = normalize_discount_code(metadata.get('discount_code'))
-                discount_amount = _safe_decimal_from_metadata(
-                    metadata.get('discount_amount', '0'),
-                    field_name="discount_amount",
-                    event_id=event_id,
-                )
-                discount_percent = _safe_decimal_from_metadata(
-                    metadata.get('discount_percent', '0'),
-                    field_name="discount_percent",
-                    event_id=event_id,
-                )
-                discount_label = str(metadata.get('discount_label', '') or '').strip()
+                    amount_received = int(payment_intent.get("amount_received") or 0)
+                    currency = str(payment_intent.get("currency") or "").lower()
+                    if (
+                        amount_received != attempt.expected_amount_cents
+                        or currency != attempt.currency
+                    ):
+                        logger.error(
+                            "Paid amount did not match checkout attempt; blocking order creation. "
+                            "event_id=%s intent_id=%s expected=%s received=%s currency=%s",
+                            event_id,
+                            payment_intent_id,
+                            attempt.expected_amount_cents,
+                            amount_received,
+                            currency,
+                        )
+                        raise DRFValidationError(
+                            {"payment": "Paid amount did not match the validated checkout total."}
+                        )
 
-                # Skip order creation for non-cart flows (e.g., Payment Links)
-                try:
-                    cart_items = json.loads(cart_items_str)
-                except (TypeError, ValueError):
-                    cart_items = []
+                    _validate_checkout_attempt_pricing(attempt)
+
+                    cart_items = attempt.cart_snapshot
+                    shipping_details = attempt.shipping_details_snapshot
+                    address_details = shipping_details.get('address') or {}
+                    shipping_cost = attempt.shipping_cost
+                    shipping_method = attempt.shipping_method
+                    discount_code = attempt.discount_code
+                    discount_amount = attempt.discount_amount
+                    discount_percent = attempt.discount_percent
+                    discount_label = attempt.discount_label
+                    order_email = attempt.customer_email
+                    profile = attempt.user_profile
+                    save_info = attempt.save_info
+                else:
+                    # Legacy fallback for PaymentIntents created before checkout snapshots.
+                    cart_items_str = metadata.get('cart', '[]')
+                    shipping_details = payment_intent.get('shipping') or {}
+                    address_details = shipping_details.get('address') or {}
+                    shipping_cost = float(metadata.get('shipping_cost', 0.00))
+                    shipping_method = metadata.get('shipping_method', 'budget')
+                    discount_code = normalize_discount_code(metadata.get('discount_code'))
+                    discount_amount = _safe_decimal_from_metadata(
+                        metadata.get('discount_amount', '0'),
+                        field_name="discount_amount",
+                        event_id=event_id,
+                    )
+                    discount_percent = _safe_decimal_from_metadata(
+                        metadata.get('discount_percent', '0'),
+                        field_name="discount_percent",
+                        event_id=event_id,
+                    )
+                    discount_label = str(metadata.get('discount_label', '') or '').strip()
+                    try:
+                        cart_items = json.loads(cart_items_str)
+                    except (TypeError, ValueError):
+                        cart_items = []
+                    order_email = payment_intent.get('receipt_email')
+                    if not order_email or '@' not in order_email:
+                        order_email = metadata.get('username')
+                        if not order_email or '@' not in order_email:
+                            order_email = "guest@example.com"
+                    user_id = metadata.get('user_id')
+                    save_info = metadata.get('save_info') == 'true'
+                    profile = None
+                    if user_id:
+                        try:
+                            profile = UserProfile.objects.get(user__id=int(user_id))
+                        except (TypeError, ValueError, UserProfile.DoesNotExist):
+                            profile = None
+
+                    if profile is None and self._allow_legacy_username_fallback():
+                        username = metadata.get('username')
+                        if username and username != 'Guest':
+                            try:
+                                profile = UserProfile.objects.get(user__username=username)
+                                logger.warning(
+                                    "Using legacy username fallback for webhook order binding. "
+                                    "Disable CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK once old payment intents are drained."
+                                )
+                            except UserProfile.DoesNotExist:
+                                profile = None
 
                 if not cart_items:
                     logger.info("No cart items found for payment_intent; skipping order creation.")
                     return Response(status=status.HTTP_200_OK)
 
-                # 2. Determine the email
-                order_email = payment_intent.get('receipt_email')
-                if not order_email or '@' not in order_email:
-                    order_email = metadata.get('username')
-                    if not order_email or '@' not in order_email:
-                        order_email = "guest@example.com"
-
-                # 3. Create the order_data dictionary
                 order_data = {
-                    'stripe_pid': payment_intent.get('id', ''),
+                    'stripe_pid': payment_intent_id,
                     'first_name': shipping_details.get('name', ''),
                     'email': order_email,
                     'phone_number': shipping_details.get('phone', ''),
@@ -836,29 +1079,8 @@ class StripeWebhookView(APIView):
                     'discount_percent': discount_percent,
                     'discount_label': discount_label,
                 }
-
-                # 4. Check for User Profile
-                user_id = metadata.get('user_id')
-                save_info = metadata.get('save_info') == 'true'
-                profile = None
-
-                if user_id:
-                    try:
-                        profile = UserProfile.objects.get(user__id=int(user_id))
-                    except (TypeError, ValueError, UserProfile.DoesNotExist):
-                        profile = None
-
-                if profile is None and self._allow_legacy_username_fallback():
-                    username = metadata.get('username')
-                    if username and username != 'Guest':
-                        try:
-                            profile = UserProfile.objects.get(user__username=username)
-                            logger.warning(
-                                "Using legacy username fallback for webhook order binding. "
-                                "Disable CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK once old payment intents are drained."
-                            )
-                        except UserProfile.DoesNotExist:
-                            profile = None
+                if attempt is not None:
+                    order_data['checkout_attempt'] = attempt.id
 
                 if profile is not None:
                     order_data['user_profile'] = profile.id
@@ -883,15 +1105,35 @@ class StripeWebhookView(APIView):
                         profile.default_country = address_details.get('country', profile.default_country)
                         profile.save()
 
-                existing_order = Order.objects.filter(
-                    stripe_pid=payment_intent.get('id', '')
-                ).first()
+                existing_order = None
+                if attempt is not None:
+                    existing_order = Order.objects.filter(checkout_attempt=attempt).first()
+                if existing_order is None:
+                    existing_order = Order.objects.filter(
+                        stripe_pid=payment_intent_id
+                    ).first()
                 order = existing_order
 
                 if order is None:
-                    serializer = OrderSerializer(data=order_data)
+                    serializer_context = {}
+                    if attempt is not None:
+                        serializer_context = {
+                            "pricing_snapshot": attempt.pricing_snapshot,
+                            "shipping_cost_snapshot": attempt.shipping_cost,
+                        }
+                    serializer = OrderSerializer(
+                        data=order_data,
+                        context=serializer_context,
+                    )
                     if serializer.is_valid():
-                        order = serializer.save()
+                        try:
+                            order = serializer.save()
+                        except IntegrityError:
+                            order = Order.objects.filter(
+                                stripe_pid=payment_intent_id
+                            ).first()
+                            if order is None:
+                                raise
                         logger.info("Order created successfully. order_number=%s", order.order_number)
                     else:
                         error_fields = self._summarize_validation_errors(serializer.errors)
@@ -903,6 +1145,23 @@ class StripeWebhookView(APIView):
                         order.order_number,
                         order.stripe_pid,
                     )
+
+                if order and not processing_error and discount_code:
+                    try:
+                        record_discount_redemption(order, reject_conflict=True)
+                    except DiscountRedemptionConflict:
+                        order.fulfilment_hold_reason = "DISCOUNT_ALREADY_REDEEMED"
+                        order.save(update_fields=["fulfilment_hold_reason"])
+                        processing_error = (
+                            f"Order {order.order_number} requires review because the "
+                            "discount was already redeemed."
+                        )
+                        logger.error(
+                            "Holding paid order because its one-time discount was already redeemed. "
+                            "order_number=%s discount_code=%s",
+                            order.order_number,
+                            order.discount_code,
+                        )
 
                 if order and not processing_error:
                     if discount_code and order.discount_code != discount_code:
@@ -921,7 +1180,11 @@ class StripeWebhookView(APIView):
                             ]
                         )
 
-                    if order.confirmation_email_status != 'SENT':
+                    email_claimed = Order.objects.filter(pk=order.pk).exclude(
+                        confirmation_email_status__in=['SENDING', 'SENT']
+                    ).update(confirmation_email_status='SENDING')
+                    if email_claimed:
+                        order.confirmation_email_status = 'SENDING'
                         try:
                             send_order_confirmation_email(order, request=request)
                             self._mark_confirmation_email_sent(order)
@@ -932,9 +1195,27 @@ class StripeWebhookView(APIView):
                                 "Could not send confirmation email. order_number=%s",
                                 order.order_number,
                             )
+                    else:
+                        logger.info(
+                            "Skipping confirmation email because it is already sending or sent. "
+                            "order_number=%s",
+                            order.order_number,
+                        )
                     try:
                         if self._order_has_physical_items(order):
+                            order.refresh_from_db(
+                                fields=[
+                                    'prodigi_order_id',
+                                    'prodigi_status',
+                                    'prodigi_submission_started_at',
+                                ]
+                            )
                             if order.prodigi_order_id:
+                                if order.prodigi_submission_started_at:
+                                    order.prodigi_submission_started_at = None
+                                    order.save(
+                                        update_fields=['prodigi_submission_started_at']
+                                    )
                                 logger.info(
                                     "Skipping Prodigi fulfillment because the order already has a Prodigi id. "
                                     "order_number=%s prodigi_order_id=%s",
@@ -942,13 +1223,79 @@ class StripeWebhookView(APIView):
                                     order.prodigi_order_id,
                                 )
                             else:
-                                logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
-                                prodigi_response = create_prodigi_order(order)
-                                if isinstance(prodigi_response, dict):
-                                    prodigi_order = prodigi_response.get("order")
-                                    if isinstance(prodigi_order, dict):
-                                        sync_order_shipping_from_prodigi(order, prodigi_order)
-                                logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
+                                lease_seconds = max(
+                                    int(
+                                        getattr(
+                                            settings,
+                                            'PRODIGI_SUBMISSION_LEASE_SECONDS',
+                                            300,
+                                        )
+                                    ),
+                                    30,
+                                )
+                                claim_time = timezone.now()
+                                stale_before = claim_time - timedelta(
+                                    seconds=lease_seconds
+                                )
+                                claimable_submission = (
+                                    Q(prodigi_status__isnull=True)
+                                    | Q(prodigi_status='')
+                                    | ~Q(
+                                        prodigi_status__in=[
+                                            'SUBMITTING',
+                                            'SUBMITTED',
+                                        ]
+                                    )
+                                    | Q(
+                                        prodigi_status='SUBMITTING',
+                                        prodigi_submission_started_at__isnull=True,
+                                    )
+                                    | Q(
+                                        prodigi_status='SUBMITTING',
+                                        prodigi_submission_started_at__lte=stale_before,
+                                    )
+                                )
+                                fulfilment_claimed = Order.objects.filter(
+                                    claimable_submission,
+                                    Q(prodigi_order_id__isnull=True)
+                                    | Q(prodigi_order_id=''),
+                                    pk=order.pk,
+                                ).update(
+                                    prodigi_status='SUBMITTING',
+                                    prodigi_submission_started_at=claim_time,
+                                )
+                                if not fulfilment_claimed:
+                                    logger.info(
+                                        "Skipping Prodigi fulfillment because submission is already in progress. "
+                                        "order_number=%s",
+                                        order.order_number,
+                                    )
+                                else:
+                                    order.prodigi_status = 'SUBMITTING'
+                                    order.prodigi_submission_started_at = claim_time
+                                    logger.info("Sending order to Prodigi. order_number=%s", order.order_number)
+                                    prodigi_response = create_prodigi_order(order)
+                                    if isinstance(prodigi_response, dict):
+                                        prodigi_order = prodigi_response.get("order")
+                                        if isinstance(prodigi_order, dict):
+                                            sync_order_shipping_from_prodigi(order, prodigi_order)
+                                    order.refresh_from_db(
+                                        fields=[
+                                            'prodigi_order_id',
+                                            'prodigi_status',
+                                            'prodigi_submission_started_at',
+                                        ]
+                                    )
+                                    if not order.prodigi_order_id and order.prodigi_status == 'SUBMITTING':
+                                        order.prodigi_status = 'SUBMITTED'
+                                    order.prodigi_submission_started_at = None
+                                    order.save(
+                                        update_fields=[
+                                            'prodigi_status',
+                                            'prodigi_submission_started_at',
+                                        ]
+                                    )
+                                    logger.info("Order sent to Prodigi successfully. order_number=%s", order.order_number)
                         else:
                             logger.info(
                                 "Digital-only order detected; skipping Prodigi fulfillment. order_number=%s",
@@ -957,7 +1304,13 @@ class StripeWebhookView(APIView):
                     except Exception as exc:
                         if order.prodigi_status != "FULFILMENT_FAILED":
                             order.prodigi_status = "FULFILMENT_FAILED"
-                            order.save(update_fields=["prodigi_status"])
+                        order.prodigi_submission_started_at = None
+                        order.save(
+                            update_fields=[
+                                "prodigi_status",
+                                "prodigi_submission_started_at",
+                            ]
+                        )
                         processing_error = (
                             f"Physical fulfilment failed for order {order.order_number}: {exc}"
                         )
@@ -966,20 +1319,26 @@ class StripeWebhookView(APIView):
                             "Failed to fulfill order after webhook processing. order_number=%s",
                             order.order_number,
                         )
-                    try:
-                        record_discount_redemption(order)
-                    except Exception:
-                        logger.exception(
-                            "Failed to record discount redemption. order_number=%s discount_code=%s",
-                            order.order_number,
-                            order.discount_code,
-                        )
+                    if not discount_code:
+                        try:
+                            record_discount_redemption(order)
+                        except Exception:
+                            logger.exception(
+                                "Failed to record discount redemption. order_number=%s discount_code=%s",
+                                order.order_number,
+                                order.discount_code,
+                            )
 
             elif event_type == 'checkout.session.completed':
                 session = event['data']['object']
                 self._handle_license_payment(request, session)
         except DRFValidationError as e:
             processing_error = str(e.detail if hasattr(e, "detail") else e)
+            # A signed, successful PaymentIntent backed by a checkout snapshot
+            # represents captured customer funds. Ask Stripe to retry rather
+            # than acknowledging a failure that left no fulfilment record.
+            if event_type == 'payment_intent.succeeded' and attempt_id:
+                retryable_processing_error = True
             logger.exception("Validation error processing Stripe event. event_id=%s", event_id)
         except Exception as e:
             processing_error = str(e)

@@ -4,13 +4,17 @@ import logging
 from typing import Optional
 
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from .models import DiscountRedemption
 
 
 ZERO = Decimal("0.00")
 logger = logging.getLogger(__name__)
+
+
+class DiscountRedemptionConflict(Exception):
+    pass
 
 
 def normalize_discount_code(value) -> str:
@@ -124,7 +128,7 @@ def evaluate_discount(*, code, customer_email: Optional[str], eligible_physical_
     )
 
 
-def record_discount_redemption(order):
+def record_discount_redemption(order, *, reject_conflict=False):
     normalized_code = normalize_discount_code(order.discount_code)
     normalized_email = normalize_discount_email(order.email)
     if not normalized_code or order.discount_amount <= ZERO or not normalized_email:
@@ -134,18 +138,36 @@ def record_discount_redemption(order):
     if existing:
         return existing
 
+    existing = DiscountRedemption.objects.filter(
+        normalized_email=normalized_email,
+        code=normalized_code,
+    ).first()
+    if existing:
+        if reject_conflict and existing.order_id != order.id:
+            raise DiscountRedemptionConflict(
+                "This discount was already redeemed by another order."
+            )
+        return existing
+
     try:
-        return DiscountRedemption.objects.create(
-            email=order.email,
-            normalized_email=normalized_email,
-            code=normalized_code,
-            order=order,
-        )
+        # Keep a concurrent uniqueness failure inside a savepoint so callers can
+        # safely inspect the winning redemption afterwards.
+        with transaction.atomic():
+            return DiscountRedemption.objects.create(
+                email=order.email,
+                normalized_email=normalized_email,
+                code=normalized_code,
+                order=order,
+            )
     except IntegrityError:
         existing = DiscountRedemption.objects.filter(
             normalized_email=normalized_email,
             code=normalized_code,
         ).first()
         if existing:
+            if reject_conflict and existing.order_id != order.id:
+                raise DiscountRedemptionConflict(
+                    "This discount was already redeemed by another order."
+                )
             return existing
         raise

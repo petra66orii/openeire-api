@@ -12,6 +12,7 @@ from unittest.mock import patch, Mock
 
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core import mail
 from django.core.management import call_command
@@ -35,7 +36,7 @@ from products.models import (
     generate_variants_for_photo,
 )
 from .discounts import record_discount_redemption
-from .models import DiscountRedemption, Order, OrderItem, ProductShipping
+from .models import CheckoutAttempt, DiscountRedemption, Order, OrderItem, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import (
     _get_prodigi_asset_url,
@@ -934,6 +935,354 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
                 }
             },
         }
+
+    def _checkout_attempt(
+        self,
+        *,
+        payment_intent_id="pi_checkout_snapshot",
+        expected_amount_cents=10745,
+    ):
+        return CheckoutAttempt.objects.create(
+            checkout_key=uuid.uuid4(),
+            payment_intent_id=payment_intent_id,
+            user_profile=self.user.userprofile,
+            request_fingerprint="a" * 64,
+            cart_snapshot=[
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                    "options": {},
+                }
+            ],
+            pricing_snapshot=[
+                {
+                    "product_id": self.variant.id,
+                    "product_type": "physical",
+                    "quantity": 1,
+                    "unit_price": "99.00",
+                    "item_total": "99.00",
+                }
+            ],
+            shipping_details_snapshot={
+                "name": "Snapshot Buyer",
+                "email": self.user.email,
+                "phone": "+3530000000",
+                "address": {
+                    "country": "IE",
+                    "city": "Galway",
+                    "line1": "1 Trusted Street",
+                    "line2": "",
+                    "postal_code": "H62 X254",
+                    "state": "Galway",
+                },
+            },
+            shipping_method="budget",
+            customer_email=self.user.email,
+            shipping_cost=Decimal("8.45"),
+            expected_amount_cents=expected_amount_cents,
+            currency="eur",
+            terms_accepted_at=timezone.now(),
+            terms_version="2026-06-23",
+            privacy_accepted_at=timezone.now(),
+            privacy_version="2026-06-23",
+        )
+
+    @staticmethod
+    def _checkout_attempt_event(attempt, *, event_id="evt_checkout_snapshot"):
+        return {
+            "id": event_id,
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": attempt.payment_intent_id,
+                    "amount_received": attempt.expected_amount_cents,
+                    "currency": attempt.currency,
+                    "receipt_email": "attacker@example.com",
+                    "metadata": {
+                        "checkout_attempt_id": str(attempt.id),
+                        "checkout_flow": "store_checkout_v2",
+                    },
+                    "shipping": {
+                        "name": "Tampered Buyer",
+                        "phone": "+15555550123",
+                        "address": {
+                            "country": "US",
+                            "city": "Austin",
+                            "line1": "999 Tampered Avenue",
+                            "line2": "",
+                            "postal_code": "73301",
+                            "state": "TX",
+                        },
+                    },
+                }
+            },
+        }
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_snapshot_checkout_ignores_tampered_stripe_shipping_details(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        attempt = self._checkout_attempt()
+        mock_construct.return_value = self._checkout_attempt_event(attempt)
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_snapshot_1",
+                "status": {"stage": "InProduction"},
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.checkout_attempt, attempt)
+        self.assertEqual(order.first_name, "Snapshot Buyer")
+        self.assertEqual(order.email, self.user.email)
+        self.assertEqual(order.country.code, "IE")
+        self.assertEqual(order.street_address1, "1 Trusted Street")
+        self.assertNotEqual(order.street_address1, "999 Tampered Avenue")
+        mock_create_prodigi_order.assert_called_once_with(order)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_snapshot_checkout_blocks_order_when_paid_amount_does_not_match(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        attempt = self._checkout_attempt(payment_intent_id="pi_amount_mismatch")
+        event = self._checkout_attempt_event(
+            attempt,
+            event_id="evt_checkout_amount_mismatch",
+        )
+        event["data"]["object"]["amount_received"] -= 1
+        mock_construct.return_value = event
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(Order.objects.exists())
+        mock_create_prodigi_order.assert_not_called()
+        event_record = StripeWebhookEvent.objects.get(
+            stripe_event_id="evt_checkout_amount_mismatch"
+        )
+        self.assertEqual(event_record.status, "FAILED")
+        self.assertIn("Paid amount", event_record.error_message)
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_snapshot_checkout_uses_payment_time_prices_after_catalogue_change(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        attempt = self._checkout_attempt(payment_intent_id="pi_price_snapshot")
+        self.variant.price = Decimal("149.00")
+        self.variant.save(update_fields=["price"])
+        mock_construct.return_value = self._checkout_attempt_event(
+            attempt,
+            event_id="evt_price_snapshot",
+        )
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_price_snapshot",
+                "status": {"stage": "InProduction"},
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = Order.objects.get()
+        self.assertEqual(order.order_total, Decimal("99.00"))
+        self.assertEqual(order.delivery_cost, Decimal("8.45"))
+        self.assertEqual(order.total_price, Decimal("107.45"))
+        mock_create_prodigi_order.assert_called_once_with(order)
+
+    @override_settings(PRODIGI_SUBMISSION_LEASE_SECONDS=60)
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_stale_prodigi_submission_lease_is_recovered(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        attempt = self._checkout_attempt(payment_intent_id="pi_stale_prodigi")
+        order = Order.objects.create(
+            checkout_attempt=attempt,
+            user_profile=self.user.userprofile,
+            stripe_pid=attempt.payment_intent_id,
+            first_name="Snapshot Buyer",
+            email=self.user.email,
+            country="IE",
+            town="Galway",
+            street_address1="1 Trusted Street",
+            postcode="H62 X254",
+            county="Galway",
+            delivery_cost=Decimal("8.45"),
+            order_total=Decimal("99.00"),
+            total_price=Decimal("107.45"),
+            prodigi_order_id="",
+            prodigi_status="SUBMITTING",
+            prodigi_submission_started_at=timezone.now() - timedelta(minutes=5),
+            confirmation_email_status="SENT",
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.variant,
+            quantity=1,
+            item_total=Decimal("99.00"),
+            details={},
+        )
+        mock_construct.return_value = self._checkout_attempt_event(
+            attempt,
+            event_id="evt_stale_prodigi",
+        )
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_stale_recovered",
+                "status": {"stage": "InProduction"},
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.prodigi_order_id, "ord_stale_recovered")
+        self.assertIsNone(order.prodigi_submission_started_at)
+        mock_create_prodigi_order.assert_called_once_with(order)
+
+    @override_settings(PRODIGI_SUBMISSION_LEASE_SECONDS=60)
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_fresh_prodigi_submission_lease_is_not_duplicated(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        attempt = self._checkout_attempt(payment_intent_id="pi_fresh_prodigi")
+        started_at = timezone.now()
+        order = Order.objects.create(
+            checkout_attempt=attempt,
+            user_profile=self.user.userprofile,
+            stripe_pid=attempt.payment_intent_id,
+            first_name="Snapshot Buyer",
+            email=self.user.email,
+            country="IE",
+            town="Galway",
+            street_address1="1 Trusted Street",
+            postcode="H62 X254",
+            county="Galway",
+            delivery_cost=Decimal("8.45"),
+            order_total=Decimal("99.00"),
+            total_price=Decimal("107.45"),
+            prodigi_status="SUBMITTING",
+            prodigi_submission_started_at=started_at,
+            confirmation_email_status="SENT",
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.variant,
+            quantity=1,
+            item_total=Decimal("99.00"),
+            details={},
+        )
+        mock_construct.return_value = self._checkout_attempt_event(
+            attempt,
+            event_id="evt_fresh_prodigi",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.prodigi_status, "SUBMITTING")
+        self.assertEqual(order.prodigi_submission_started_at, started_at)
+        mock_create_prodigi_order.assert_not_called()
+
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_duplicate_discount_payment_is_held_before_fulfilment(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+    ):
+        first_order = Order.objects.create(
+            email=self.user.email,
+            stripe_pid="pi_first_discount",
+            discount_code="WELCOME10",
+            discount_amount=Decimal("9.90"),
+        )
+        record_discount_redemption(first_order)
+        attempt = self._checkout_attempt(
+            payment_intent_id="pi_duplicate_discount",
+            expected_amount_cents=9755,
+        )
+        attempt.discount_code = "WELCOME10"
+        attempt.discount_amount = Decimal("9.90")
+        attempt.discount_percent = Decimal("10.00")
+        attempt.discount_label = "WELCOME10 (10% off art prints)"
+        attempt.save(
+            update_fields=[
+                "discount_code",
+                "discount_amount",
+                "discount_percent",
+                "discount_label",
+            ]
+        )
+        mock_construct.return_value = self._checkout_attempt_event(
+            attempt,
+            event_id="evt_duplicate_discount",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        held_order = Order.objects.get(stripe_pid="pi_duplicate_discount")
+        self.assertEqual(
+            held_order.fulfilment_hold_reason,
+            "DISCOUNT_ALREADY_REDEEMED",
+        )
+        self.assertEqual(held_order.confirmation_email_status, "PENDING")
+        mock_create_prodigi_order.assert_not_called()
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_digital_order_stores_personal_terms_and_includes_it_in_email(self, mock_construct):
@@ -2024,6 +2373,7 @@ class ProdigiShipmentSyncCommandTests(TestCase):
     WELCOME_DISCOUNT_ENABLED=True,
     WELCOME_DISCOUNT_CODE="WELCOME10",
     WELCOME_DISCOUNT_PERCENT="10",
+    CHECKOUT_REQUIRE_TERMS_ACCEPTANCE=False,
 )
 class CreatePaymentIntentSecurityTests(TestCase):
     def setUp(self):
@@ -2101,6 +2451,185 @@ class CreatePaymentIntentSecurityTests(TestCase):
         if discount_code:
             payload["discount_code"] = discount_code
         return payload
+
+    def test_payment_intent_endpoint_has_dedicated_rate_limit(self):
+        self.assertEqual(
+            checkout_views.CreatePaymentIntentView.throttle_scope,
+            "checkout_payment_intent",
+        )
+        self.assertEqual(
+            settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"][
+                "checkout_payment_intent"
+            ],
+            "60/hour",
+        )
+
+    def test_checkout_attempt_cleanup_removes_only_abandoned_old_attempts(self):
+        old_attempt = CheckoutAttempt.objects.create(
+            checkout_key=uuid.uuid4(),
+            request_fingerprint="a" * 64,
+            customer_email="old@example.com",
+            expected_amount_cents=1000,
+        )
+        linked_attempt = CheckoutAttempt.objects.create(
+            checkout_key=uuid.uuid4(),
+            request_fingerprint="b" * 64,
+            customer_email="linked@example.com",
+            expected_amount_cents=1000,
+        )
+        Order.objects.create(
+            checkout_attempt=linked_attempt,
+            email="linked@example.com",
+            stripe_pid="pi_linked_retention",
+        )
+        old_time = timezone.now() - timedelta(days=60)
+        CheckoutAttempt.objects.filter(
+            pk__in=[old_attempt.pk, linked_attempt.pk]
+        ).update(created_at=old_time)
+
+        call_command(
+            "purge_checkout_attempts",
+            days=30,
+            stdout=StringIO(),
+        )
+
+        self.assertFalse(CheckoutAttempt.objects.filter(pk=old_attempt.pk).exists())
+        self.assertTrue(CheckoutAttempt.objects.filter(pk=linked_attempt.pk).exists())
+
+    @override_settings(CHECKOUT_REQUIRE_TERMS_ACCEPTANCE=True)
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_checkout_requires_recordable_terms_acceptance(self, mock_create):
+        payload = self._physical_checkout_payload()
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "CHECKOUT_ACCEPTANCE_REQUIRED")
+        self.assertIn("accepts_terms", response.data)
+        self.assertIn("accepts_privacy", response.data)
+        mock_create.assert_not_called()
+        self.assertFalse(CheckoutAttempt.objects.exists())
+
+    @override_settings(
+        CHECKOUT_REQUIRE_TERMS_ACCEPTANCE=True,
+        CHECKOUT_TERMS_VERSION="TERMS-TEST",
+        CHECKOUT_PRIVACY_VERSION="PRIVACY-TEST",
+    )
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_checkout_records_acceptance_versions_on_immutable_attempt(
+        self,
+        mock_create,
+    ):
+        mock_create.return_value = Mock(
+            id="pi_terms_snapshot",
+            client_secret="pi_terms_snapshot_secret_test",
+        )
+        payload = self._physical_checkout_payload()
+        payload.update(
+            {
+                "checkout_id": str(uuid.uuid4()),
+                "accepts_terms": True,
+                "accepts_privacy": True,
+            }
+        )
+
+        response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        attempt = CheckoutAttempt.objects.get()
+        self.assertEqual(attempt.payment_intent_id, "pi_terms_snapshot")
+        self.assertIsNotNone(attempt.terms_accepted_at)
+        self.assertEqual(attempt.terms_version, "TERMS-TEST")
+        self.assertIsNotNone(attempt.privacy_accepted_at)
+        self.assertEqual(attempt.privacy_version, "PRIVACY-TEST")
+
+    @override_settings(CHECKOUT_REQUIRE_TERMS_ACCEPTANCE=True)
+    @patch("checkout.views.stripe.PaymentIntent.retrieve")
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_repeated_checkout_key_reuses_payment_intent(
+        self,
+        mock_create,
+        mock_retrieve,
+    ):
+        checkout_id = str(uuid.uuid4())
+        intent = Mock(
+            id="pi_idempotent_checkout",
+            client_secret="pi_idempotent_checkout_secret_test",
+        )
+        mock_create.return_value = intent
+        mock_retrieve.return_value = intent
+        payload = self._physical_checkout_payload()
+        payload.update(
+            {
+                "checkout_id": checkout_id,
+                "accepts_terms": True,
+                "accepts_privacy": True,
+            }
+        )
+
+        first_response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        second_response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(CheckoutAttempt.objects.count(), 1)
+        mock_create.assert_called_once()
+        self.assertEqual(
+            mock_create.call_args.kwargs["idempotency_key"],
+            f"checkout-{checkout_id}",
+        )
+        mock_retrieve.assert_called_once_with("pi_idempotent_checkout")
+
+    @override_settings(CHECKOUT_REQUIRE_TERMS_ACCEPTANCE=True)
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_reused_checkout_key_rejects_changed_checkout_state(self, mock_create):
+        checkout_id = str(uuid.uuid4())
+        mock_create.return_value = Mock(
+            id="pi_checkout_state",
+            client_secret="pi_checkout_state_secret_test",
+        )
+        payload = self._physical_checkout_payload()
+        payload.update(
+            {
+                "checkout_id": checkout_id,
+                "accepts_terms": True,
+                "accepts_privacy": True,
+            }
+        )
+        first_response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        payload["cart"][0]["quantity"] = 2
+
+        changed_response = self.client.post(
+            self.url,
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(changed_response.status_code, 409)
+        self.assertEqual(changed_response.data["code"], "CHECKOUT_STATE_CHANGED")
+        self.assertEqual(CheckoutAttempt.objects.count(), 1)
+        mock_create.assert_called_once()
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_invalid_digital_license_option_is_ignored(self, mock_create):
@@ -2405,7 +2934,8 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertIn("clientSecret", response.data)
         mock_create.assert_called_once()
         sent_metadata = mock_create.call_args.kwargs["metadata"]
-        self.assertEqual(sent_metadata["user_id"], "")
+        self.assertEqual(sent_metadata["checkout_flow"], "store_checkout_v2")
+        self.assertIsNone(CheckoutAttempt.objects.get().user_profile)
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_valid_welcome10_applies_to_physical_art_print_subtotal_only(self, mock_create):
@@ -2426,9 +2956,9 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.data["discountCode"], "WELCOME10")
         self.assertEqual(response.data["totalPrice"], 97.55)
         self.assertEqual(mock_create.call_args.kwargs["amount"], 9755)
-        metadata = mock_create.call_args.kwargs["metadata"]
-        self.assertEqual(metadata["discount_code"], "WELCOME10")
-        self.assertEqual(metadata["discount_amount"], "9.90")
+        attempt = CheckoutAttempt.objects.get()
+        self.assertEqual(attempt.discount_code, "WELCOME10")
+        self.assertEqual(attempt.discount_amount, Decimal("9.90"))
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_digital_items_do_not_accept_welcome_discount(self, mock_create):
@@ -2627,8 +3157,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertTrue(response.data["freeShippingApplied"])
         self.assertEqual(response.data["freeShippingThreshold"], 150.0)
         mock_create.assert_called_once()
-        metadata = mock_create.call_args.kwargs["metadata"]
-        self.assertEqual(metadata["shipping_cost"], "0.00")
+        self.assertEqual(CheckoutAttempt.objects.get().shipping_cost, Decimal("0.00"))
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_mixed_cart_only_uses_physical_subtotal_for_free_shipping(self, mock_create):
@@ -2672,8 +3201,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(response.data["shippingCost"], 8.45)
         self.assertFalse(response.data["freeShippingApplied"])
         mock_create.assert_called_once()
-        metadata = mock_create.call_args.kwargs["metadata"]
-        self.assertEqual(metadata["shipping_cost"], "8.45")
+        self.assertEqual(CheckoutAttempt.objects.get().shipping_cost, Decimal("8.45"))
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_free_shipping_does_not_apply_outside_eligible_countries(self, mock_create):
@@ -2815,7 +3343,8 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertIn("clientSecret", response.data)
         mock_create.assert_called_once()
         sent_metadata = mock_create.call_args.kwargs["metadata"]
-        self.assertEqual(sent_metadata["user_id"], str(self.user.id))
+        self.assertEqual(sent_metadata["checkout_flow"], "store_checkout_v2")
+        self.assertEqual(CheckoutAttempt.objects.get().user_profile.user_id, self.user.id)
         self.assertEqual(
             mock_create.call_args.kwargs["payment_method_types"],
             ["card"],

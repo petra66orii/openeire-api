@@ -414,6 +414,17 @@ class ActionTokenPurposeTests(TestCase):
         self.assertEqual(response.status_code, 401)
 
 
+class TokenRefreshTests(TestCase):
+    def test_invalid_refresh_token_returns_unauthorized(self):
+        response = self.client.post(
+            reverse("token_refresh"),
+            data={"refresh": "invalid.refresh.token"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json().get("code"), "token_not_valid")
+
+
 @override_settings(
     JWT_USE_HTTPONLY_COOKIES=True,
     JWT_COOKIE_SECURE=False,
