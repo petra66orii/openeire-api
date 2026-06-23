@@ -56,7 +56,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = (
-            'id', 'order_number', 'user_profile', 
+            'id', 'order_number', 'user_profile', 'checkout_attempt',
             'first_name', 'email', 'phone_number', 
             'street_address1', 'street_address2', 
             'town', 'county', 'postcode', 'country', 
@@ -89,8 +89,10 @@ class OrderSerializer(serializers.ModelSerializer):
         has_consumer_digital_item = False
         order_items_to_create = []
         physical_line_items = []
+        pricing_snapshot = self.context.get('pricing_snapshot')
+        use_pricing_snapshot = isinstance(pricing_snapshot, list)
 
-        for item_data in items_data:
+        for item_index, item_data in enumerate(items_data):
             product_id = item_data['product_id']
             product_type_str = item_data['product_type']
             quantity = item_data['quantity']
@@ -103,7 +105,9 @@ class OrderSerializer(serializers.ModelSerializer):
                 continue
 
             try:
-                if product_type_str == 'physical':
+                if use_pricing_snapshot:
+                    product_instance = model_class.objects.get(id=product_id)
+                elif product_type_str == 'physical':
                     product_instance = model_class.objects.get(
                         id=product_id,
                         photo__is_active=True,
@@ -119,8 +123,24 @@ class OrderSerializer(serializers.ModelSerializer):
                 # --- PRICE LOGIC ---
                 price = 0
                 
-                if product_type_str == 'physical':
+                if use_pricing_snapshot:
+                    try:
+                        snapshot_item = pricing_snapshot[item_index]
+                        if (
+                            int(snapshot_item['product_id']) != int(product_id)
+                            or snapshot_item['product_type'] != product_type_str
+                            or int(snapshot_item['quantity']) != int(quantity)
+                        ):
+                            raise ValueError("Pricing snapshot item mismatch")
+                        price = Decimal(str(snapshot_item['unit_price']))
+                    except (IndexError, KeyError, TypeError, ValueError, ArithmeticError):
+                        raise serializers.ValidationError(
+                            {"items": "The payment-time pricing snapshot is invalid."}
+                        )
+                elif product_type_str == 'physical':
                     price = product_instance.price
+
+                if product_type_str == 'physical':
                     physical_line_items.append((product_instance, quantity))
                 
                 elif product_type_str in ['photo', 'video']:
@@ -134,7 +154,8 @@ class OrderSerializer(serializers.ModelSerializer):
                             }
                         )
                     has_consumer_digital_item = True
-                    price = product_instance.price
+                    if not use_pricing_snapshot:
+                        price = product_instance.price
 
                 item_total = price * quantity
                 order_total += item_total
@@ -159,12 +180,17 @@ class OrderSerializer(serializers.ModelSerializer):
                     )
                 continue
 
-        shipping_quote = calculate_physical_shipping_quote(
-            line_items=physical_line_items,
-            shipping_country=shipping_country,
-            shipping_method=shipping_method,
-        )
-        calculated_delivery_cost = shipping_quote.delivery_cost
+        if use_pricing_snapshot:
+            calculated_delivery_cost = Decimal(
+                str(self.context.get('shipping_cost_snapshot', '0'))
+            )
+        else:
+            shipping_quote = calculate_physical_shipping_quote(
+                line_items=physical_line_items,
+                shipping_country=shipping_country,
+                shipping_method=shipping_method,
+            )
+            calculated_delivery_cost = shipping_quote.delivery_cost
 
         with transaction.atomic():
             order = Order.objects.create(user_profile=user_profile, **validated_data)
@@ -214,6 +240,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(shipping_errors)
 
         # Validate digital item options payload shape only.
+        use_pricing_snapshot = isinstance(self.context.get('pricing_snapshot'), list)
         for item in items:
             p_type = item.get('product_type')
 
@@ -226,7 +253,10 @@ class OrderSerializer(serializers.ModelSerializer):
                 product_id = item.get('product_id')
                 model_class = Photo if p_type == 'photo' else Video
                 try:
-                    product = model_class.objects.get(id=product_id, is_active=True)
+                    product_query = {"id": product_id}
+                    if not use_pricing_snapshot:
+                        product_query["is_active"] = True
+                    product = model_class.objects.get(**product_query)
                 except model_class.DoesNotExist:
                     raise serializers.ValidationError(
                         {"items": f"Digital product {product_id} is no longer available for sale."}

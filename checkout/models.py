@@ -4,14 +4,59 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django_countries.fields import CountryField
 from django.db import models
+from django.db.models import Q
 
 from products.models import PrintTemplate
 from userprofiles.models import UserProfile
 
 
+class CheckoutAttempt(models.Model):
+    checkout_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    payment_intent_id = models.CharField(
+        max_length=255,
+        unique=True,
+        null=True,
+        blank=True,
+    )
+    user_profile = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checkout_attempts",
+    )
+    request_fingerprint = models.CharField(max_length=64)
+    cart_snapshot = models.JSONField(default=list)
+    pricing_snapshot = models.JSONField(default=list)
+    shipping_details_snapshot = models.JSONField(default=dict, blank=True)
+    shipping_method = models.CharField(max_length=20, default="budget")
+    customer_email = models.EmailField(max_length=254)
+    save_info = models.BooleanField(default=False)
+    shipping_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    free_shipping_applied = models.BooleanField(default=False)
+    discount_code = models.CharField(max_length=50, blank=True, default="")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    discount_label = models.CharField(max_length=100, blank=True, default="")
+    expected_amount_cents = models.PositiveBigIntegerField()
+    currency = models.CharField(max_length=3, default="eur")
+    terms_accepted_at = models.DateTimeField(null=True, blank=True)
+    terms_version = models.CharField(max_length=80, blank=True, default="")
+    privacy_accepted_at = models.DateTimeField(null=True, blank=True)
+    privacy_version = models.CharField(max_length=80, blank=True, default="")
+    personal_use_accepted_at = models.DateTimeField(null=True, blank=True)
+    personal_terms_version = models.CharField(max_length=80, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return str(self.checkout_key)
+
+
 class Order(models.Model):
     CONFIRMATION_EMAIL_STATUS_CHOICES = [
         ("PENDING", "Pending"),
+        ("SENDING", "Sending"),
         ("SENT", "Sent"),
         ("FAILED", "Failed"),
     ]
@@ -29,6 +74,13 @@ class Order(models.Model):
         null=True,
         blank=True,
         related_name="orders",
+    )
+    checkout_attempt = models.OneToOneField(
+        CheckoutAttempt,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="order",
     )
 
     first_name = models.CharField(max_length=150, null=True, blank=True)
@@ -63,6 +115,8 @@ class Order(models.Model):
     stripe_pid = models.CharField(max_length=254, null=False, blank=False, default="")
     prodigi_order_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     prodigi_status = models.CharField(max_length=64, null=True, blank=True)
+    prodigi_submission_started_at = models.DateTimeField(null=True, blank=True)
+    fulfilment_hold_reason = models.CharField(max_length=100, blank=True, default="")
     prodigi_shipments = models.JSONField(default=list, blank=True)
     prodigi_last_callback_at = models.DateTimeField(null=True, blank=True)
     prodigi_last_polled_at = models.DateTimeField(null=True, blank=True)
@@ -76,6 +130,15 @@ class Order(models.Model):
     confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
     confirmation_email_failed_at = models.DateTimeField(null=True, blank=True)
     confirmation_email_error = models.TextField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("stripe_pid",),
+                condition=~Q(stripe_pid=""),
+                name="uniq_order_nonempty_stripe_pid",
+            )
+        ]
 
     def _generate_order_number(self):
         return uuid.uuid4().hex.upper()

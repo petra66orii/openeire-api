@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib import messages
 from django.utils import timezone
-from .models import Order, OrderItem, ProductShipping
+from .models import CheckoutAttempt, Order, OrderItem, ProductShipping
 from .emails import send_order_confirmation_email
 from .tracking import refresh_order_from_prodigi
 from openeire_api.admin import custom_admin_site
@@ -26,7 +26,7 @@ class OrderAdmin(admin.ModelAdmin):
     actions = ("retry_confirmation_emails", "refresh_from_prodigi")
 
     # Make all fields read-only in the detail view
-    readonly_fields = ('order_number', 'user_profile', 'date', 'delivery_cost',
+    readonly_fields = ('order_number', 'user_profile', 'checkout_attempt', 'date', 'delivery_cost',
                        'order_total', 'total_price', 'discount_code', 'discount_amount',
                        'discount_percent', 'discount_label', 'stripe_pid', 'first_name',
                        'email', 'phone_number', 'country', 'postcode', 'town',
@@ -35,6 +35,8 @@ class OrderAdmin(admin.ModelAdmin):
                        'confirmation_email_sent_at', 'confirmation_email_failed_at',
                        'confirmation_email_error', 'prodigi_order_id',
                        'prodigi_status', 'prodigi_last_callback_at',
+                       'prodigi_submission_started_at',
+                       'fulfilment_hold_reason',
                        'prodigi_last_polled_at',
                        'prodigi_shipments', 'tracking_email_sent_at',
                        'tracking_email_signature')
@@ -48,13 +50,17 @@ class OrderAdmin(admin.ModelAdmin):
         'discount_amount',
         'date',
         'personal_terms_version',
+        'fulfilment_hold_reason',
         'prodigi_status',
         'prodigi_last_polled_at',
         'tracking_email_sent_at',
         'confirmation_email_status',
         'confirmation_email_sent_at',
     )
-    list_filter = ('date', 'confirmation_email_status', 'prodigi_status')
+    list_filter = (
+        'date', 'confirmation_email_status', 'prodigi_status',
+        'fulfilment_hold_reason',
+    )
     search_fields = ('order_number', 'email', 'first_name')
     ordering = ('-date',)
 
@@ -63,8 +69,12 @@ class OrderAdmin(admin.ModelAdmin):
         sent_count = 0
         failed_count = 0
         skipped_sent_count = 0
+        skipped_held_count = 0
 
         for order in queryset:
+            if order.fulfilment_hold_reason:
+                skipped_held_count += 1
+                continue
             if order.confirmation_email_status == 'SENT':
                 skipped_sent_count += 1
                 continue
@@ -105,6 +115,12 @@ class OrderAdmin(admin.ModelAdmin):
             self.message_user(
                 request,
                 f"Skipped {skipped_sent_count} order(s) already marked as sent.",
+                level=messages.WARNING,
+            )
+        if skipped_held_count:
+            self.message_user(
+                request,
+                f"Skipped {skipped_held_count} held order(s) requiring manual review.",
                 level=messages.WARNING,
             )
 
@@ -161,3 +177,34 @@ class ProductShippingAdmin(admin.ModelAdmin):
 
 custom_admin_site.register(Order, OrderAdmin)
 custom_admin_site.register(ProductShipping, ProductShippingAdmin)
+
+
+class CheckoutAttemptAdmin(admin.ModelAdmin):
+    readonly_fields = (
+        'checkout_key', 'payment_intent_id', 'user_profile', 'request_fingerprint',
+        'cart_snapshot', 'pricing_snapshot', 'shipping_details_snapshot',
+        'shipping_method', 'customer_email', 'save_info', 'shipping_cost',
+        'free_shipping_applied', 'discount_code', 'discount_amount',
+        'discount_percent', 'discount_label', 'expected_amount_cents', 'currency',
+        'terms_accepted_at', 'terms_version', 'privacy_accepted_at',
+        'privacy_version', 'personal_use_accepted_at', 'personal_terms_version',
+        'created_at', 'updated_at',
+    )
+    list_display = (
+        'checkout_key', 'payment_intent_id', 'customer_email',
+        'expected_amount_cents', 'currency', 'created_at',
+    )
+    search_fields = ('checkout_key', 'payment_intent_id', 'customer_email')
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+custom_admin_site.register(CheckoutAttempt, CheckoutAttemptAdmin)

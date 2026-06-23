@@ -204,6 +204,7 @@ REST_FRAMEWORK = {
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
         'real_estate_enquiry': '5/hour',
+        'checkout_payment_intent': '60/hour',
         'prodigi_callback': '30/minute',
     },
 }
@@ -600,6 +601,18 @@ def _stripe_payment_method_types_from_env(raw_value):
 
 STRIPE_PAYMENT_METHOD_TYPES = _stripe_payment_method_types_from_env(
     os.getenv("STRIPE_PAYMENT_METHOD_TYPES", "card")
+)
+CHECKOUT_TERMS_VERSION = os.getenv("CHECKOUT_TERMS_VERSION", "2026-06-23")
+CHECKOUT_PRIVACY_VERSION = os.getenv("CHECKOUT_PRIVACY_VERSION", "2026-06-23")
+CHECKOUT_REQUIRE_TERMS_ACCEPTANCE = env_bool(
+    os.getenv("CHECKOUT_REQUIRE_TERMS_ACCEPTANCE"),
+    default=True,
+)
+CHECKOUT_ATTEMPT_RETENTION_DAYS = int(
+    os.getenv("CHECKOUT_ATTEMPT_RETENTION_DAYS", "30")
+)
+PRODIGI_SUBMISSION_LEASE_SECONDS = int(
+    os.getenv("PRODIGI_SUBMISSION_LEASE_SECONDS", "300")
 )
 
 require_env_in_production(
