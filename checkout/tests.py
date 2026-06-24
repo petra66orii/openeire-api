@@ -1828,12 +1828,14 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         order = Order.objects.get()
         self.assertEqual(DiscountRedemption.objects.filter(order=order).count(), 1)
 
+    @patch("checkout.views.send_fulfilment_failure_alert")
     @patch("checkout.views.create_prodigi_order", side_effect=RuntimeError("prodigi offline"))
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_webhook_marks_physical_fulfilment_failure_visible_and_retryable(
         self,
         mock_construct,
         _mock_create_prodigi_order,
+        mock_send_fulfilment_failure_alert,
     ):
         mock_construct.return_value = self._physical_payment_intent_event()
 
@@ -1852,6 +1854,10 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertEqual(event.status, "FAILED")
         self.assertIn(order.order_number, event.error_message)
         self.assertIn("prodigi offline", event.error_message)
+        mock_send_fulfilment_failure_alert.assert_called_once()
+        alerted_order, alerted_error = mock_send_fulfilment_failure_alert.call_args.args
+        self.assertEqual(alerted_order.pk, order.pk)
+        self.assertEqual(str(alerted_error), "prodigi offline")
 
     @patch("checkout.views.create_prodigi_order")
     @patch("checkout.views.stripe.Webhook.construct_event")
@@ -1895,6 +1901,45 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         event = StripeWebhookEvent.objects.get(stripe_event_id="evt_physical_retry")
         self.assertEqual(event.status, "SUCCESS")
         self.assertEqual(mock_create_prodigi_order.call_count, 2)
+
+    @patch("checkout.views.send_fulfilment_failure_alert")
+    @patch(
+        "checkout.views.sync_order_shipping_from_prodigi",
+        side_effect=RuntimeError("local sync failed"),
+    )
+    @patch("checkout.views.create_prodigi_order")
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_post_submission_failure_preserves_prodigi_order_id(
+        self,
+        mock_construct,
+        mock_create_prodigi_order,
+        _mock_sync_order_shipping,
+        mock_send_fulfilment_failure_alert,
+    ):
+        mock_construct.return_value = self._physical_payment_intent_event()
+        mock_create_prodigi_order.return_value = {
+            "order": {
+                "id": "ord_prodigi_already_created",
+                "status": {"stage": "InProduction"},
+                "merchantReference": "",
+                "shipments": [],
+            }
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        order = Order.objects.get()
+        self.assertEqual(order.prodigi_order_id, "ord_prodigi_already_created")
+        self.assertEqual(order.prodigi_status, "SUBMITTED")
+        mock_send_fulfilment_failure_alert.assert_called_once()
+        alerted_order = mock_send_fulfilment_failure_alert.call_args.args[0]
+        self.assertEqual(alerted_order.prodigi_order_id, "ord_prodigi_already_created")
 
     @patch("checkout.views.create_prodigi_order")
     @patch("checkout.views.stripe.Webhook.construct_event")

@@ -125,6 +125,9 @@ Email:
 - `LICENSING_FROM_EMAIL`
 - `LICENSOR_CONTACT_EMAIL`
 - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
+- `FULFILMENT_ALERT_RECIPIENTS` (comma-separated operations addresses; falls back to licence admin recipients or Django `ADMINS`)
+- `FULFILMENT_ALERT_COOLDOWN_SECONDS` (defaults to 24 hours per failed order)
+- `FULFILMENT_ADMIN_BASE_URL` (public API origin used to build the internal order-review link)
 
 Stripe:
 - `STRIPE_PUBLIC_KEY`
