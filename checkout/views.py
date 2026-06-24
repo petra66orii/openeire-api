@@ -52,6 +52,7 @@ from .discounts import (
 )
 from .address_validation import validate_physical_shipping_address
 from .prodigi import create_prodigi_order, fetch_prodigi_order
+from .alerts import send_fulfilment_failure_alert
 from .order_claiming import claim_guest_orders_for_user
 from .emails import send_order_confirmation_email
 from .shipping import (
@@ -1278,6 +1279,14 @@ class StripeWebhookView(APIView):
                                     if isinstance(prodigi_response, dict):
                                         prodigi_order = prodigi_response.get("order")
                                         if isinstance(prodigi_order, dict):
+                                            accepted_order_id = str(
+                                                prodigi_order.get("id") or ""
+                                            ).strip()
+                                            if accepted_order_id:
+                                                order.prodigi_order_id = accepted_order_id
+                                                order.save(
+                                                    update_fields=["prodigi_order_id"]
+                                                )
                                             sync_order_shipping_from_prodigi(order, prodigi_order)
                                     order.refresh_from_db(
                                         fields=[
@@ -1302,18 +1311,43 @@ class StripeWebhookView(APIView):
                                 order.order_number,
                             )
                     except Exception as exc:
-                        if order.prodigi_status != "FULFILMENT_FAILED":
+                        prodigi_order_id = str(order.prodigi_order_id or "").strip()
+                        if prodigi_order_id:
+                            if order.prodigi_status in (None, "", "SUBMITTING", "FULFILMENT_FAILED"):
+                                order.prodigi_status = "SUBMITTED"
+                        elif order.prodigi_status != "FULFILMENT_FAILED":
                             order.prodigi_status = "FULFILMENT_FAILED"
                         order.prodigi_submission_started_at = None
-                        order.save(
-                            update_fields=[
-                                "prodigi_status",
-                                "prodigi_submission_started_at",
-                            ]
-                        )
-                        processing_error = (
-                            f"Physical fulfilment failed for order {order.order_number}: {exc}"
-                        )
+                        update_fields = [
+                            "prodigi_status",
+                            "prodigi_submission_started_at",
+                        ]
+                        if prodigi_order_id:
+                            update_fields.append("prodigi_order_id")
+                        try:
+                            order.save(update_fields=update_fields)
+                        except Exception:
+                            logger.exception(
+                                "Failed to persist paid-order fulfilment failure state. "
+                                "order_number=%s",
+                                order.order_number,
+                            )
+                        try:
+                            send_fulfilment_failure_alert(order, exc)
+                        except Exception:
+                            logger.exception(
+                                "Failed to send paid-order fulfilment alert. order_number=%s",
+                                order.order_number,
+                            )
+                        if prodigi_order_id:
+                            processing_error = (
+                                "Prodigi accepted physical order "
+                                f"{order.order_number}, but local post-submission processing failed: {exc}"
+                            )
+                        else:
+                            processing_error = (
+                                f"Physical fulfilment failed for order {order.order_number}: {exc}"
+                            )
                         retryable_processing_error = True
                         logger.exception(
                             "Failed to fulfill order after webhook processing. order_number=%s",

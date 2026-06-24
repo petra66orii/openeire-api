@@ -528,6 +528,15 @@ LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     for email in os.getenv('LICENCE_ADMIN_NOTIFICATION_RECIPIENTS', '').split(',')
     if email.strip()
 ]
+FULFILMENT_ALERT_RECIPIENTS = [
+    email.strip()
+    for email in os.getenv('FULFILMENT_ALERT_RECIPIENTS', '').split(',')
+    if email.strip()
+]
+FULFILMENT_ALERT_COOLDOWN_SECONDS = int(
+    os.getenv('FULFILMENT_ALERT_COOLDOWN_SECONDS', '86400')
+)
+FULFILMENT_ADMIN_BASE_URL = os.getenv('FULFILMENT_ADMIN_BASE_URL')
 LICENCE_OFFER_EXPIRY_DAYS = int(os.getenv('LICENCE_OFFER_EXPIRY_DAYS', '7'))
 BREVO_ENABLED = env_bool(
     os.getenv("BREVO_ENABLED"),

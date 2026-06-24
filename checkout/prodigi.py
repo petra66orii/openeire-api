@@ -12,6 +12,16 @@ from django.urls import reverse
 logger = logging.getLogger(__name__)
 
 
+class ProdigiFulfillmentError(RuntimeError):
+    def __init__(self, *, status_code, outcome=None, trace_parent=None):
+        self.status_code = status_code
+        self.outcome = outcome or "unknown"
+        self.trace_parent = trace_parent
+        super().__init__(
+            f"Prodigi fulfillment failed (status={status_code}, outcome={self.outcome})."
+        )
+
+
 def _is_non_public_prodigi_asset_url(url: str) -> bool:
     raw_url = str(url or "").strip()
     if not raw_url:
@@ -448,6 +458,8 @@ def create_prodigi_order(order):
         trace_parent or "n/a",
         ",".join(failure_codes) if failure_codes else "none",
     )
-    raise RuntimeError(
-        f"Prodigi fulfillment failed (status={response.status_code}, outcome={outcome or 'unknown'})."
+    raise ProdigiFulfillmentError(
+        status_code=response.status_code,
+        outcome=outcome,
+        trace_parent=trace_parent,
     )
