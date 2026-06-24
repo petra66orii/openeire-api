@@ -38,6 +38,7 @@ def canonicalize_cart(cart):
         )
 
     canonical = []
+    canonical_indexes = {}
     for raw_item in cart:
         if not isinstance(raw_item, dict):
             raise ValidationError(
@@ -102,6 +103,22 @@ def canonicalize_cart(cart):
                 for key in ("material", "size")
                 if raw_options.get(key) not in (None, "")
             }
+        identity = (product_type, product_id)
+        existing_index = canonical_indexes.get(identity)
+        if existing_index is not None:
+            if product_type == "physical":
+                merged_quantity = canonical[existing_index]["quantity"] + quantity
+                if merged_quantity > MAX_ITEM_QUANTITY:
+                    raise ValidationError(
+                        {
+                            "code": "INVALID_CART_PAYLOAD",
+                            "error": "Cart quantity must be a whole number of at least 1.",
+                        }
+                    )
+                canonical[existing_index]["quantity"] = merged_quantity
+            continue
+
+        canonical_indexes[identity] = len(canonical)
         canonical.append(item)
     return canonical
 

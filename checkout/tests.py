@@ -21,6 +21,7 @@ from django.db.models.signals import post_save
 from django.test import TestCase, override_settings, SimpleTestCase, RequestFactory
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
 from products.models import (
@@ -36,6 +37,7 @@ from products.models import (
     generate_variants_for_photo,
 )
 from .discounts import record_discount_redemption
+from .attempts import canonicalize_cart
 from .models import CheckoutAttempt, DiscountRedemption, Order, OrderItem, ProductShipping
 from .address_validation import validate_physical_shipping_address
 from .prodigi import (
@@ -58,6 +60,54 @@ from .tracking import (
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
+
+
+class CheckoutCartCanonicalizationTests(SimpleTestCase):
+    def test_duplicate_physical_lines_are_merged(self):
+        cart = canonicalize_cart(
+            [
+                {
+                    "product_id": 7,
+                    "product_type": "physical",
+                    "quantity": 2,
+                    "options": {"material": "canvas", "size": "12x18"},
+                },
+                {
+                    "product_id": 7,
+                    "product_type": "physical",
+                    "quantity": 3,
+                    "options": {"material": "canvas", "size": "12x18"},
+                },
+            ]
+        )
+
+        self.assertEqual(len(cart), 1)
+        self.assertEqual(cart[0]["quantity"], 5)
+
+    def test_duplicate_digital_lines_are_collapsed_to_one(self):
+        cart = canonicalize_cart(
+            [
+                {"product_id": 9, "product_type": "video", "quantity": 1},
+                {"product_id": 9, "product_type": "video", "quantity": 1},
+            ]
+        )
+
+        self.assertEqual(
+            cart,
+            [{"product_id": 9, "product_type": "video", "quantity": 1}],
+        )
+
+    def test_merged_physical_quantity_cannot_exceed_limit(self):
+        with self.assertRaisesMessage(
+            DRFValidationError,
+            "Cart quantity must be a whole number of at least 1.",
+        ):
+            canonicalize_cart(
+                [
+                    {"product_id": 7, "product_type": "physical", "quantity": 60},
+                    {"product_id": 7, "product_type": "physical", "quantity": 41},
+                ]
+            )
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):

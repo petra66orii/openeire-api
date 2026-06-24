@@ -137,6 +137,7 @@ Stripe:
 - `STRIPE_MAX_NETWORK_RETRIES`
 - `STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS`
 - `CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK`
+- `CHECKOUT_ATTEMPT_RETENTION_DAYS` (defaults to 30; applies only to abandoned attempts without an order)
 
 Prodigi:
 - `PRODIGI_API_KEY`
@@ -179,6 +180,14 @@ python manage.py migrate
 python manage.py test
 python manage.py collectstatic --no-input
 ```
+
+Checkout attempt cleanup can be previewed safely before deletion:
+```bash
+python manage.py purge_checkout_attempts --dry-run
+python manage.py purge_checkout_attempts
+```
+The command only removes attempts older than `CHECKOUT_ATTEMPT_RETENTION_DAYS`
+that are not linked to an order. Run it daily as a Render cron job or equivalent.
 
 ## Background Worker Overview
 - Celery tasks are not defined in this repository (Coming soon).
