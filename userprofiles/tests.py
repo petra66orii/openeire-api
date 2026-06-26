@@ -5,15 +5,16 @@ from django.core import mail
 from django.core.exceptions import ImproperlyConfigured
 from django.db import IntegrityError
 from django.db import transaction
-from django.test import TestCase, override_settings
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
-from allauth.socialaccount.models import SocialApp
+from allauth.socialaccount.models import EmailAddress, SocialAccount, SocialApp, SocialLogin
 from dj_rest_auth.registration.views import SocialLoginView
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 from unittest.mock import patch
 from checkout.models import Order
 
+from .adapters import OpenEireSocialAccountAdapter
 from .token_utils import (
     EMAIL_VERIFICATION_PURPOSE,
     PASSWORD_RESET_PURPOSE,
@@ -613,6 +614,76 @@ class GoogleLoginMisconfigurationTests(TestCase):
                 )
             },
         )
+
+
+class GoogleSocialAccountAdapterTests(TestCase):
+    def setUp(self):
+        self.adapter = OpenEireSocialAccountAdapter()
+        self.request = RequestFactory().post("/api/auth/google/")
+
+    def _build_social_login(self, email, *, verified=True):
+        social_user = User(username="google-user", email=email)
+        social_account = SocialAccount(
+            provider="google",
+            uid="google-uid-123",
+            extra_data={"email": email, "email_verified": verified},
+        )
+        return SocialLogin(
+            user=social_user,
+            account=social_account,
+            email_addresses=[
+                EmailAddress(email=email, verified=verified, primary=True),
+            ],
+        )
+
+    def test_verified_google_email_connects_to_existing_active_user(self):
+        existing_user = User.objects.create_user(
+            username="existing",
+            email="existing@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        sociallogin = self._build_social_login("existing@example.com", verified=True)
+
+        self.adapter.pre_social_login(self.request, sociallogin)
+
+        self.assertTrue(sociallogin.is_existing)
+        self.assertEqual(sociallogin.user, existing_user)
+        self.assertTrue(
+            SocialAccount.objects.filter(
+                user=existing_user,
+                provider="google",
+                uid="google-uid-123",
+            ).exists()
+        )
+
+    def test_unverified_google_email_does_not_connect_existing_user(self):
+        User.objects.create_user(
+            username="existing",
+            email="existing@example.com",
+            password="StrongPass123!",
+            is_active=True,
+        )
+        sociallogin = self._build_social_login("existing@example.com", verified=False)
+
+        self.adapter.pre_social_login(self.request, sociallogin)
+
+        self.assertFalse(sociallogin.is_existing)
+        self.assertFalse(SocialAccount.objects.exists())
+
+    def test_verified_google_email_does_not_connect_inactive_user(self):
+        User.objects.create_user(
+            username="inactive",
+            email="inactive@example.com",
+            password="StrongPass123!",
+            is_active=False,
+        )
+        sociallogin = self._build_social_login("inactive@example.com", verified=True)
+
+        self.adapter.pre_social_login(self.request, sociallogin)
+
+        self.assertFalse(sociallogin.is_existing)
+        self.assertFalse(SocialAccount.objects.exists())
 
 
 @override_settings(
