@@ -436,6 +436,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://openeire.onrender.com",
+    "https://openeire-next.onrender.com",
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -454,6 +455,7 @@ CSRF_TRUSTED_ORIGINS = [
     "https://openeire.ie",
     "https://openeire.online",
     "https://openeire.onrender.com",
+    "https://openeire-next.onrender.com",
 ]
 
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
