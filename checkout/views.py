@@ -596,6 +596,8 @@ class CreatePaymentIntentView(APIView):
 
 class DiscountValidationView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [SharedScopedRateThrottle]
+    throttle_scope = "discount_validation"
 
     def post(self, request, *args, **kwargs):
         cart = request.data.get("cart")

@@ -888,27 +888,35 @@ class PersonalAssetDownloadView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, token):
-        token_obj = PersonalDownloadToken.objects.select_related("order_item").filter(token=token).first()
-        if not token_obj or not token_obj.is_valid:
-            raise Http404("Download link has expired or was already used.")
+        with transaction.atomic():
+            token_obj = (
+                PersonalDownloadToken.objects
+                .select_for_update()
+                .filter(token=token)
+                .first()
+            )
+            if not token_obj or not token_obj.is_valid:
+                raise Http404("Download link has expired or was already used.")
 
-        order_item = token_obj.order_item
-        asset = order_item.product
-        asset_file_name = get_asset_file_name(asset)
-        redirect_response = _redirect_to_private_asset_if_supported(
-            asset,
-            asset_file_name,
-            (asset_file_name or "").rsplit("/", 1)[-1],
-        )
-        if redirect_response is not None:
-            PersonalDownloadToken.objects.filter(pk=token_obj.pk).update(used_at=timezone.now())
-            return redirect_response
+            order_item = token_obj.order_item
+            asset = order_item.product
+            asset_file_name = get_asset_file_name(asset)
+            redirect_response = _redirect_to_private_asset_if_supported(
+                asset,
+                asset_file_name,
+                (asset_file_name or "").rsplit("/", 1)[-1],
+            )
+            if redirect_response is not None:
+                token_obj.used_at = timezone.now()
+                token_obj.save(update_fields=["used_at"])
+                return redirect_response
 
-        file_field = open_asset_file(asset, "rb")
-        if not file_field:
-            raise Http404("File not attached to asset")
+            file_field = open_asset_file(asset, "rb")
+            if not file_field:
+                raise Http404("File not attached to asset")
 
-        PersonalDownloadToken.objects.filter(pk=token_obj.pk).update(used_at=timezone.now())
+            token_obj.used_at = timezone.now()
+            token_obj.save(update_fields=["used_at"])
 
         filename = (get_asset_file_name(asset) or "").rsplit("/", 1)[-1]
         if not filename:
