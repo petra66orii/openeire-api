@@ -205,6 +205,8 @@ REST_FRAMEWORK = {
         'gallery_access_verify': '20/hour',
         'real_estate_enquiry': '5/hour',
         'checkout_payment_intent': '60/hour',
+        'discount_validation': '30/hour',
+        'blog_comment': '20/hour',
         'prodigi_callback': '30/minute',
     },
 }

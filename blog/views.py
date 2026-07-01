@@ -6,6 +6,7 @@ from django.shortcuts import get_object_or_404
 from .models import BlogPost, Comment
 from .serializers import BlogPostListSerializer, BlogPostDetailSerializer, CommentSerializer
 from products.views import CustomPagination
+from openeire_api.throttling import SharedScopedRateThrottle
 
 class BlogPostListView(generics.ListAPIView):
     """
@@ -60,6 +61,12 @@ class BlogPostLikeView(APIView):
 
 class CommentListCreateView(generics.ListCreateAPIView):
     serializer_class = CommentSerializer
+
+    def get_throttles(self):
+        if self.request.method == 'POST':
+            self.throttle_scope = 'blog_comment'
+            return [SharedScopedRateThrottle()]
+        return []
 
     def get_permissions(self):
         if self.request.method == 'POST':
