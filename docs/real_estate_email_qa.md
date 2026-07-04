@@ -9,10 +9,10 @@ Use this checklist before enabling or changing any real estate email flow in pro
 - [ x ] Confirm the hidden preheader appears correctly in inbox preview text and does not appear in the visible body.
 - [ x ] Confirm the white transparent OpenEire Studios logo loads from an absolute public URL and remains readable on the dark header.
 - [ x ] Confirm no broken image icon appears when the logo URL is missing.
-- [ x ] Confirm the logo width looks balanced at roughly 180-220px on desktop and mobile email clients.
+- [x] Confirm the logo width looks balanced at roughly 180-220px on desktop and mobile email clients.
 - [ ] Confirm the logo alt text reads "OpenEire Studios" if images are blocked.
-- [ x ] Confirm the centred header tagline reads: `Aerial Photography • Property Media • Visual Licensing`.
-- [ x ] Confirm the plain-text version is included and readable for each email.
+- [x] Confirm the centred header tagline reads: `Aerial Photography • Property Media • Visual Licensing`.
+- [x] Confirm the plain-text version is included and readable for each email.
 
 ## Accent And CTA Styling
 
