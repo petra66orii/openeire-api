@@ -1,0 +1,69 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Property media quote{% endblock %}
+{% block preheader %}Your property media quote from OpenEire Studios is ready to review.{% endblock %}
+{% block heading %}Your property media quote{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0 0 16px;">Thank you for sharing the details for {{ property_address|default:"the property" }}. Based on the scope requested, your quote is below.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Quote details</p>
+    <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    {% if addons %}<p style="margin:0 0 6px;"><strong>Add-ons:</strong> {% for addon in addons %}{{ addon }}{% if not forloop.last %}; {% endif %}{% endfor %}</p>{% endif %}
+    {% if quote_total or vat_total or total_including_vat or deposit_amount or balance_due %}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px; border-top:1px solid #E5E7EB;">
+        {% if quote_total %}
+          <tr>
+            <td style="padding:12px 0 0; color:#5F6673;">Quote total (ex VAT)</td>
+            <td align="right" style="padding:12px 0 0; font-weight:700;">{{ quote_total }}</td>
+          </tr>
+        {% endif %}
+        {% if vat_total %}
+          <tr>
+            <td style="padding:8px 0 0; color:#5F6673;">VAT (23%)</td>
+            <td align="right" style="padding:8px 0 0; font-weight:700;">{{ vat_total }}</td>
+          </tr>
+        {% endif %}
+        {% if total_including_vat %}
+          <tr>
+            <td style="padding:8px 0 0; color:#5F6673;">Total incl. VAT</td>
+            <td align="right" style="padding:8px 0 0; font-weight:800;">{{ total_including_vat }}</td>
+          </tr>
+        {% endif %}
+        {% if deposit_amount %}
+          <tr>
+            <td style="padding:8px 0 0; color:#5F6673;">Deposit required</td>
+            <td align="right" style="padding:8px 0 0; font-weight:700;">{{ deposit_amount }}</td>
+          </tr>
+        {% endif %}
+        {% if balance_due %}
+          <tr>
+            <td style="padding:8px 0 0; color:#5F6673;">Balance on delivery</td>
+            <td align="right" style="padding:8px 0 0; font-weight:700;">{{ balance_due }}</td>
+          </tr>
+        {% endif %}
+      </table>
+    {% endif %}
+  </div>
+{% endblock %}
+{% block cta %}
+  <div style="margin-top:24px; padding:20px; background:#0F172A; border:1px solid #1F2937; border-radius:16px; color:#FAFAF9;">
+    <p style="margin:0 0 8px; font-size:18px; font-weight:800;">Ready to proceed?</p>
+    <p style="margin:0 0 14px; color:#D1D5DB; line-height:1.6;">Reply to this email and we'll issue the Booking Agreement and booking deposit request.</p>
+    <p style="margin:0 0 8px; font-weight:700;">Your booking is only confirmed once BOTH:</p>
+    <ul style="margin:0 0 18px 20px; padding:0; color:#D1D5DB; line-height:1.6;">
+      <li>the Booking Agreement has been signed</li>
+      <li>the booking deposit has cleared</li>
+    </ul>
+    {% if quote_reply_mailto %}
+      <a href="{{ quote_reply_mailto }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Proceed with this quote</a>
+    {% else %}
+      <p style="margin:0; color:#16A34A; font-weight:700;">Reply details are being confirmed. Please contact studio@openeire.ie and quote this property address.</p>
+    {% endif %}
+  </div>
+{% endblock %}
+{% block service_note %}
+  <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">This quote does not confirm a booking or reserve a shoot date.</p>
+{% endblock %}

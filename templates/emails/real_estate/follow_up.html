@@ -1,0 +1,22 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Following up on your property media enquiry{% endblock %}
+{% block preheader %}A quick follow-up on your OpenEire Studios property media enquiry.{% endblock %}
+{% block heading %}A quick follow-up{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">I wanted to follow up on your property media enquiry for {{ property_address|default:"the property" }}. If you would like to proceed or adjust the scope, simply reply and we can help shape the right package.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Current scope</p>
+    <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    <p style="margin:0;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
+  </div>
+{% endblock %}
+{% block cta %}
+  {% if review_link %}
+    <p style="margin:24px 0 0; text-align:center;">
+      <a href="{{ review_link }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Leave a Google Review</a>
+    </p>
+  {% endif %}
+{% endblock %}

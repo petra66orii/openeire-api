@@ -1,9 +1,16 @@
 import logging
 import os
+from decimal import Decimal
+from decimal import InvalidOperation
+from decimal import ROUND_HALF_UP
 from urllib.parse import urljoin
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.mail import EmailMessage
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.templatetags.static import static
 from django.urls import reverse
 
 from openeire_api.mail_utils import get_default_from_email
@@ -26,6 +33,64 @@ def get_realestate_reply_to_email():
     ).strip()
 
 
+def get_realestate_site_url():
+    return str(
+        getattr(settings, "REALESTATE_SITE_URL", None)
+        or getattr(settings, "SITE_URL", None)
+        or os.getenv("SITE_URL")
+        or "https://api.openeire.ie"
+    ).strip()
+
+
+def build_absolute_site_url(path):
+    return urljoin(get_realestate_site_url().rstrip("/") + "/", str(path).lstrip("/"))
+
+
+def _is_public_absolute_url(value):
+    parsed = urlparse(str(value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def get_realestate_email_logo_url():
+    configured_url = str(
+        getattr(settings, "REALESTATE_EMAIL_LOGO_URL", "")
+        or getattr(settings, "EMAIL_LOGO_URL", "")
+        or ""
+    ).strip()
+    if _is_public_absolute_url(configured_url):
+        return configured_url
+
+    site_url = get_realestate_site_url()
+    if _is_public_absolute_url(site_url):
+        return build_absolute_site_url(
+            static("emails/openeire-studios-logo.png")
+        )
+    return ""
+
+
+def format_money(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        cleaned_value = value.strip()
+        if not cleaned_value or cleaned_value.lower() in {"none", "null"}:
+            return ""
+        numeric_value = cleaned_value.replace("€", "").replace(",", "").strip()
+    else:
+        numeric_value = str(value).strip()
+
+    try:
+        amount = Decimal(numeric_value).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    except (InvalidOperation, ValueError):
+        return ""
+
+    return f"€{amount:,.2f}"
+
+
 def build_realestate_admin_url(enquiry, request=None):
     admin_path = reverse(
         "customadmin:realestate_realestateenquiry_change",
@@ -45,6 +110,119 @@ def build_realestate_admin_url(enquiry, request=None):
 
 def _format_date(value):
     return value.isoformat() if value else "Not specified"
+
+
+def _as_recipient_list(value):
+    if isinstance(value, str):
+        value = [value]
+    return [str(item).strip() for item in (value or []) if str(item).strip()]
+
+
+def send_templated_email(
+    subject,
+    to,
+    template_base,
+    context,
+    reply_to=None,
+    attachments=None,
+):
+    template_name = str(template_base or "").strip().strip("/")
+    if not template_name:
+        raise ValueError("template_base is required.")
+    if "/" not in template_name:
+        template_name = f"emails/real_estate/{template_name}"
+
+    logo_url = get_realestate_email_logo_url()
+    email_context = {
+        "brand_logo_url": logo_url,
+        "email_logo_url": logo_url,
+        "cta_url": "",
+        "cta_label": "",
+    }
+    email_context.update(context or {})
+
+    text_body = render_to_string(f"{template_name}.txt", email_context)
+    html_body = render_to_string(f"{template_name}.html", email_context)
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=get_default_from_email(),
+        to=_as_recipient_list(to),
+        reply_to=_as_recipient_list(reply_to),
+    )
+    email.attach_alternative(html_body, "text/html")
+    for attachment in attachments or []:
+        if isinstance(attachment, tuple):
+            email.attach(*attachment)
+        else:
+            email.attach(attachment)
+    return email.send(fail_silently=False)
+
+
+def build_realestate_email_context(enquiry, **overrides):
+    name = str(getattr(enquiry, "name", "") or "").strip()
+    first_name = name.split()[0] if name else "there"
+    property_address = str(getattr(enquiry, "property_address", "") or "").strip()
+    county = str(getattr(enquiry, "county", "") or "").strip()
+    if property_address and county:
+        property_address = f"{property_address}, {county}"
+
+    reply_to_email = get_realestate_reply_to_email()
+    logo_url = get_realestate_email_logo_url()
+    quote_reply_mailto = f"mailto:{reply_to_email}" if reply_to_email else ""
+
+    context = {
+        "brand_logo_url": logo_url,
+        "email_logo_url": logo_url,
+        "cta_url": "",
+        "cta_label": "",
+        "first_name": first_name,
+        "agency_name": getattr(enquiry, "company_name", "") or "",
+        "company_name": getattr(enquiry, "company_name", "") or "",
+        "property_address": property_address or "the property",
+        "package_name": (
+            enquiry.get_preferred_package_summary()
+            if hasattr(enquiry, "get_preferred_package_summary")
+            else ""
+        ),
+        "addons": enquiry.get_add_on_labels()
+        if hasattr(enquiry, "get_add_on_labels")
+        else [],
+        "quote_total": getattr(enquiry, "quoted_price", None) or "",
+        "vat_total": "",
+        "total_including_vat": "",
+        "deposit_amount": "",
+        "balance_due": "",
+        "shoot_date": _format_date(getattr(enquiry, "shoot_date", None)),
+        "shoot_time": "",
+        "booking_reference": (
+            f"RE-{getattr(enquiry, 'id', '')}"
+            if getattr(enquiry, "id", None)
+            else ""
+        ),
+        "delivery_link": "",
+        "review_link": "",
+        "new_date": "",
+        "deposit_payment_link": "",
+        "booking_agreement_link": "",
+        "reply_to_email": reply_to_email,
+        "quote_reply_email": reply_to_email,
+        "quote_reply_mailto": quote_reply_mailto,
+        "quote_reply_url": quote_reply_mailto,
+    }
+    context.update(overrides)
+
+    for money_field in (
+        "quote_total",
+        "vat_total",
+        "total_including_vat",
+        "deposit_amount",
+        "balance_due",
+    ):
+        context[money_field] = format_money(context.get(money_field))
+
+    return context
 
 
 def send_realestate_internal_notification_email(enquiry, request=None):
@@ -89,26 +267,14 @@ def send_realestate_internal_notification_email(enquiry, request=None):
 
 
 def send_realestate_client_confirmation_email(enquiry):
-    subject = "Property Shoot Request Received - Open\u00C9ire Studios"
-    body = (
-        f"Hi {enquiry.name},\n\n"
-        "Thanks for getting in touch with Open\u00C9ire Studios.\n\n"
-        f"We've received your property shoot request for {enquiry.property_address} "
-        "and will review the details, requested package and preferred date.\n\n"
-        "We'll come back to you within 24 hours to confirm the next steps.\n\n"
-        "Request summary:\n"
-        f"Package: {enquiry.get_preferred_package_summary()}\n"
-        f"Preferred date: {_format_date(enquiry.preferred_date)}\n"
-        f"Property address: {enquiry.property_address}, {enquiry.county}\n\n"
-        "If you have any questions in the meantime, you can simply reply to this email.\n\n"
-        "Open\u00C9ire Studios\n"
-        "shoots@openeire.ie\n"
-    )
-    email = EmailMessage(
+    subject = "Property shoot request received - OpenEire Studios"
+    return send_templated_email(
         subject=subject,
-        body=body,
-        from_email=get_default_from_email(),
         to=[enquiry.email],
+        template_base="enquiry_reply",
+        context=build_realestate_email_context(
+            enquiry,
+            shoot_date=_format_date(enquiry.preferred_date),
+        ),
         reply_to=[get_realestate_reply_to_email()],
     )
-    email.send(fail_silently=False)

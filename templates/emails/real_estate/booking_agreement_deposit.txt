@@ -1,0 +1,20 @@
+Hi {{ first_name|default:"there" }},
+
+Thanks for accepting the quote. Please review the booking agreement and pay the deposit using the details below.
+
+Booking details
+Reference: {{ booking_reference|default:"To be confirmed" }}
+Property: {{ property_address|default:"Not specified" }}
+Proposed shoot: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
+Deposit: {{ deposit_amount|default:"To be confirmed" }}
+Balance due: {{ balance_due|default:"To be confirmed" }}
+
+{% if deposit_payment_link %}Pay Secure Deposit: {{ deposit_payment_link }}
+{% endif %}{% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
+{% else %}Booking Agreement: attached or to follow
+{% endif %}
+Your booking is not confirmed until both the signed agreement and deposit have been received in cleared funds.
+
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie

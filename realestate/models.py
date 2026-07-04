@@ -48,9 +48,9 @@ class RealEstateEnquiry(models.Model):
 
     PACKAGE_SUMMARIES = {
         PreferredPackage.ESSENTIAL: "EUR 175+VAT - 10 edited interior/exterior photos",
-        PreferredPackage.STARTER: "EUR 229+VAT - 20 edited interior/exterior photos",
-        PreferredPackage.PRO: "EUR 399+VAT - 20 photos + 60-90s 4K aerial drone video + social media cuts",
-        PreferredPackage.PREMIUM: "EUR 579+VAT - 20 photos + aerial video + social media cuts + 3D interactive virtual tour",
+        PreferredPackage.STARTER: "EUR 229+VAT - 20 edited interior/exterior photos + 5-8 aerial drone photos",
+        PreferredPackage.PRO: "EUR 399+VAT - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
+        PreferredPackage.PREMIUM: "EUR 579+VAT - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
         PreferredPackage.CUSTOM: "POA",
         PreferredPackage.NOT_SURE: "Not sure yet",
     }

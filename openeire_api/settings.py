@@ -438,7 +438,6 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://openeire.onrender.com",
-    "https://openeire-next.onrender.com",
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -457,7 +456,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://openeire.ie",
     "https://openeire.online",
     "https://openeire.onrender.com",
-    "https://openeire-next.onrender.com",
 ]
 
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
@@ -526,6 +524,10 @@ REALESTATE_NOTIFICATION_EMAIL = extract_email_address(
 REALESTATE_REPLY_TO_EMAIL = extract_email_address(
     os.getenv("REALESTATE_REPLY_TO_EMAIL") or "shoots@openeire.ie"
 )
+EMAIL_LOGO_URL = str(os.getenv("EMAIL_LOGO_URL") or "").strip()
+REALESTATE_EMAIL_LOGO_URL = str(
+    os.getenv("REALESTATE_EMAIL_LOGO_URL") or EMAIL_LOGO_URL
+).strip()
 REALESTATE_ADMIN_BASE_URL = os.getenv("REALESTATE_ADMIN_BASE_URL")
 LICENCE_ADMIN_NOTIFICATION_RECIPIENTS = [
     email.strip()

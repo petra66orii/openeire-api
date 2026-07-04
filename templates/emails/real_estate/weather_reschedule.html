@@ -1,0 +1,18 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Weather reschedule update{% endblock %}
+{% block preheader %}A weather-related update for your property media booking.{% endblock %}
+{% block heading %}Weather reschedule update{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">The weather forecast is not suitable for the planned exterior/drone work at {{ property_address|default:"the property" }}. To protect the final quality, we recommend moving the shoot to the updated date below.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Proposed reschedule</p>
+    <p style="margin:0 0 6px;"><strong>Original date:</strong> {{ shoot_date|default:"Not specified" }}</p>
+    <p style="margin:0;"><strong>New date:</strong> {{ new_date|default:"To be confirmed" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
+  </div>
+{% endblock %}
+{% block service_note %}
+  <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">Please reply to confirm if the proposed timing works for the vendor, agent or access holder.</p>
+{% endblock %}

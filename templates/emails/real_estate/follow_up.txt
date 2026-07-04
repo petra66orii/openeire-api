@@ -1,0 +1,14 @@
+Hi {{ first_name|default:"there" }},
+
+I wanted to follow up on your property media enquiry for {{ property_address|default:"the property" }}. If you would like to proceed or adjust the scope, simply reply and we can help shape the right package.
+
+Current scope
+Package: {{ package_name|default:"Not specified" }}
+Property: {{ property_address|default:"Not specified" }}
+
+{% if review_link %}Leave a Google Review:
+{{ review_link }}
+{% endif %}
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie

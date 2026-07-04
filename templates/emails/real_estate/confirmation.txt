@@ -1,0 +1,15 @@
+Hi {{ first_name|default:"there" }},
+
+We have received the signed agreement and deposit in cleared funds, so your property shoot is now confirmed.
+
+Confirmed booking
+Reference: {{ booking_reference|default:"To be confirmed" }}
+Property: {{ property_address|default:"Not specified" }}
+Shoot date: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
+Package: {{ package_name|default:"Not specified" }}
+
+If access arrangements, keys, alarms or vendor availability change before the shoot, please reply to this email as soon as possible.
+
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie

@@ -1,0 +1,12 @@
+Hi {{ first_name|default:"there" }},
+
+Your files for {{ property_address|default:"the property" }} are ready.
+
+{% if delivery_link %}Download Media:
+{{ delivery_link }}
+{% endif %}
+The delivered files are ready for the agreed property listing and may be used for the approved marketing of that specific property, including property portals, estate agency websites where applicable, social media, email campaigns and brochures, in line with the agreed commercial marketing licence.
+
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie
