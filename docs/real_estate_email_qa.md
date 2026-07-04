@@ -16,10 +16,10 @@ Use this checklist before enabling or changing any real estate email flow in pro
 
 ## Accent And CTA Styling
 
-- [ x ] Confirm OpenEire green (`#16A34A`) is the dominant accent colour for the divider, primary buttons, and highlighted states.
-- [ x ] Confirm gold (`#FFC400`) is used only as a subtle secondary highlight and does not overpower the email.
-- [ x ] Confirm the reusable green CTA button appears only when both label and URL are present.
-- [ x ] Confirm no empty or broken CTA buttons render when a URL or label is missing.
+- [x] Confirm OpenEire green (`#16A34A`) is the dominant accent colour for the divider, primary buttons, and highlighted states.
+- [x] Confirm gold (`#FFC400`) is used only as a subtle secondary highlight and does not overpower the email.
+- [x] Confirm the reusable green CTA button appears only when both label and URL are present.
+- [x] Confirm no empty or broken CTA buttons render when a URL or label is missing.
 
 ## Links And Reply Handling
 
