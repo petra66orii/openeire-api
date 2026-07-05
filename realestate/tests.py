@@ -564,7 +564,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_not_called()
+        mock_send_templated_email.assert_called_once()
         kwargs = mock_send_templated_email.call_args.kwargs
         self.assertEqual(kwargs["template_base"], "quote")
         self.assertEqual(kwargs["to"], ["jane@example.com"])
@@ -585,7 +585,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_not_called()
+        mock_send_templated_email.assert_called_once()
         warning_calls = [
             call
             for call in self.model_admin.message_user.call_args_list
@@ -642,7 +642,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_not_called()
+        mock_send_templated_email.assert_called_once()
         self.model_admin.message_user.assert_any_call(
             request,
             "Confirmation email failed for 1 enquiry(s).",
