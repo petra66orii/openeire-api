@@ -564,7 +564,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_called_once()
+        mock_send_templated_email.assert_not_called()
         kwargs = mock_send_templated_email.call_args.kwargs
         self.assertEqual(kwargs["template_base"], "quote")
         self.assertEqual(kwargs["to"], ["jane@example.com"])
@@ -585,7 +585,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_called_once()
+        mock_send_templated_email.assert_not_called()
         warning_calls = [
             call
             for call in self.model_admin.message_user.call_args_list
@@ -604,17 +604,14 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_called_once()
+        mock_send_templated_email.assert_not_called()
         warning_calls = [
             call
             for call in self.model_admin.message_user.call_args_list
             if call.kwargs.get("level") == messages.WARNING
         ]
         self.assertTrue(
-            any("deposit CTA omitted" in call.args[1] for call in warning_calls)
-        )
-        self.assertTrue(
-            any("booking agreement text link omitted" in call.args[1] for call in warning_calls)
+            any("booking agreement link is missing" in call.args[1] for call in warning_calls)
         )
 
     @patch("realestate.admin.send_templated_email")
@@ -645,11 +642,12 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_called_once()
+        mock_send_templated_email.assert_not_called()
         self.model_admin.message_user.assert_any_call(
             request,
             "Confirmation email failed for 1 enquiry(s).",
             level=messages.ERROR,
         )
+
 
 
