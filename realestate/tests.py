@@ -596,10 +596,10 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         )
 
     @patch("realestate.admin.send_templated_email")
-    def test_send_booking_email_warns_when_cta_links_missing(self, mock_send_templated_email):
+    def test_send_booking_agreement_email_skips_when_agreement_link_missing(self, mock_send_templated_email):
         request = self._request()
 
-        self.model_admin.send_booking_agreement_deposit_email(
+        self.model_admin.send_booking_agreement_email(
             request,
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
@@ -651,4 +651,5 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Confirmation email failed for 1 enquiry(s).",
             level=messages.ERROR,
         )
+
 
