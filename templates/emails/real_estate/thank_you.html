@@ -1,0 +1,15 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Thank you from OpenEire Studios{% endblock %}
+{% block preheader %}Thank you for working with OpenEire Studios.{% endblock %}
+{% block heading %}Thank you for working with us{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">Thank you for choosing OpenEire Studios for {{ property_address|default:"your property" }}. We hope the media helps present the property clearly and confidently across your approved marketing channels.</p>
+{% endblock %}
+{% block cta %}
+  {% if review_link %}
+    <p style="margin:24px 0 0; text-align:center;">
+      <a href="{{ review_link }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Leave a Google Review</a>
+    </p>
+  {% endif %}
+{% endblock %}

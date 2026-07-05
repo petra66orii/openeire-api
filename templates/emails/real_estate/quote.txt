@@ -1,0 +1,32 @@
+Hi {{ first_name|default:"there" }},
+
+Thank you for sharing the details for {{ property_address|default:"the property" }}. Based on the scope requested, your quote is below.
+
+Quote details
+Property: {{ property_address|default:"Not specified" }}
+Package: {{ package_name|default:"Not specified" }}
+{% if addons %}Add-ons: {% for addon in addons %}{{ addon }}{% if not forloop.last %}; {% endif %}{% endfor %}
+{% endif %}{% if quote_total or vat_total or total_including_vat or deposit_amount or balance_due %}
+Quote summary
+{% if quote_total %}Quote total (ex VAT): {{ quote_total }}
+{% endif %}{% if vat_total %}VAT (23%): {{ vat_total }}
+{% endif %}{% if total_including_vat %}Total incl. VAT: {{ total_including_vat }}
+{% endif %}{% if deposit_amount %}Deposit required: {{ deposit_amount }}
+{% endif %}{% if balance_due %}Balance on delivery: {{ balance_due }}
+{% endif %}{% else %}Quote total: To be confirmed
+{% endif %}
+Ready to proceed?
+Reply to this email and we'll issue the Booking Agreement and booking deposit request.
+
+Your booking is only confirmed once BOTH:
+- the Booking Agreement has been signed
+- the booking deposit has cleared
+
+{% if quote_reply_email %}Proceed with this quote: {{ quote_reply_email }}
+{% else %}Reply details are being confirmed. Please contact studio@openeire.ie and quote this property address.
+{% endif %}
+This quote does not confirm a booking or reserve a shoot date.
+
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie

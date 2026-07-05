@@ -1,0 +1,10 @@
+Hi {{ first_name|default:"there" }},
+
+Thank you for choosing OpenEire Studios for {{ property_address|default:"your property" }}. We hope the media helps present the property clearly and confidently across your approved marketing channels.
+
+{% if review_link %}Leave a review:
+{{ review_link }}
+{% endif %}
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie

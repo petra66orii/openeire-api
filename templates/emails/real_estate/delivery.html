@@ -1,0 +1,20 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Your property media files are ready{% endblock %}
+{% block preheader %}Your delivered property media files are ready to download.{% endblock %}
+{% block heading %}Your property media is ready{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">Your files for {{ property_address|default:"the property" }} are ready. The delivery link is below.</p>
+{% endblock %}
+{% block cta %}
+  {% if delivery_link %}
+    <p style="margin:24px 0 0; text-align:center;">
+      <a href="{{ delivery_link }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Download Media</a>
+    </p>
+  {% endif %}
+{% endblock %}
+{% block service_note %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px; color:#5F6673; font-size:13px; line-height:1.6;">
+    The delivered files are ready for the agreed property listing and may be used for the approved marketing of that specific property, including property portals, estate agency websites where applicable, social media, email campaigns and brochures, in line with the agreed commercial marketing licence.
+  </div>
+{% endblock %}

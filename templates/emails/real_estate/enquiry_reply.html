@@ -1,0 +1,16 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Property shoot request received{% endblock %}
+{% block preheader %}We have received your property media enquiry and will review the details shortly.{% endblock %}
+{% block heading %}Thanks, {{ first_name|default:"there" }} - we've received your enquiry.{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Thanks for getting in touch with OpenEire Studios. We have received your property media request and will review the package, property details and preferred timing.</p>
+  <p style="margin:0;">We will come back to you within 24 hours with next steps. If anything changes in the meantime, simply reply to this email.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Request summary</p>
+    <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    <p style="margin:0;"><strong>Preferred date:</strong> {{ shoot_date|default:"Not specified" }}</p>
+  </div>
+{% endblock %}

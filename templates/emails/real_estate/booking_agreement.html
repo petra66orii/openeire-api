@@ -1,0 +1,26 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Booking agreement for your property media booking{% endblock %}
+{% block preheader %}Your booking agreement is ready for review and signature.{% endblock %}
+{% block heading %}Booking agreement for your property media booking{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0 0 16px;">Thanks again for confirming you would like to proceed. Your booking agreement is ready for review and signature using the details below.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Booking details</p>
+    <p style="margin:0 0 6px;"><strong>Reference:</strong> {{ booking_reference|default:"To be confirmed" }}</p>
+    <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Proposed shoot:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
+    <p style="margin:0 0 6px;"><strong>Quote total (ex VAT):</strong> {{ quote_total|default:"To be confirmed" }}</p>
+    <p style="margin:0;"><strong>Deposit request:</strong> Sent separately once the signed agreement has been returned.</p>
+  </div>
+{% endblock %}
+{% block cta %}
+  {% if booking_agreement_link %}
+    <p style="margin:24px 0 0; text-align:center;"><a href="{{ booking_agreement_link }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Review Booking Agreement</a></p>
+  {% endif %}
+{% endblock %}
+{% block service_note %}
+  <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">Your booking remains provisional until the signed agreement has been received and the booking deposit has cleared.</p>
+{% endblock %}

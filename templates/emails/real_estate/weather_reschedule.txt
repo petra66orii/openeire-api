@@ -1,0 +1,12 @@
+Hi {{ first_name|default:"there" }},
+
+The weather forecast is not suitable for the planned exterior/drone work at {{ property_address|default:"the property" }}. To protect the final quality, we recommend moving the shoot to the updated date below.
+
+Original date: {{ shoot_date|default:"Not specified" }}
+New date: {{ new_date|default:"To be confirmed" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
+
+Please reply to confirm if the proposed timing works for the vendor, agent or access holder.
+
+OpenEire Studios
+studio@openeire.ie
+https://openeire.ie
