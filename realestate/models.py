@@ -79,6 +79,13 @@ class RealEstateEnquiry(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    proposed_shoot_date = models.DateField(null=True, blank=True)
+    booking_agreement_received = models.BooleanField(default=False)
+    deposit_payment_link = models.URLField(blank=True)
+    booking_agreement_link = models.URLField(blank=True)
+    delivery_link = models.URLField(blank=True)
+    review_link = models.URLField(blank=True)
+
     class Meta:
         ordering = ("-created_at",)
         verbose_name = "Real estate enquiry"
@@ -96,3 +103,4 @@ class RealEstateEnquiry(models.Model):
     def get_add_ons_summary(self):
         labels = self.get_add_on_labels()
         return ", ".join(labels) if labels else "None"
+

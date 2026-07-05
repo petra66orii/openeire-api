@@ -41,7 +41,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
     actions = (
         "send_quote_email",
-        "send_booking_agreement_deposit_email",
+        "send_booking_agreement_email",
+        "send_deposit_request_email",
         "send_confirmation_email",
         "send_delivery_email",
         "send_follow_up_email",
@@ -124,9 +125,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         context = {
             "quote_total": enquiry.quoted_price,
             "shoot_date": self._isoformat_date(confirmed_or_preferred_date),
+            "deposit_payment_link": enquiry.deposit_payment_link,
+            "booking_agreement_link": enquiry.booking_agreement_link,
+            "delivery_link": enquiry.delivery_link,
+            "review_link": enquiry.review_link,
         }
-        if enquiry.shoot_date:
-            context["new_date"] = self._isoformat_date(enquiry.shoot_date)
         return context
 
     def _send_email_action(
@@ -231,21 +234,31 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             description="Quote email",
         )
 
-    @admin.action(description="Send booking agreement/deposit email")
-    def send_booking_agreement_deposit_email(self, request, queryset):
+    @admin.action(description="Send booking agreement email")
+    def send_booking_agreement_email(self, request, queryset):
         self._send_email_action(
             request,
             queryset,
-            subject="Booking agreement and deposit details - OpenEire Studios",
-            template_base="booking_agreement_deposit",
-            description="Booking agreement/deposit email",
-            warning_messages=lambda enquiry, context: [
-                "deposit CTA omitted because no deposit payment link is stored."
-                if not context.get("deposit_payment_link")
-                else "",
-                "booking agreement text link omitted because no booking agreement link is stored."
-                if not context.get("booking_agreement_link")
-                else "",
+            subject="Booking Agreement for your property media booking - OpenEire Studios",
+            template_base="booking_agreement",
+            description="Booking agreement email",
+            required_context=lambda enquiry, context: [
+                ("booking agreement link", context.get("booking_agreement_link")),
+            ],
+        )
+
+
+    @admin.action(description="Send deposit request email")
+    def send_deposit_request_email(self, request, queryset):
+        self._send_email_action(
+            request,
+            queryset,
+            subject="Booking deposit request - OpenEire Studios",
+            template_base="deposit_request",
+            description="Deposit request email",
+            required_context=lambda enquiry, context: [
+                ("deposit payment link", context.get("deposit_payment_link")),
+                ("signed booking agreement received", getattr(enquiry, "booking_agreement_received", False)),
             ],
         )
 
@@ -297,8 +310,15 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             subject="Weather update for your property shoot - OpenEire Studios",
             template_base="weather_reschedule",
             description="Weather reschedule email",
+            extra_context=lambda enquiry: {
+                "shoot_date": self._isoformat_date(
+                    enquiry.shoot_date or enquiry.preferred_date
+                ),
+                "new_date": self._isoformat_date(enquiry.proposed_shoot_date),
+            },
             required_context=lambda enquiry, context: [
-                ("a revised shoot date", context.get("new_date"))
+                ("a confirmed shoot date", context.get("shoot_date")),
+                ("a proposed new shoot date", context.get("new_date")),
             ],
         )
 
