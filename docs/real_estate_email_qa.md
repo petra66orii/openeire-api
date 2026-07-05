@@ -9,17 +9,17 @@ Use this checklist before enabling or changing any real estate email flow in pro
 - [ x ] Confirm the hidden preheader appears correctly in inbox preview text and does not appear in the visible body.
 - [ x ] Confirm the white transparent OpenEire Studios logo loads from an absolute public URL and remains readable on the dark header.
 - [ x ] Confirm no broken image icon appears when the logo URL is missing.
-- [ x ] Confirm the logo width looks balanced at roughly 180-220px on desktop and mobile email clients.
+- [x] Confirm the logo width looks balanced at roughly 180-220px on desktop and mobile email clients.
 - [ ] Confirm the logo alt text reads "OpenEire Studios" if images are blocked.
-- [ x ] Confirm the centred header tagline reads: `Aerial Photography • Property Media • Visual Licensing`.
-- [ x ] Confirm the plain-text version is included and readable for each email.
+- [x] Confirm the centred header tagline reads: `Aerial Photography • Property Media • Visual Licensing`.
+- [x] Confirm the plain-text version is included and readable for each email.
 
 ## Accent And CTA Styling
 
-- [ x ] Confirm OpenEire green (`#16A34A`) is the dominant accent colour for the divider, primary buttons, and highlighted states.
-- [ x ] Confirm gold (`#FFC400`) is used only as a subtle secondary highlight and does not overpower the email.
-- [ x ] Confirm the reusable green CTA button appears only when both label and URL are present.
-- [ x ] Confirm no empty or broken CTA buttons render when a URL or label is missing.
+- [x] Confirm OpenEire green (`#16A34A`) is the dominant accent colour for the divider, primary buttons, and highlighted states.
+- [x] Confirm gold (`#FFC400`) is used only as a subtle secondary highlight and does not overpower the email.
+- [x] Confirm the reusable green CTA button appears only when both label and URL are present.
+- [x] Confirm no empty or broken CTA buttons render when a URL or label is missing.
 
 ## Links And Reply Handling
 
