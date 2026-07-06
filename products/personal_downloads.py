@@ -12,9 +12,10 @@ DEFAULT_TOKEN_DAYS = int(getattr(settings, "PERSONAL_DOWNLOAD_TOKEN_DAYS", 7))
 def ensure_personal_download_token(order_item, days=None):
     days = days or DEFAULT_TOKEN_DAYS
     now = timezone.now()
+    existing_tokens = PersonalDownloadToken.objects.filter(order_item=order_item)
     existing = (
-        PersonalDownloadToken.objects.filter(
-            order_item=order_item,
+        existing_tokens
+        .filter(
             expires_at__gt=now,
             used_at__isnull=True,
         )
@@ -23,6 +24,9 @@ def ensure_personal_download_token(order_item, days=None):
     )
     if existing:
         return existing
+
+    if existing_tokens.exists():
+        return None
 
     expires_at = now + timedelta(days=days)
     return PersonalDownloadToken.objects.create(
