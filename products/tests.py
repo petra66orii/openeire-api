@@ -1600,8 +1600,69 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["personal_terms_version"], "PERSONAL v1.1 - March 2026")
         self.assertIn("/api/licence/personal-download/", response.data["personal_terms_url"])
-        self.assertTrue(response.data["download_url"].endswith(f"/api/products/download/photo/{self.photo.id}/"))
+        token = PersonalDownloadToken.objects.get(order_item__order=order)
+        self.assertTrue(response.data["download_url"].endswith(f"/api/personal-download/{token.token}/"))
         self.assertGreater(len(response.data["personal_terms_summary"]), 0)
+
+    def test_secure_download_redirects_purchased_item_to_personal_token(self):
+        user = User.objects.create_user(
+            username="digitalredirectbuyer",
+            email="digitalredirectbuyer@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_secure_download_redirect",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get(reverse("secure-download", args=["photo", self.photo.id]))
+
+        token = PersonalDownloadToken.objects.get(order_item=order_item)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response["Location"].endswith(f"/api/personal-download/{token.token}/"))
+
+    def test_secure_download_does_not_reissue_used_personal_token(self):
+        user = User.objects.create_user(
+            username="digitalusedtokenbuyer",
+            email="digitalusedtokenbuyer@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_secure_download_used_token",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() + timedelta(days=1),
+            used_at=timezone.now(),
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get(reverse("secure-download", args=["photo", self.photo.id]))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(PersonalDownloadToken.objects.filter(order_item=order_item).count(), 1)
 
     def test_secure_download_preview_for_staff_without_purchase_uses_public_licence_url(self):
         staff_user = User.objects.create_user(
@@ -1764,7 +1825,7 @@ class LicenseRequestTests(APITestCase):
         token.refresh_from_db()
         self.assertIsNone(token.used_at)
 
-    def test_used_personal_download_token_is_not_reused_for_fresh_links(self):
+    def test_used_personal_download_token_blocks_fresh_links(self):
         user = User.objects.create_user(
             username="personaltokenfresh",
             email="personaltokenfresh@example.com",
@@ -1792,9 +1853,38 @@ class LicenseRequestTests(APITestCase):
 
         fresh_token = ensure_personal_download_token(order_item)
 
-        self.assertNotEqual(fresh_token.pk, used_token.pk)
-        self.assertIsNone(fresh_token.used_at)
-        self.assertGreater(fresh_token.expires_at, timezone.now())
+        self.assertIsNone(fresh_token)
+        self.assertEqual(PersonalDownloadToken.objects.filter(order_item=order_item).count(), 1)
+
+    def test_expired_personal_download_token_blocks_fresh_links(self):
+        user = User.objects.create_user(
+            username="personaltokenexpiredfresh",
+            email="personaltokenexpiredfresh@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            email=user.email,
+            stripe_pid="pi_personal_download_expired_fresh_token",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+        order_item = OrderItem.objects.create(
+            order=order,
+            quantity=1,
+            item_total=Decimal("10.00"),
+            content_type=ContentType.objects.get_for_model(Photo),
+            object_id=self.photo.id,
+            details={"license": "hd"},
+        )
+        PersonalDownloadToken.objects.create(
+            order_item=order_item,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        fresh_token = ensure_personal_download_token(order_item)
+
+        self.assertIsNone(fresh_token)
+        self.assertEqual(PersonalDownloadToken.objects.filter(order_item=order_item).count(), 1)
 
     def test_ensure_personal_licence_token_honours_zero_day_expiry(self):
         user = User.objects.create_user(
@@ -1962,6 +2052,7 @@ class LicenseRequestTests(APITestCase):
             username="r2videobuyer",
             email="r2videobuyer@example.com",
             password="testpass123",
+            is_staff=True,
         )
         video_key = self._write_private_asset(
             Path("digital_products/videos/external-video.mp4"),
@@ -2006,6 +2097,7 @@ class LicenseRequestTests(APITestCase):
             username="stalevideobuyer",
             email="stalevideobuyer@example.com",
             password="testpass123",
+            is_staff=True,
         )
         thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
         stale_upload = SimpleUploadedFile("stale-upload.mp4", b"stale-video", content_type="video/mp4")
@@ -2054,6 +2146,7 @@ class LicenseRequestTests(APITestCase):
             username="preferredkeybuyer",
             email="preferredkeybuyer@example.com",
             password="testpass123",
+            is_staff=True,
         )
         thumbnail = SimpleUploadedFile("thumb.jpg", b"thumbnail", content_type="image/jpeg")
         uploaded_video = SimpleUploadedFile(
@@ -2102,6 +2195,7 @@ class LicenseRequestTests(APITestCase):
             username="redirectvideobuyer",
             email="redirectvideobuyer@example.com",
             password="testpass123",
+            is_staff=True,
         )
         video_key = self._write_private_asset(
             Path("digital_products/videos/redirect-video.mp4"),

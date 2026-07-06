@@ -35,6 +35,7 @@ from .licensing import (
     send_licence_admin_notification_email,
 )
 from .file_access import asset_file_exists, get_asset_file_name, open_asset_file
+from .personal_downloads import ensure_personal_download_token
 from .utils import generate_r2_presigned_url
 from .personal_licence import (
     build_personal_licence_download_url,
@@ -774,6 +775,13 @@ class ProtectedDownloadView(APIView):
         )
         return order_item
 
+    def _personal_download_url(self, request, order_item):
+        token_obj = ensure_personal_download_token(order_item)
+        if not token_obj:
+            return None
+        path = reverse("personal-asset-download", args=[str(token_obj.token)])
+        return request.build_absolute_uri(path)
+
     def get(self, request, product_type, product_id):
         user = request.user
         # 1. Map string (URL) to actual Model Class
@@ -797,7 +805,11 @@ class ProtectedDownloadView(APIView):
         )
 
         if request.query_params.get("preview") in {"1", "true", "yes"}:
-            download_path = reverse("secure-download", args=[product_type, product_id])
+            download_url = (
+                self._personal_download_url(request, order_item)
+                if order_item
+                else None
+            )
             personal_terms_url = (
                 build_personal_licence_download_url(order_item.order, request=request)
                 if order_item
@@ -805,13 +817,19 @@ class ProtectedDownloadView(APIView):
             )
             return Response(
                 {
-                    "download_url": request.build_absolute_uri(download_path),
+                    "download_url": download_url,
                     "personal_terms_version": terms_version,
                     "personal_terms_url": personal_terms_url,
                     "personal_terms_summary": get_personal_licence_summary(),
                 },
                 status=status.HTTP_200_OK,
             )
+
+        if order_item and not user.is_staff:
+            download_url = self._personal_download_url(request, order_item)
+            if not download_url:
+                raise PermissionDenied("No download link is available for this item.")
+            return HttpResponseRedirect(download_url)
 
         # 3. Fetch the product and stream the private file.
         product = get_object_or_404(model_class, id=product_id)

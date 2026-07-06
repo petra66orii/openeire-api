@@ -306,6 +306,8 @@ class OrderHistoryItemSerializer(serializers.ModelSerializer):
         if not request:
             return None
         token_obj = ensure_personal_download_token(obj)
+        if not token_obj:
+            return None
         path = reverse('personal-asset-download', args=[str(token_obj.token)])
         base_url = getattr(settings, "PERSONAL_DOWNLOAD_BASE_URL", None)
         if base_url:
