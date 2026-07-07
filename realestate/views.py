@@ -12,6 +12,7 @@ from .emails import (
 )
 from .models import RealEstateEnquiry
 from .serializers import RealEstateEnquirySerializer
+from .timeline import record_timeline_event
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,21 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         self.enquiry = serializer.save()
+        notes = []
+        if self.enquiry.preferred_package:
+            notes.append(
+                f"Preferred package: {self.enquiry.get_preferred_package_display()}"
+            )
+        if self.enquiry.property_address:
+            notes.append(f"Property address: {self.enquiry.property_address}")
+        record_timeline_event(
+            self.enquiry,
+            "enquiry_received",
+            status="completed",
+            actor_type="client",
+            title="Enquiry received",
+            notes="\n".join(notes),
+        )
 
     def _send_emails(self, enquiry):
         try:

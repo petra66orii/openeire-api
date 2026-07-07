@@ -37,6 +37,7 @@ from products.models import (
     generate_variants_for_photo,
 )
 from realestate.models import RealEstateEnquiry
+from realestate.models import RealEstateTimelineEvent
 from .discounts import record_discount_redemption
 from .attempts import canonicalize_cart
 from .models import CheckoutAttempt, DiscountRedemption, Order, OrderItem, ProductShipping
@@ -888,6 +889,15 @@ class StripeWebhookLicenseTests(TestCase):
         self.license_request.refresh_from_db()
         self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
         self.assertEqual(len(mail.outbox), 0)
+        event = enquiry.timeline_events.get(
+            event_type=RealEstateTimelineEvent.EventType.DEPOSIT_PAID
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.COMPLETED)
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.SYSTEM)
+        self.assertEqual(event.title, "Deposit paid")
+        self.assertEqual(event.reference_url, "https://checkout.stripe.com/c/pay/realestate")
+        self.assertEqual(event.stripe_session_id, "cs_realestate_deposit")
+        self.assertIn("Stripe confirmed payment", event.notes)
 
     def _create_realestate_deposit_enquiry(self):
         return RealEstateEnquiry.objects.create(

@@ -36,7 +36,9 @@ from products.file_access import asset_file_exists, get_asset_file_name, open_as
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_terms_version
 from realestate.models import RealEstateEnquiry
+from realestate.models import RealEstateTimelineEvent
 from realestate.payments import calculate_realestate_deposit_amounts
+from realestate.timeline import record_timeline_event
 from userprofiles.models import UserProfile
 from .attempts import (
     build_request_fingerprint,
@@ -963,6 +965,16 @@ class StripeWebhookView(APIView):
             update_fields.append("status")
 
         enquiry.save(update_fields=update_fields)
+        record_timeline_event(
+            enquiry,
+            RealEstateTimelineEvent.EventType.DEPOSIT_PAID,
+            status=RealEstateTimelineEvent.EventStatus.COMPLETED,
+            actor_type=RealEstateTimelineEvent.ActorType.SYSTEM,
+            title="Deposit paid",
+            notes="Stripe confirmed payment for the real estate booking deposit.",
+            reference_url=enquiry.deposit_payment_link,
+            stripe_session_id=checkout_session_id,
+        )
         logger.info(
             "Real estate deposit marked paid. enquiry_id=%s session_id=%s",
             enquiry.pk,
