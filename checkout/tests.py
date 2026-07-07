@@ -36,6 +36,7 @@ from products.models import (
     PersonalDownloadToken,
     generate_variants_for_photo,
 )
+from realestate.models import RealEstateEnquiry
 from .discounts import record_discount_redemption
 from .attempts import canonicalize_cart
 from .models import CheckoutAttempt, DiscountRedemption, Order, OrderItem, ProductShipping
@@ -828,6 +829,189 @@ class StripeWebhookLicenseTests(TestCase):
         event = StripeWebhookEvent.objects.get(stripe_event_id="evt_missing_asset")
         self.assertEqual(event.status, "FAILED")
         self.assertIn("Deliverable asset file", event.error_message)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_deposit_checkout_marks_enquiry_paid(self, mock_construct):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            company_name="Example Estate Agents",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House, Salthill, Galway",
+            county="Galway",
+            eircode="H91 XXXX",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_date="2026-06-20",
+            shoot_date="2026-06-22",
+            quoted_price="399.00",
+            booking_agreement_received=True,
+            deposit_payment_link="https://checkout.stripe.com/c/pay/realestate",
+            stripe_deposit_session_id="cs_realestate_deposit",
+            status=RealEstateEnquiry.Status.QUOTED,
+            consent_to_contact=True,
+        )
+        mock_construct.return_value = {
+            "id": "evt_realestate_deposit",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_realestate_deposit",
+                    "payment_status": "paid",
+                    "payment_intent": "pi_realestate_deposit",
+                    "amount_total": 14723,
+                    "currency": "eur",
+                    "metadata": {
+                        "purpose": "realestate_deposit",
+                        "realestate_enquiry_id": str(enquiry.pk),
+                        "client_name": "Jane Agent",
+                        "property_address": "Example House, Salthill, Galway",
+                        "package_name": "Pro",
+                    },
+                }
+            },
+        }
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        enquiry.refresh_from_db()
+        self.assertTrue(enquiry.deposit_paid)
+        self.assertIsNotNone(enquiry.deposit_paid_at)
+        self.assertEqual(enquiry.status, RealEstateEnquiry.Status.BOOKED)
+        self.license_request.refresh_from_db()
+        self.assertEqual(self.license_request.status, "PAYMENT_PENDING")
+        self.assertEqual(len(mail.outbox), 0)
+
+    def _create_realestate_deposit_enquiry(self):
+        return RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            company_name="Example Estate Agents",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House, Salthill, Galway",
+            county="Galway",
+            eircode="H91 XXXX",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_date="2026-06-20",
+            shoot_date="2026-06-22",
+            quoted_price="399.00",
+            booking_agreement_received=True,
+            deposit_payment_link="https://checkout.stripe.com/c/pay/realestate",
+            stripe_deposit_session_id="cs_realestate_deposit",
+            status=RealEstateEnquiry.Status.QUOTED,
+            consent_to_contact=True,
+        )
+
+    def _realestate_deposit_event(self, enquiry, *, event_id, **session_overrides):
+        session = {
+            "id": "cs_realestate_deposit",
+            "payment_status": "paid",
+            "payment_intent": "pi_realestate_deposit",
+            "amount_total": 14723,
+            "currency": "eur",
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(enquiry.pk),
+                "client_name": "Jane Agent",
+                "property_address": "Example House, Salthill, Galway",
+                "package_name": "Pro",
+            },
+        }
+        session.update(session_overrides)
+        return {
+            "id": event_id,
+            "type": "checkout.session.completed",
+            "data": {"object": session},
+        }
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_deposit_webhook_fails_on_session_mismatch(self, mock_construct):
+        enquiry = self._create_realestate_deposit_enquiry()
+        mock_construct.return_value = self._realestate_deposit_event(
+            enquiry,
+            event_id="evt_realestate_session_mismatch",
+            id="cs_wrong_session",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        enquiry.refresh_from_db()
+        self.assertFalse(enquiry.deposit_paid)
+        self.assertEqual(enquiry.status, RealEstateEnquiry.Status.QUOTED)
+        event = StripeWebhookEvent.objects.get(
+            stripe_event_id="evt_realestate_session_mismatch"
+        )
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("stored enquiry session", event.error_message)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_deposit_webhook_fails_on_amount_mismatch(self, mock_construct):
+        enquiry = self._create_realestate_deposit_enquiry()
+        mock_construct.return_value = self._realestate_deposit_event(
+            enquiry,
+            event_id="evt_realestate_amount_mismatch",
+            amount_total=100,
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        enquiry.refresh_from_db()
+        self.assertFalse(enquiry.deposit_paid)
+        self.assertEqual(enquiry.status, RealEstateEnquiry.Status.QUOTED)
+        event = StripeWebhookEvent.objects.get(
+            stripe_event_id="evt_realestate_amount_mismatch"
+        )
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("expected booking deposit", event.error_message)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_deposit_webhook_fails_when_enquiry_metadata_missing(
+        self,
+        mock_construct,
+    ):
+        enquiry = self._create_realestate_deposit_enquiry()
+        mock_construct.return_value = self._realestate_deposit_event(
+            enquiry,
+            event_id="evt_realestate_missing_enquiry",
+            metadata={"purpose": "realestate_deposit"},
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        enquiry.refresh_from_db()
+        self.assertFalse(enquiry.deposit_paid)
+        event = StripeWebhookEvent.objects.get(
+            stripe_event_id="evt_realestate_missing_enquiry"
+        )
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("realestate_enquiry_id", event.error_message)
 
 
 @override_settings(

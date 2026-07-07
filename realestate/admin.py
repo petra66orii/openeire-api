@@ -9,6 +9,8 @@ from .emails import send_templated_email
 from .documents import build_booking_agreement_filename
 from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
+from .payments import calculate_realestate_deposit_amounts
+from .payments import create_realestate_deposit_checkout_session
 
 
 @admin.register(RealEstateEnquiry, site=custom_admin_site)
@@ -24,6 +26,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "quoted_price",
         "shoot_date",
         "booking_agreement_received",
+        "deposit_paid",
     )
     list_filter = (
         "status",
@@ -41,7 +44,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "property_address",
         "eircode",
     )
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "stripe_deposit_session_id",
+        "deposit_paid_at",
+    )
     actions = (
         "send_quote_email",
         "send_booking_agreement_email",
@@ -107,6 +115,9 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "booking_agreement_link",
                     "booking_agreement_received",
                     "deposit_payment_link",
+                    "stripe_deposit_session_id",
+                    "deposit_paid",
+                    "deposit_paid_at",
                     "delivery_link",
                     "review_link",
                 )
@@ -146,6 +157,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "delivery_link": enquiry.delivery_link,
             "review_link": enquiry.review_link,
         }
+        if enquiry.quoted_price is not None:
+            try:
+                context.update(calculate_realestate_deposit_amounts(enquiry))
+            except ValueError:
+                pass
         return context
 
     def _send_email_action(
@@ -275,17 +291,79 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
 
     @admin.action(description="Send deposit request email")
     def send_deposit_request_email(self, request, queryset):
-        self._send_email_action(
-            request,
-            queryset,
-            subject="Booking deposit request - OpenEire Studios",
-            template_base="deposit_request",
-            description="Deposit request email",
-            required_context=lambda enquiry, context: [
-                ("deposit payment link", context.get("deposit_payment_link")),
-                ("signed booking agreement received", getattr(enquiry, "booking_agreement_received", False)),
-            ],
-        )
+        sent_count = 0
+        failed_count = 0
+        skipped_count = 0
+        warnings = []
+
+        for enquiry in queryset:
+            email = str(getattr(enquiry, "email", "") or "").strip()
+            if not email:
+                skipped_count += 1
+                warnings.append(f"{enquiry}: skipped because no client email is available.")
+                continue
+            if not getattr(enquiry, "booking_agreement_received", False):
+                skipped_count += 1
+                warnings.append(
+                    f"{enquiry}: skipped because signed booking agreement received is missing."
+                )
+                continue
+            if enquiry.quoted_price is None:
+                skipped_count += 1
+                warnings.append(f"{enquiry}: skipped because quoted price is missing.")
+                continue
+
+            context = self._build_base_context(enquiry)
+            if not context.get("deposit_payment_link"):
+                try:
+                    context["deposit_payment_link"] = create_realestate_deposit_checkout_session(
+                        enquiry
+                    )
+                except Exception as exc:
+                    failed_count += 1
+                    warnings.append(
+                        f"{enquiry}: deposit checkout creation failed ({exc.__class__.__name__}: {exc})."
+                    )
+                    continue
+
+            try:
+                send_templated_email(
+                    subject="Booking deposit request - OpenEire Studios",
+                    to=[email],
+                    template_base="deposit_request",
+                    context=build_realestate_email_context(enquiry, **context),
+                    reply_to=self._get_reply_to(),
+                )
+                sent_count += 1
+            except Exception as exc:
+                failed_count += 1
+                warnings.append(
+                    f"{enquiry}: deposit request email failed ({exc.__class__.__name__}: {exc})."
+                )
+
+        if sent_count:
+            self.message_user(
+                request,
+                f"Deposit request email sent for {sent_count} enquiry(s).",
+                level=messages.SUCCESS,
+            )
+        if skipped_count:
+            self.message_user(
+                request,
+                f"Skipped {skipped_count} enquiry(s) because required data was missing.",
+                level=messages.WARNING,
+            )
+        if failed_count:
+            self.message_user(
+                request,
+                f"Deposit request email failed for {failed_count} enquiry(s).",
+                level=messages.ERROR,
+            )
+        if warnings:
+            preview = "; ".join(warnings[:3])
+            if len(warnings) > 3:
+                preview = f"{preview}; plus {len(warnings) - 3} more."
+            self.message_user(request, preview, level=messages.WARNING)
 
     @admin.action(description="Send confirmation email")
     def send_confirmation_email(self, request, queryset):
