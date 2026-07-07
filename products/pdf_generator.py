@@ -2,18 +2,18 @@ from io import BytesIO
 from decimal import Decimal
 from pathlib import Path
 import hashlib
-import re
 from difflib import SequenceMatcher
 from xml.sax.saxutils import escape as xml_escape
 
 from django.conf import settings
 from django.utils import timezone
+from openeire_api.pdf_markdown import render_markdown_to_flowables
 
 from .file_access import get_asset_file_name, open_asset_file
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -70,9 +70,6 @@ def _resolve_template_path(filename):
 
 COMMERCIAL_TEMPLATE_PATH = _resolve_template_path("COMMERCIAL RIGHTS-MANAGED LICENCE CERTIFICATE.md")
 PERSONAL_TEMPLATE_PATH = _resolve_template_path("PERSONAL USE LICENSE CERTIFICATE.md")
-
-BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-
 
 def _load_template(path):
     if not path.exists():
@@ -263,124 +260,11 @@ def _replace_table(markdown_text, new_table_markdown, table_index=0):
     return "\n".join(lines[:start] + [new_table_markdown] + lines[end:])
 
 
-def _apply_basic_markdown(text):
-    return BOLD_RE.sub(r"<b>\1</b>", text)
-
-
 def _markdown_table_from_rows(headers, rows):
     header_line = "| " + " | ".join(headers) + " |"
     separator = "| " + " | ".join(["---"] * len(headers)) + " |"
     body = ["| " + " | ".join(str(cell) for cell in row) + " |" for row in rows]
     return "\n".join([header_line, separator] + body)
-
-
-def _render_markdown_to_flowables(markdown_text):
-    styles = getSampleStyleSheet()
-    title_style = styles["Title"]
-    h1 = styles["Heading1"]
-    h2 = styles["Heading2"]
-    h3 = styles["Heading3"]
-    normal = styles["BodyText"]
-    normal.leading = 14
-
-    elements = []
-    lines = markdown_text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].rstrip()
-        if not line.strip():
-            i += 1
-            continue
-
-        if line.startswith("#"):
-            level = len(line) - len(line.lstrip("#"))
-            content = line[level:].strip()
-            content = _apply_basic_markdown(content)
-            if level == 1:
-                style = title_style
-            elif level == 2:
-                style = h2
-            else:
-                style = h3
-            elements.append(Paragraph(content, style))
-            elements.append(Spacer(1, 6))
-            i += 1
-            continue
-
-        if line.strip() == "---":
-            elements.append(Spacer(1, 12))
-            i += 1
-            continue
-
-        if line.lstrip().startswith("- "):
-            bullets = []
-            while i < len(lines) and lines[i].lstrip().startswith("- "):
-                bullets.append(lines[i].lstrip()[2:].strip())
-                i += 1
-            for bullet in bullets:
-                bullet_text = _apply_basic_markdown(bullet)
-                elements.append(Paragraph(bullet_text, normal, bulletText="•"))
-            elements.append(Spacer(1, 6))
-            continue
-
-        if re.match(r"^\s*\d+\.\s+", line):
-            numbered = []
-            while i < len(lines) and re.match(r"^\s*\d+\.\s+", lines[i]):
-                numbered.append(lines[i].strip())
-                i += 1
-            for item in numbered:
-                num, text = item.split(".", 1)
-                bullet_text = _apply_basic_markdown(text.strip())
-                elements.append(Paragraph(bullet_text, normal, bulletText=f"{num}."))
-            elements.append(Spacer(1, 6))
-            continue
-
-        if line.strip().startswith("|") and i + 1 < len(lines) and lines[i + 1].strip().startswith("|"):
-            header = [cell.strip() for cell in line.strip().strip("|").split("|")]
-            i += 2
-            rows = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                row = [cell.strip() for cell in lines[i].strip().strip("|").split("|")]
-                rows.append(row)
-                i += 1
-            table_data = [[Paragraph(_apply_basic_markdown(cell), normal) for cell in header]]
-            table_data.extend(
-                [[Paragraph(_apply_basic_markdown(cell), normal) for cell in row] for row in rows]
-            )
-            table = Table(table_data, hAlign="LEFT")
-            table.setStyle(TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]))
-            elements.append(table)
-            elements.append(Spacer(1, 12))
-            continue
-
-        paragraph_lines = [line]
-        i += 1
-        while i < len(lines):
-            next_line = lines[i]
-            if (
-                not next_line.strip()
-                or next_line.strip() == "---"
-                or next_line.startswith("#")
-                or next_line.lstrip().startswith("- ")
-                or (next_line.strip().startswith("|") and i + 1 < len(lines) and lines[i + 1].strip().startswith("|"))
-            ):
-                break
-            paragraph_lines.append(next_line.rstrip())
-            i += 1
-        paragraph_text = " ".join(part.strip() for part in paragraph_lines)
-        paragraph_text = _apply_basic_markdown(paragraph_text)
-        elements.append(Paragraph(paragraph_text, normal))
-        elements.append(Spacer(1, 6))
-
-    return elements
 
 
 def generate_licence_schedule_pdf(license_request, issued_at=None, terms_version=None):
@@ -568,7 +452,7 @@ def generate_licence_certificate_pdf(license_request, issued_at=None, terms_vers
     template_text = _replace_table(template_text, asset_table, table_index=0)
     template_text = _replace_table(template_text, scope_table, table_index=1)
 
-    elements = _render_markdown_to_flowables(template_text)
+    elements = render_markdown_to_flowables(template_text)
 
     doc = SimpleDocTemplate(
         buffer,

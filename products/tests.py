@@ -25,6 +25,7 @@ from django.contrib.contenttypes.models import ContentType
 from checkout.models import Order, OrderItem
 from openeire_api.throttling import SharedScopedRateThrottle
 from openeire_api.admin import custom_admin_site
+from openeire_api.pdf_markdown import render_markdown_to_flowables
 from openeire_api.test_utils import decode_sender_header
 from .admin import LicenseRequestAdmin, LicenseRequestAdminForm
 from .models import (
@@ -46,7 +47,7 @@ from .licensing import (
     send_licence_negotiation_email,
     send_licence_quote_email,
 )
-from .personal_licence import ensure_personal_licence_token
+from .personal_licence import ensure_personal_licence_token, generate_personal_licence_pdf
 from .personal_downloads import ensure_personal_download_token
 from .uploads import build_object_key, sanitize_upload_filename
 
@@ -1548,6 +1549,30 @@ class LicenseRequestTests(APITestCase):
         second_response = self.client.get(url)
 
         self.assertEqual(second_response.status_code, 404)
+
+    def test_personal_licence_pdf_uses_shared_markdown_renderer(self):
+        user = User.objects.create_user(
+            username="personallicencemarkdown",
+            email="personallicencemarkdown@example.com",
+            password="testpass123",
+        )
+        order = Order.objects.create(
+            user_profile=user.userprofile,
+            first_name="Aisling",
+            email=user.email,
+            stripe_pid="pi_personal_licence_markdown",
+            personal_terms_version="PERSONAL v1.1 - March 2026",
+        )
+
+        with patch(
+            "products.personal_licence.render_markdown_to_flowables",
+            wraps=render_markdown_to_flowables,
+        ) as mock_renderer:
+            pdf_bytes = generate_personal_licence_pdf(order)
+
+        mock_renderer.assert_called_once()
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertGreater(len(pdf_bytes), 1000)
 
     def test_personal_licence_download_token_fails_when_expired(self):
         user = User.objects.create_user(

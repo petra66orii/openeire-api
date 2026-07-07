@@ -9,6 +9,8 @@ from django.conf import settings
 from django.urls import reverse
 from django.utils import timezone
 
+from openeire_api.pdf_markdown import render_markdown_to_flowables
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
@@ -169,13 +171,7 @@ def generate_personal_licence_pdf(order):
     )
 
     licence_text = get_personal_licence_text() or "The full personal licence text is currently unavailable."
-    for block in licence_text.split("\n\n"):
-        cleaned = block.strip()
-        if not cleaned:
-            continue
-        paragraph = xml_escape(cleaned).replace("\n", "<br/>")
-        elements.append(Paragraph(paragraph, body_style))
-        elements.append(Spacer(1, 8))
+    elements.extend(render_markdown_to_flowables(licence_text))
 
     elements.extend(
         [
