@@ -15,6 +15,25 @@ from .payments import create_realestate_deposit_checkout_session
 
 @admin.register(RealEstateEnquiry, site=custom_admin_site)
 class RealEstateEnquiryAdmin(admin.ModelAdmin):
+    booking_field_help_texts = {
+        "booking_agreement_link": (
+            "Optional future e-signature/external signing URL. The Booking "
+            "Agreement PDF is attached automatically when sending the Booking "
+            "Agreement email."
+        ),
+        "delivery_provider": (
+            "Where the finished media package is hosted. Until the OpenEire "
+            "Client Portal is available, MyAirBridge is the recommended provider."
+        ),
+        "delivery_link": (
+            'Secure download URL used for the "Download Files" button in the '
+            "Delivery email."
+        ),
+        "review_link": (
+            "Review URL shown as the Follow-up/Thank-you email CTA, usually "
+            "the Google review link."
+        ),
+    }
     list_display = (
         "created_at",
         "name",
@@ -112,14 +131,15 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "proposed_shoot_date",
-                    "booking_agreement_link",
                     "booking_agreement_received",
                     "deposit_payment_link",
                     "stripe_deposit_session_id",
                     "deposit_paid",
                     "deposit_paid_at",
+                    "delivery_provider",
                     "delivery_link",
                     "review_link",
+                    "booking_agreement_link",
                 )
             },
         ),
@@ -146,6 +166,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
     def _get_reply_to(self):
         reply_to_email = get_realestate_reply_to_email()
         return [reply_to_email] if reply_to_email else []
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_dbfield(db_field, request, **kwargs)
+        if formfield and db_field.name in self.booking_field_help_texts:
+            formfield.help_text = self.booking_field_help_texts[db_field.name]
+        return formfield
 
     def _build_base_context(self, enquiry):
         confirmed_or_preferred_date = enquiry.shoot_date or enquiry.preferred_date
@@ -384,7 +410,10 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             template_base="delivery",
             description="Delivery email",
             warning_messages=lambda enquiry, context: [
-                "delivery CTA omitted because no delivery link is stored."
+                (
+                    "Delivery email sent, but no delivery CTA was included "
+                    "because no delivery link is stored."
+                )
                 if not context.get("delivery_link")
                 else ""
             ],
@@ -399,7 +428,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             template_base="follow_up",
             description="Follow-up email",
             warning_messages=lambda enquiry, context: [
-                "review CTA omitted because no review link is stored."
+                "Review CTA omitted because no review link is stored."
                 if not context.get("review_link")
                 else ""
             ],
@@ -434,7 +463,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             template_base="thank_you",
             description="Thank-you email",
             warning_messages=lambda enquiry, context: [
-                "review CTA omitted because no review link is stored."
+                "Review CTA omitted because no review link is stored."
                 if not context.get("review_link")
                 else ""
             ],

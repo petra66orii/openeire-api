@@ -296,6 +296,36 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("Download Media", html)
         self.assertIn("https://openeire.ie/delivery/example", html)
 
+    def test_delivery_cta_depends_on_link_not_provider(self):
+        for provider in RealEstateEnquiry.DeliveryProvider.values:
+            with self.subTest(provider=provider):
+                context = {
+                    **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+                    "delivery_provider": provider,
+                    "delivery_link": f"https://example.com/{provider}/delivery",
+                }
+
+                html = render_to_string("emails/real_estate/delivery.html", context)
+                text = render_to_string("emails/real_estate/delivery.txt", context)
+
+                self.assertIn("Download Media", html)
+                self.assertIn(context["delivery_link"], html)
+                self.assertIn(context["delivery_link"], text)
+
+    def test_delivery_cta_is_omitted_without_delivery_link(self):
+        context = {
+            **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+            "delivery_provider": RealEstateEnquiry.DeliveryProvider.PORTAL,
+            "delivery_link": "",
+        }
+
+        html = render_to_string("emails/real_estate/delivery.html", context)
+        text = render_to_string("emails/real_estate/delivery.txt", context)
+
+        self.assertNotIn("Download Media", html)
+        self.assertNotIn("href=\"\"", html)
+        self.assertNotIn("Download Media:", text)
+
     def test_follow_up_cta_appears_with_review_link(self):
         html = render_to_string(
             "emails/real_estate/follow_up.html",
@@ -543,6 +573,10 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.data["status"], "new")
         self.assertEqual(response.data["message"], "Enquiry received successfully.")
         self.assertNotIn("internal_notes", response.data)
+        self.assertEqual(
+            enquiry.delivery_provider,
+            RealEstateEnquiry.DeliveryProvider.MYAIRBRIDGE,
+        )
 
     def test_internal_notification_email_is_sent(self):
         self.client.post(self.url, data=self.payload, format="json")
@@ -692,6 +726,54 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         request.user = self.user
         return request
 
+    def test_booking_delivery_admin_fields_are_ordered_and_helpful(self):
+        request = self._request()
+        booking_fieldset = next(
+            fieldset
+            for fieldset in self.model_admin.fieldsets
+            if fieldset[0] == "Booking & Delivery Links"
+        )
+
+        self.assertEqual(
+            booking_fieldset[1]["fields"],
+            (
+                "proposed_shoot_date",
+                "booking_agreement_received",
+                "deposit_payment_link",
+                "stripe_deposit_session_id",
+                "deposit_paid",
+                "deposit_paid_at",
+                "delivery_provider",
+                "delivery_link",
+                "review_link",
+                "booking_agreement_link",
+            ),
+        )
+        self.assertIn("booking_agreement_received", self.model_admin.list_display)
+        self.assertIn("deposit_paid", self.model_admin.list_display)
+        self.assertNotIn("delivery_provider", self.model_admin.list_display)
+        self.assertIn("stripe_deposit_session_id", self.model_admin.readonly_fields)
+        self.assertIn("deposit_paid_at", self.model_admin.readonly_fields)
+        self.assertNotIn("deposit_payment_link", self.model_admin.readonly_fields)
+
+        form = self.model_admin.get_form(request)
+        self.assertIn(
+            "Booking Agreement PDF is attached automatically",
+            form.base_fields["booking_agreement_link"].help_text,
+        )
+        self.assertIn(
+            "Where the finished media package is hosted",
+            form.base_fields["delivery_provider"].help_text,
+        )
+        self.assertIn(
+            'Secure download URL used for the "Download Files" button',
+            form.base_fields["delivery_link"].help_text,
+        )
+        self.assertIn(
+            "Review URL shown as the Follow-up/Thank-you email CTA",
+            form.base_fields["review_link"].help_text,
+        )
+
     @patch("realestate.admin.send_templated_email")
     def test_send_quote_email_uses_existing_context(self, mock_send_templated_email):
         request = self._request()
@@ -729,7 +811,72 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             if call.kwargs.get("level") == messages.WARNING
         ]
         self.assertTrue(
-            any("delivery CTA omitted" in call.args[1] for call in warning_calls)
+            any(
+                "Delivery email sent, but no delivery CTA was included because no delivery link is stored."
+                in call.args[1]
+                for call in warning_calls
+            )
+        )
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Delivery email sent for 1 enquiry(s).",
+            level=messages.SUCCESS,
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    def test_follow_up_email_warns_when_review_link_missing(self, mock_send_templated_email):
+        request = self._request()
+
+        self.model_admin.send_follow_up_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_send_templated_email.assert_called_once()
+        warning_calls = [
+            call
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                "Review CTA omitted because no review link is stored."
+                in call.args[1]
+                for call in warning_calls
+            )
+        )
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Follow-up email sent for 1 enquiry(s).",
+            level=messages.SUCCESS,
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    def test_thank_you_email_warns_when_review_link_missing(self, mock_send_templated_email):
+        request = self._request()
+
+        self.model_admin.send_thank_you_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_send_templated_email.assert_called_once()
+        warning_calls = [
+            call
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                "Review CTA omitted because no review link is stored."
+                in call.args[1]
+                for call in warning_calls
+            )
+        )
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Thank-you email sent for 1 enquiry(s).",
+            level=messages.SUCCESS,
         )
 
     @patch("realestate.admin.send_templated_email")
@@ -759,6 +906,12 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Booking agreement email sent for 1 enquiry(s).",
             level=messages.SUCCESS,
         )
+        warning_calls = [
+            call
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertEqual(warning_calls, [])
 
     @patch("realestate.admin.send_templated_email")
     def test_weather_reschedule_skips_without_revised_date(self, mock_send_templated_email):
