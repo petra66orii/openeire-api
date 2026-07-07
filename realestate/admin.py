@@ -21,6 +21,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "status",
         "quoted_price",
         "shoot_date",
+        "booking_agreement_received",
     )
     list_filter = (
         "status",
@@ -93,6 +94,19 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "status",
                     "quoted_price",
                     "shoot_date",
+                )
+            },
+        ),
+        (
+            "Booking & Delivery Links",
+            {
+                "fields": (
+                    "proposed_shoot_date",
+                    "booking_agreement_link",
+                    "booking_agreement_received",
+                    "deposit_payment_link",
+                    "delivery_link",
+                    "review_link",
                 )
             },
         ),
