@@ -37,6 +37,14 @@ class RealEstateEnquiry(models.Model):
         CLOSED = "closed", "Closed"
         SPAM = "spam", "Spam"
 
+    class DeliveryProvider(models.TextChoices):
+        MYAIRBRIDGE = "myairbridge", "MyAirBridge"
+        GOOGLE_DRIVE = "google_drive", "Google Drive"
+        DROPBOX = "dropbox", "Dropbox"
+        ONEDRIVE = "onedrive", "OneDrive"
+        PORTAL = "portal", "OpenEire Client Portal"
+        OTHER = "other", "Other"
+
     ADD_ON_LABELS = {
         "additional_stills": "Additional edited stills - EUR 10+VAT per image",
         "floor_plan": "Floor plan, 2D measured - EUR 75+VAT",
@@ -47,11 +55,11 @@ class RealEstateEnquiry(models.Model):
     }
 
     PACKAGE_SUMMARIES = {
-        PreferredPackage.ESSENTIAL: "EUR 175+VAT - 10 edited interior/exterior photos",
-        PreferredPackage.STARTER: "EUR 229+VAT - 20 edited interior/exterior photos + 5-8 aerial drone photos",
-        PreferredPackage.PRO: "EUR 399+VAT - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
-        PreferredPackage.PREMIUM: "EUR 579+VAT - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
-        PreferredPackage.CUSTOM: "POA",
+        PreferredPackage.ESSENTIAL: "Essential - EUR 175+VAT - 10 edited interior/exterior photos",
+        PreferredPackage.STARTER: "Starter - EUR 229+VAT - 20 edited interior/exterior photos + 5-8 aerial drone photos",
+        PreferredPackage.PRO: "Pro - EUR 399+VAT - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
+        PreferredPackage.PREMIUM: "Premium - EUR 579+VAT - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
+        PreferredPackage.CUSTOM: "Custom - POA",
         PreferredPackage.NOT_SURE: "Not sure yet",
     }
 
@@ -86,6 +94,14 @@ class RealEstateEnquiry(models.Model):
     deposit_paid = models.BooleanField(default=False)
     deposit_paid_at = models.DateTimeField(null=True, blank=True)
     booking_agreement_link = models.URLField(blank=True)
+    # Delivery provider is metadata only. When the Client Portal ships, use
+    # provider="portal" and delivery_link="https://app.openeire.ie/projects/<token>";
+    # the Delivery email can keep using the same delivery_link CTA.
+    delivery_provider = models.CharField(
+        max_length=20,
+        choices=DeliveryProvider.choices,
+        default=DeliveryProvider.MYAIRBRIDGE,
+    )
     delivery_link = models.URLField(blank=True)
     review_link = models.URLField(blank=True)
 
