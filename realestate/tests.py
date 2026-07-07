@@ -12,8 +12,11 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from openeire_api.admin import custom_admin_site
+from openeire_api.pdf_markdown import render_markdown_to_flowables
 
 from .admin import RealEstateEnquiryAdmin
+from .documents import build_booking_agreement_filename
+from .documents import generate_booking_agreement_pdf
 from .emails import build_realestate_email_context
 from .emails import format_money
 from .emails import send_templated_email
@@ -55,7 +58,8 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
     template_names = (
         "enquiry_reply",
         "quote",
-        "booking_agreement_deposit",
+        "booking_agreement",
+        "deposit_request",
         "confirmation",
         "delivery",
         "follow_up",
@@ -118,7 +122,11 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
         )
         booking_text = render_to_string(
-            "emails/real_estate/booking_agreement_deposit.txt",
+            "emails/real_estate/booking_agreement.txt",
+            REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+        )
+        deposit_text = render_to_string(
+            "emails/real_estate/deposit_request.txt",
             REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
         )
         confirmation_text = render_to_string(
@@ -146,10 +154,10 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             "This quote does not confirm a booking or reserve a shoot date.",
             quote_text,
         )
-        self.assertIn("Pay Secure Deposit:", booking_text)
         self.assertIn("Review Booking Agreement:", booking_text)
+        self.assertIn("Pay Secure Deposit:", deposit_text)
         self.assertIn(
-            "Your booking is not confirmed until both the signed agreement and deposit have been received in cleared funds.",
+            "Your booking remains provisional until the signed agreement has been received and the booking deposit has cleared.",
             booking_text,
         )
         self.assertIn(
@@ -269,7 +277,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
 
     def test_booking_deposit_cta_appears_with_deposit_link(self):
         html = render_to_string(
-            "emails/real_estate/booking_agreement_deposit.html",
+            "emails/real_estate/deposit_request.html",
             REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
         )
 
@@ -364,6 +372,56 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             context["email_logo_url"].endswith(
                 "/static/emails/openeire-studios-logo.png"
             )
+        )
+
+
+class MarkdownPDFRendererTests(SimpleTestCase):
+    def test_renderer_supports_core_markdown_blocks(self):
+        flowables = render_markdown_to_flowables(
+            "# Title\n\n"
+            "## Section\n\n"
+            "Paragraph with **bold** and *italic* text.\n\n"
+            "- First bullet\n"
+            "- Second bullet\n\n"
+            "1. First item\n"
+            "2. Second item\n\n"
+            "| Field | Value |\n"
+            "| --- | --- |\n"
+            "| A | B |\n\n"
+            "---\n"
+        )
+
+        class_names = [flowable.__class__.__name__ for flowable in flowables]
+        self.assertIn("Paragraph", class_names)
+        self.assertIn("Table", class_names)
+        self.assertGreaterEqual(class_names.count("Paragraph"), 7)
+
+
+class BookingAgreementDocumentTests(TestCase):
+    def test_booking_agreement_pdf_generation_returns_pdf(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            company_name="Example Estate Agents",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House, Salthill",
+            county="Galway",
+            eircode="H91 XXXX",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_date="2026-06-20",
+            quoted_price="399.00",
+            consent_to_contact=True,
+        )
+
+        pdf_bytes = generate_booking_agreement_pdf(enquiry)
+
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertGreater(len(pdf_bytes), 1000)
+        self.assertEqual(
+            build_booking_agreement_filename(enquiry),
+            f"openeire-booking-agreement-re-{enquiry.id}-jane-agent.pdf",
         )
 
 
@@ -596,7 +654,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         )
 
     @patch("realestate.admin.send_templated_email")
-    def test_send_booking_agreement_email_skips_when_agreement_link_missing(self, mock_send_templated_email):
+    def test_send_booking_agreement_email_attaches_pdf_without_agreement_link(self, mock_send_templated_email):
         request = self._request()
 
         self.model_admin.send_booking_agreement_email(
@@ -604,14 +662,23 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_not_called()
-        warning_calls = [
-            call
-            for call in self.model_admin.message_user.call_args_list
-            if call.kwargs.get("level") == messages.WARNING
-        ]
-        self.assertTrue(
-            any("booking agreement link is missing" in call.args[1] for call in warning_calls)
+        mock_send_templated_email.assert_called_once()
+        kwargs = mock_send_templated_email.call_args.kwargs
+        self.assertEqual(kwargs["template_base"], "booking_agreement")
+        self.assertEqual(kwargs["to"], ["jane@example.com"])
+        self.assertEqual(kwargs["context"]["booking_agreement_link"], "")
+        self.assertEqual(len(kwargs["attachments"]), 1)
+        filename, content, mimetype = kwargs["attachments"][0]
+        self.assertEqual(
+            filename,
+            f"openeire-booking-agreement-re-{self.enquiry.id}-jane-agent.pdf",
+        )
+        self.assertTrue(content.startswith(b"%PDF"))
+        self.assertEqual(mimetype, "application/pdf")
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Booking agreement email sent for 1 enquiry(s).",
+            level=messages.SUCCESS,
         )
 
     @patch("realestate.admin.send_templated_email")

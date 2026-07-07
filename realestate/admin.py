@@ -6,6 +6,8 @@ from openeire_api.admin import custom_admin_site
 from .emails import build_realestate_email_context
 from .emails import get_realestate_reply_to_email
 from .emails import send_templated_email
+from .documents import build_booking_agreement_filename
+from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
 
 
@@ -157,6 +159,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         extra_context=None,
         warning_messages=None,
         required_context=None,
+        attachment_builder=None,
     ):
         sent_count = 0
         failed_count = 0
@@ -200,12 +203,16 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     warnings.append(f"{enquiry}: {message}")
 
             try:
+                attachments = []
+                if attachment_builder:
+                    attachments = attachment_builder(enquiry, context)
                 send_templated_email(
                     subject=subject,
                     to=[email],
                     template_base=template_base,
                     context=build_realestate_email_context(enquiry, **context),
                     reply_to=self._get_reply_to(),
+                    attachments=attachments,
                 )
                 sent_count += 1
             except Exception as exc:
@@ -256,8 +263,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             subject="Booking Agreement for your property media booking - OpenEire Studios",
             template_base="booking_agreement",
             description="Booking agreement email",
-            required_context=lambda enquiry, context: [
-                ("booking agreement link", context.get("booking_agreement_link")),
+            attachment_builder=lambda enquiry, context: [
+                (
+                    build_booking_agreement_filename(enquiry),
+                    generate_booking_agreement_pdf(enquiry),
+                    "application/pdf",
+                )
             ],
         )
 
