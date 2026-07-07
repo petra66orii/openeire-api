@@ -16,6 +16,8 @@ from openeire_api.pdf_markdown import render_markdown_to_flowables
 
 from .admin import RealEstateEnquiryAdmin
 from .documents import build_booking_agreement_filename
+from .documents import _build_booking_agreement_context
+from .documents import _load_booking_agreement_template
 from .documents import generate_booking_agreement_pdf
 from .emails import build_realestate_email_context
 from .emails import format_money
@@ -398,6 +400,13 @@ class MarkdownPDFRendererTests(SimpleTestCase):
 
 
 class BookingAgreementDocumentTests(TestCase):
+    def _render_booking_agreement_markdown(self, enquiry):
+        from django.template import Context, Template
+
+        return Template(_load_booking_agreement_template()).render(
+            Context(_build_booking_agreement_context(enquiry), autoescape=False)
+        )
+
     def test_booking_agreement_pdf_generation_returns_pdf(self):
         enquiry = RealEstateEnquiry.objects.create(
             name="Jane Agent",
@@ -422,6 +431,76 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertEqual(
             build_booking_agreement_filename(enquiry),
             f"openeire-booking-agreement-re-{enquiry.id}-jane-agent.pdf",
+        )
+
+    def test_booking_agreement_missing_optional_fields_render_as_blank_lines(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Example House, Salthill",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+        )
+
+        rendered = self._render_booking_agreement_markdown(enquiry)
+        pdf_bytes = generate_booking_agreement_pdf(enquiry)
+
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertIn("**Agency / business name:** ______________________________", rendered)
+        self.assertIn("**Registered / business address:** ______________________________", rendered)
+        self.assertIn("**Listing type:** ______________________________", rendered)
+        self.assertIn("**Shoot time:** ______________________________", rendered)
+        self.assertIn("**Access contact on site:** ______________________________", rendered)
+        self.assertIn("**Access notes / restrictions:** ______________________________", rendered)
+        self.assertIn("**Travel details:** ______________________________", rendered)
+        self.assertIn("**VAT:** ______________________________", rendered)
+        self.assertIn("**Total fee including VAT:** ______________________________", rendered)
+        self.assertIn("**Deposit required:** ______________________________", rendered)
+        self.assertIn("**Balance due on delivery:** ______________________________", rendered)
+        self.assertNotIn("To be confirmed", rendered)
+        self.assertNotIn("To be confirmed by the Client", rendered)
+
+    def test_booking_agreement_quote_amounts_and_signatures_render(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            company_name="Example Estate Agents",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House, Salthill",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_date="2026-06-20",
+            quoted_price="399.00",
+            consent_to_contact=True,
+        )
+
+        rendered = self._render_booking_agreement_markdown(enquiry)
+
+        self.assertIn("**Package fee excluding VAT:** EUR 399.00", rendered)
+        self.assertIn("**VAT:** EUR 91.77", rendered)
+        self.assertIn("**Total fee including VAT:** EUR 490.77", rendered)
+        self.assertIn("**Deposit required:** EUR 147.23", rendered)
+        self.assertIn("**Balance due on delivery:** EUR 343.54", rendered)
+        self.assertIn("Signed electronically for and on behalf of OpenEire Studios", rendered)
+        self.assertIn("Name: Gerard Deely", rendered)
+        self.assertIn("Title: OpenEire Studios", rendered)
+        self.assertIn("Signed by or on behalf of the Client:", rendered)
+        self.assertIn("Name: ______________________________", rendered)
+        self.assertIn("Title: ______________________________", rendered)
+        self.assertIn("Date: ______________________________", rendered)
+        self.assertIn(
+            "By signing electronically and by paying the booking deposit after receipt of this Booking Agreement, the Client confirms",
+            rendered,
+        )
+        self.assertIn(
+            "private property owner, the Client may permit one appointed estate agent/auctioneer acting on their behalf",
+            rendered,
         )
 
 
@@ -713,6 +792,121 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.model_admin.message_user.assert_any_call(
             request,
             "Confirmation email failed for 1 enquiry(s).",
+            level=messages.ERROR,
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_request_skips_without_booking_agreement_received(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+
+        self.model_admin.send_deposit_request_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_session_create.assert_not_called()
+        mock_send_templated_email.assert_not_called()
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Skipped 1 enquiry(s) because required data was missing.",
+            level=messages.WARNING,
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_request_creates_stripe_checkout_when_link_missing(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.save(update_fields=["booking_agreement_received"])
+        mock_session_create.return_value = {
+            "id": "cs_realestate_deposit",
+            "url": "https://checkout.stripe.com/c/pay/realestate",
+        }
+
+        self.model_admin.send_deposit_request_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        self.enquiry.refresh_from_db()
+        self.assertEqual(
+            self.enquiry.deposit_payment_link,
+            "https://checkout.stripe.com/c/pay/realestate",
+        )
+        self.assertEqual(self.enquiry.stripe_deposit_session_id, "cs_realestate_deposit")
+        mock_session_create.assert_called_once()
+        call_kwargs = mock_session_create.call_args.kwargs
+        self.assertEqual(call_kwargs["mode"], "payment")
+        self.assertEqual(call_kwargs["line_items"][0]["price_data"]["unit_amount"], 14723)
+        self.assertEqual(call_kwargs["metadata"]["realestate_enquiry_id"], str(self.enquiry.pk))
+        self.assertEqual(call_kwargs["metadata"]["purpose"], "realestate_deposit")
+        mock_send_templated_email.assert_called_once()
+        email_context = mock_send_templated_email.call_args.kwargs["context"]
+        self.assertEqual(
+            email_context["deposit_payment_link"],
+            "https://checkout.stripe.com/c/pay/realestate",
+        )
+        self.assertIn("147.23", email_context["deposit_amount"])
+        self.assertIn("343.54", email_context["balance_due"])
+
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_request_reuses_existing_link(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/existing"
+        self.enquiry.save(
+            update_fields=["booking_agreement_received", "deposit_payment_link"]
+        )
+
+        self.model_admin.send_deposit_request_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_session_create.assert_not_called()
+        mock_send_templated_email.assert_called_once()
+        self.assertEqual(
+            mock_send_templated_email.call_args.kwargs["context"]["deposit_payment_link"],
+            "https://checkout.stripe.com/existing",
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_request_stripe_failure_does_not_send_email(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.save(update_fields=["booking_agreement_received"])
+        mock_session_create.side_effect = RuntimeError("stripe timeout")
+
+        self.model_admin.send_deposit_request_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.deposit_payment_link, "")
+        mock_send_templated_email.assert_not_called()
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Deposit request email failed for 1 enquiry(s).",
             level=messages.ERROR,
         )
 

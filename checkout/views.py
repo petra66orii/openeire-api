@@ -35,6 +35,8 @@ from products.licensing import (
 from products.file_access import asset_file_exists, get_asset_file_name, open_asset_file
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import get_personal_terms_version
+from realestate.models import RealEstateEnquiry
+from realestate.payments import calculate_realestate_deposit_amounts
 from userprofiles.models import UserProfile
 from .attempts import (
     build_request_fingerprint,
@@ -880,6 +882,94 @@ class StripeWebhookView(APIView):
             license_request.id,
         )
 
+    def _handle_realestate_deposit_payment(self, session):
+        metadata = session.get('metadata') or {}
+        if metadata.get('purpose') != 'realestate_deposit':
+            return False
+
+        payment_status = session.get('payment_status')
+        if payment_status != 'paid':
+            logger.warning(
+                "Real estate deposit checkout session not paid yet (status=%s). Skipping. session_id=%s",
+                payment_status,
+                session.get('id') or "unknown",
+            )
+            return True
+
+        checkout_session_id = str(session.get('id') or "").strip()
+        enquiry_id = str(metadata.get('realestate_enquiry_id') or "").strip()
+        if not enquiry_id:
+            raise RuntimeError(
+                "Paid real estate deposit checkout session is missing "
+                "realestate_enquiry_id metadata."
+            )
+
+        enquiry = (
+            RealEstateEnquiry.objects
+            .select_for_update()
+            .filter(pk=enquiry_id)
+            .first()
+        )
+        if enquiry is None:
+            raise RuntimeError(
+                "Paid real estate deposit checkout session referenced "
+                f"unknown enquiry {enquiry_id}."
+            )
+
+        stored_session_id = str(enquiry.stripe_deposit_session_id or "").strip()
+        if stored_session_id and checkout_session_id != stored_session_id:
+            raise RuntimeError(
+                "Paid real estate deposit checkout session did not match "
+                "the stored enquiry session."
+            )
+
+        expected_amount_cents = int(
+            (
+                calculate_realestate_deposit_amounts(enquiry)["deposit_amount"]
+                * Decimal("100")
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+        amount_total = int(session.get('amount_total') or 0)
+        currency = str(session.get('currency') or "").lower()
+        if amount_total != expected_amount_cents or currency != "eur":
+            raise RuntimeError(
+                "Paid real estate deposit amount did not match the "
+                "expected booking deposit."
+            )
+
+        if enquiry.deposit_paid:
+            logger.info(
+                "Real estate deposit already marked paid; skipping. enquiry_id=%s",
+                enquiry.pk,
+            )
+            return True
+
+        paid_at = timezone.now()
+        update_fields = ["deposit_paid", "deposit_paid_at", "updated_at"]
+        enquiry.deposit_paid = True
+        enquiry.deposit_paid_at = paid_at
+
+        if checkout_session_id and not enquiry.stripe_deposit_session_id:
+            enquiry.stripe_deposit_session_id = checkout_session_id
+            update_fields.append("stripe_deposit_session_id")
+
+        if enquiry.status not in {
+            RealEstateEnquiry.Status.BOOKED,
+            RealEstateEnquiry.Status.COMPLETED,
+            RealEstateEnquiry.Status.CLOSED,
+            RealEstateEnquiry.Status.SPAM,
+        }:
+            enquiry.status = RealEstateEnquiry.Status.BOOKED
+            update_fields.append("status")
+
+        enquiry.save(update_fields=update_fields)
+        logger.info(
+            "Real estate deposit marked paid. enquiry_id=%s session_id=%s",
+            enquiry.pk,
+            checkout_session_id or "unknown",
+        )
+        return True
+
     def post(self, request):
         stripe.api_key = settings.STRIPE_SECRET_KEY
         webhook_secret = settings.STRIPE_WEBHOOK_SECRET
@@ -1367,7 +1457,10 @@ class StripeWebhookView(APIView):
 
             elif event_type == 'checkout.session.completed':
                 session = event['data']['object']
-                self._handle_license_payment(request, session)
+                with transaction.atomic():
+                    handled_realestate_deposit = self._handle_realestate_deposit_payment(session)
+                if not handled_realestate_deposit:
+                    self._handle_license_payment(request, session)
         except DRFValidationError as e:
             processing_error = str(e.detail if hasattr(e, "detail") else e)
             # A signed, successful PaymentIntent backed by a checkout snapshot

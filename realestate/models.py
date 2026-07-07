@@ -81,7 +81,10 @@ class RealEstateEnquiry(models.Model):
 
     proposed_shoot_date = models.DateField(null=True, blank=True)
     booking_agreement_received = models.BooleanField(default=False)
-    deposit_payment_link = models.URLField(blank=True)
+    deposit_payment_link = models.URLField(max_length=500, blank=True)
+    stripe_deposit_session_id = models.CharField(max_length=255, blank=True)
+    deposit_paid = models.BooleanField(default=False)
+    deposit_paid_at = models.DateTimeField(null=True, blank=True)
     booking_agreement_link = models.URLField(blank=True)
     delivery_link = models.URLField(blank=True)
     review_link = models.URLField(blank=True)
