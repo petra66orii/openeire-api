@@ -23,6 +23,7 @@ from .emails import build_realestate_email_context
 from .emails import format_money
 from .emails import send_templated_email
 from .models import RealEstateEnquiry
+from .models import RealEstateTimelineEvent
 
 
 REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
@@ -534,6 +535,33 @@ class BookingAgreementDocumentTests(TestCase):
         )
 
 
+class RealEstateTimelineEventTests(TestCase):
+    def test_timeline_event_model_can_be_created(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House, Salthill, Galway",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+        )
+
+        event = RealEstateTimelineEvent.objects.create(
+            enquiry=enquiry,
+            event_type=RealEstateTimelineEvent.EventType.NOTE,
+            status=RealEstateTimelineEvent.EventStatus.COMPLETED,
+            actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+            title="Internal note",
+            notes="Useful context for the booking.",
+        )
+
+        self.assertEqual(event.enquiry, enquiry)
+        self.assertEqual(str(event), f"Note - {enquiry}")
+
+
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="studio@openeire.ie",
@@ -577,6 +605,16 @@ class RealEstateEnquiryTests(APITestCase):
             enquiry.delivery_provider,
             RealEstateEnquiry.DeliveryProvider.MYAIRBRIDGE,
         )
+        event = enquiry.timeline_events.get()
+        self.assertEqual(
+            event.event_type,
+            RealEstateTimelineEvent.EventType.ENQUIRY_RECEIVED,
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.COMPLETED)
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.CLIENT)
+        self.assertEqual(event.title, "Enquiry received")
+        self.assertIn("Preferred package: Pro", event.notes)
+        self.assertIn("Property address: Example House, Salthill, Galway", event.notes)
 
     def test_internal_notification_email_is_sent(self):
         self.client.post(self.url, data=self.payload, format="json")
@@ -693,6 +731,7 @@ class RealEstateEnquiryTests(APITestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
+        self.assertEqual(RealEstateTimelineEvent.objects.count(), 1)
 
 class RealEstateEnquiryAdminActionTests(TestCase):
     def setUp(self):
@@ -794,6 +833,15 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Quote email sent for 1 enquiry(s).",
             level=messages.SUCCESS,
         )
+        event = self.enquiry.timeline_events.get(
+            event_type=RealEstateTimelineEvent.EventType.QUOTE_SENT
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.SENT)
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.ADMIN)
+        self.assertEqual(event.title, "Quote email sent")
+        self.assertEqual(event.email_template, "quote")
+        self.assertEqual(event.recipient_email, "jane@example.com")
+        self.assertEqual(event.created_by, self.user)
 
     @patch("realestate.admin.send_templated_email")
     def test_send_delivery_email_warns_when_delivery_link_missing(self, mock_send_templated_email):
@@ -906,6 +954,12 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Booking agreement email sent for 1 enquiry(s).",
             level=messages.SUCCESS,
         )
+        event = self.enquiry.timeline_events.get(
+            event_type=RealEstateTimelineEvent.EventType.BOOKING_AGREEMENT_SENT
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.SENT)
+        self.assertEqual(event.email_template, "booking_agreement")
+        self.assertEqual(event.reference_url, "")
         warning_calls = [
             call
             for call in self.model_admin.message_user.call_args_list
@@ -947,6 +1001,14 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Confirmation email failed for 1 enquiry(s).",
             level=messages.ERROR,
         )
+        event = self.enquiry.timeline_events.get(
+            event_type=RealEstateTimelineEvent.EventType.CONFIRMATION_SENT
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.FAILED)
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.ADMIN)
+        self.assertEqual(event.email_template, "confirmation")
+        self.assertEqual(event.recipient_email, "jane@example.com")
+        self.assertIn("RuntimeError: smtp offline", event.notes)
 
     @patch("realestate.admin.send_templated_email")
     @patch("realestate.payments.stripe.checkout.Session.create")
@@ -1010,6 +1072,12 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         )
         self.assertIn("147.23", email_context["deposit_amount"])
         self.assertIn("343.54", email_context["balance_due"])
+        event = self.enquiry.timeline_events.get(
+            event_type=RealEstateTimelineEvent.EventType.DEPOSIT_REQUEST_SENT
+        )
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.SENT)
+        self.assertEqual(event.reference_url, "https://checkout.stripe.com/c/pay/realestate")
+        self.assertEqual(event.stripe_session_id, "cs_realestate_deposit")
 
     @patch("realestate.admin.send_templated_email")
     @patch("realestate.payments.stripe.checkout.Session.create")
@@ -1062,6 +1130,43 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             "Deposit request email failed for 1 enquiry(s).",
             level=messages.ERROR,
         )
+
+    def test_save_model_records_booking_agreement_received_once(self):
+        request = self._request()
+        self.enquiry.booking_agreement_received = True
+
+        self.model_admin.save_model(request, self.enquiry, form=Mock(), change=True)
+        self.model_admin.save_model(request, self.enquiry, form=Mock(), change=True)
+
+        events = self.enquiry.timeline_events.filter(
+            event_type=RealEstateTimelineEvent.EventType.BOOKING_AGREEMENT_RECEIVED
+        )
+        self.assertEqual(events.count(), 1)
+        event = events.get()
+        self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.COMPLETED)
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.ADMIN)
+        self.assertEqual(event.title, "Booking agreement marked as received")
+        self.assertEqual(event.created_by, self.user)
+
+    def test_save_model_records_shoot_scheduled_when_date_set_or_changed(self):
+        request = self._request()
+        self.enquiry.shoot_date = None
+        self.enquiry.save(update_fields=["shoot_date"])
+
+        self.enquiry.shoot_date = "2026-07-01"
+        self.model_admin.save_model(request, self.enquiry, form=Mock(), change=True)
+        self.enquiry.shoot_date = "2026-07-02"
+        self.model_admin.save_model(request, self.enquiry, form=Mock(), change=True)
+        self.model_admin.save_model(request, self.enquiry, form=Mock(), change=True)
+
+        events = list(
+            self.enquiry.timeline_events.filter(
+                event_type=RealEstateTimelineEvent.EventType.SHOOT_SCHEDULED
+            ).order_by("created_at")
+        )
+        self.assertEqual(len(events), 2)
+        self.assertIn("Shoot date: 2026-07-01", events[0].notes)
+        self.assertIn("Shoot date: 2026-07-02", events[1].notes)
 
 
 

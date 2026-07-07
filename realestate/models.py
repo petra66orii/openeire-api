@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -122,4 +123,78 @@ class RealEstateEnquiry(models.Model):
     def get_add_ons_summary(self):
         labels = self.get_add_on_labels()
         return ", ".join(labels) if labels else "None"
+
+
+class RealEstateTimelineEvent(models.Model):
+    class EventType(models.TextChoices):
+        ENQUIRY_RECEIVED = "enquiry_received", "Enquiry received"
+        QUOTE_SENT = "quote_sent", "Quote sent"
+        BOOKING_AGREEMENT_SENT = "booking_agreement_sent", "Booking agreement sent"
+        BOOKING_AGREEMENT_RECEIVED = "booking_agreement_received", "Booking agreement received"
+        DEPOSIT_REQUEST_SENT = "deposit_request_sent", "Deposit request sent"
+        DEPOSIT_PAID = "deposit_paid", "Deposit paid"
+        CONFIRMATION_SENT = "confirmation_sent", "Confirmation sent"
+        WEATHER_RESCHEDULE_SENT = "weather_reschedule_sent", "Weather reschedule sent"
+        SHOOT_SCHEDULED = "shoot_scheduled", "Shoot scheduled"
+        SHOOT_COMPLETED = "shoot_completed", "Shoot completed"
+        DELIVERY_SENT = "delivery_sent", "Delivery sent"
+        FOLLOW_UP_SENT = "follow_up_sent", "Follow-up sent"
+        THANK_YOU_SENT = "thank_you_sent", "Thank-you sent"
+        REVIEW_RECEIVED = "review_received", "Review received"
+        STATUS_CHANGED = "status_changed", "Status changed"
+        NOTE = "note", "Note"
+
+    class EventStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+
+    class ActorType(models.TextChoices):
+        SYSTEM = "system", "System"
+        ADMIN = "admin", "Admin"
+        CLIENT = "client", "Client"
+
+    enquiry = models.ForeignKey(
+        RealEstateEnquiry,
+        on_delete=models.CASCADE,
+        related_name="timeline_events",
+    )
+    event_type = models.CharField(max_length=50, choices=EventType.choices)
+    status = models.CharField(
+        max_length=20,
+        choices=EventStatus.choices,
+        default=EventStatus.COMPLETED,
+    )
+    actor_type = models.CharField(
+        max_length=20,
+        choices=ActorType.choices,
+        default=ActorType.SYSTEM,
+    )
+
+    title = models.CharField(max_length=255)
+    notes = models.TextField(blank=True)
+
+    email_template = models.CharField(max_length=100, blank=True)
+    recipient_email = models.EmailField(blank=True)
+    reference_url = models.URLField(blank=True)
+    stripe_session_id = models.CharField(max_length=255, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Real estate timeline event"
+        verbose_name_plural = "Real estate timeline events"
+
+    def __str__(self):
+        return f"{self.get_event_type_display()} - {self.enquiry}"
 

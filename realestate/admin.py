@@ -9,12 +9,79 @@ from .emails import send_templated_email
 from .documents import build_booking_agreement_filename
 from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
+from .models import RealEstateTimelineEvent
 from .payments import calculate_realestate_deposit_amounts
 from .payments import create_realestate_deposit_checkout_session
+from .timeline import record_timeline_event
+
+
+class RealEstateTimelineEventInline(admin.TabularInline):
+    model = RealEstateTimelineEvent
+    extra = 0
+    can_delete = False
+    readonly_fields = (
+        "created_at",
+        "event_type",
+        "status",
+        "actor_type",
+        "title",
+        "email_template",
+        "recipient_email",
+        "reference_url",
+        "stripe_session_id",
+        "created_by",
+        "notes",
+    )
+    fields = readonly_fields
+    ordering = ("-created_at",)
+    show_change_link = True
 
 
 @admin.register(RealEstateEnquiry, site=custom_admin_site)
 class RealEstateEnquiryAdmin(admin.ModelAdmin):
+    EMAIL_TIMELINE_EVENTS = {
+        "quote": (
+            RealEstateTimelineEvent.EventType.QUOTE_SENT,
+            "Quote email sent",
+            "",
+        ),
+        "booking_agreement": (
+            RealEstateTimelineEvent.EventType.BOOKING_AGREEMENT_SENT,
+            "Booking agreement email sent",
+            "booking_agreement_link",
+        ),
+        "deposit_request": (
+            RealEstateTimelineEvent.EventType.DEPOSIT_REQUEST_SENT,
+            "Deposit request email sent",
+            "deposit_payment_link",
+        ),
+        "confirmation": (
+            RealEstateTimelineEvent.EventType.CONFIRMATION_SENT,
+            "Confirmation email sent",
+            "",
+        ),
+        "weather_reschedule": (
+            RealEstateTimelineEvent.EventType.WEATHER_RESCHEDULE_SENT,
+            "Weather reschedule email sent",
+            "",
+        ),
+        "delivery": (
+            RealEstateTimelineEvent.EventType.DELIVERY_SENT,
+            "Delivery email sent",
+            "delivery_link",
+        ),
+        "follow_up": (
+            RealEstateTimelineEvent.EventType.FOLLOW_UP_SENT,
+            "Follow-up email sent",
+            "review_link",
+        ),
+        "thank_you": (
+            RealEstateTimelineEvent.EventType.THANK_YOU_SENT,
+            "Thank-you email sent",
+            "review_link",
+        ),
+    }
+
     booking_field_help_texts = {
         "booking_agreement_link": (
             "Optional future e-signature/external signing URL. The Booking "
@@ -79,6 +146,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "send_weather_reschedule_email",
         "send_thank_you_email",
     )
+    inlines = (RealEstateTimelineEventInline,)
     fieldsets = (
         (
             "Contact",
@@ -167,6 +235,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         reply_to_email = get_realestate_reply_to_email()
         return [reply_to_email] if reply_to_email else []
 
+    def _date_key(self, value):
+        if value is None:
+            return ""
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
     def formfield_for_dbfield(self, db_field, request, **kwargs):
         formfield = super().formfield_for_dbfield(db_field, request, **kwargs)
         if formfield and db_field.name in self.booking_field_help_texts:
@@ -189,6 +262,39 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             except ValueError:
                 pass
         return context
+
+    def _record_email_timeline_event(
+        self,
+        enquiry,
+        request,
+        *,
+        template_base,
+        email,
+        context,
+        status,
+        notes="",
+    ):
+        event_config = self.EMAIL_TIMELINE_EVENTS.get(template_base)
+        if not event_config:
+            return
+        event_type, title, reference_context_key = event_config
+        record_timeline_event(
+            enquiry,
+            event_type,
+            status=status,
+            actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+            title=title,
+            notes=notes,
+            email_template=template_base,
+            recipient_email=email,
+            reference_url=context.get(reference_context_key, "")
+            if reference_context_key
+            else "",
+            stripe_session_id=getattr(enquiry, "stripe_deposit_session_id", "")
+            if template_base == "deposit_request"
+            else "",
+            created_by=getattr(request, "user", None),
+        )
 
     def _send_email_action(
         self,
@@ -256,9 +362,26 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     reply_to=self._get_reply_to(),
                     attachments=attachments,
                 )
+                self._record_email_timeline_event(
+                    enquiry,
+                    request,
+                    template_base=template_base,
+                    email=email,
+                    context=context,
+                    status=RealEstateTimelineEvent.EventStatus.SENT,
+                )
                 sent_count += 1
             except Exception as exc:
                 failed_count += 1
+                self._record_email_timeline_event(
+                    enquiry,
+                    request,
+                    template_base=template_base,
+                    email=email,
+                    context=context,
+                    status=RealEstateTimelineEvent.EventStatus.FAILED,
+                    notes=f"{exc.__class__.__name__}: {exc}",
+                )
                 warnings.append(
                     f"{enquiry}: {description.lower()} failed ({exc.__class__.__name__}: {exc})."
                 )
@@ -360,9 +483,26 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     context=build_realestate_email_context(enquiry, **context),
                     reply_to=self._get_reply_to(),
                 )
+                self._record_email_timeline_event(
+                    enquiry,
+                    request,
+                    template_base="deposit_request",
+                    email=email,
+                    context=context,
+                    status=RealEstateTimelineEvent.EventStatus.SENT,
+                )
                 sent_count += 1
             except Exception as exc:
                 failed_count += 1
+                self._record_email_timeline_event(
+                    enquiry,
+                    request,
+                    template_base="deposit_request",
+                    email=email,
+                    context=context,
+                    status=RealEstateTimelineEvent.EventStatus.FAILED,
+                    notes=f"{exc.__class__.__name__}: {exc}",
+                )
                 warnings.append(
                     f"{enquiry}: deposit request email failed ({exc.__class__.__name__}: {exc})."
                 )
@@ -468,3 +608,69 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 else ""
             ],
         )
+
+    def save_model(self, request, obj, form, change):
+        previous = None
+        if change and obj.pk:
+            previous = RealEstateEnquiry.objects.filter(pk=obj.pk).first()
+
+        super().save_model(request, obj, form, change)
+
+        if previous is None:
+            return
+
+        if (
+            not previous.booking_agreement_received
+            and obj.booking_agreement_received
+        ):
+            record_timeline_event(
+                obj,
+                RealEstateTimelineEvent.EventType.BOOKING_AGREEMENT_RECEIVED,
+                status=RealEstateTimelineEvent.EventStatus.COMPLETED,
+                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+                title="Booking agreement marked as received",
+                created_by=getattr(request, "user", None),
+            )
+
+        shoot_date_key = self._date_key(obj.shoot_date)
+        previous_shoot_date_key = self._date_key(previous.shoot_date)
+        if shoot_date_key and shoot_date_key != previous_shoot_date_key:
+            record_timeline_event(
+                obj,
+                RealEstateTimelineEvent.EventType.SHOOT_SCHEDULED,
+                status=RealEstateTimelineEvent.EventStatus.COMPLETED,
+                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+                title="Shoot scheduled",
+                notes=f"Shoot date: {shoot_date_key}",
+                created_by=getattr(request, "user", None),
+            )
+
+
+@admin.register(RealEstateTimelineEvent, site=custom_admin_site)
+class RealEstateTimelineEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "enquiry",
+        "event_type",
+        "status",
+        "actor_type",
+        "title",
+        "created_by",
+    )
+    list_filter = (
+        "event_type",
+        "status",
+        "actor_type",
+        "created_at",
+    )
+    search_fields = (
+        "title",
+        "notes",
+        "recipient_email",
+        "enquiry__name",
+        "enquiry__email",
+        "enquiry__property_address",
+    )
+    readonly_fields = (
+        "created_at",
+    )
