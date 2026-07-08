@@ -61,7 +61,7 @@ The project uses Django ORM models across five domain apps. In `settings.py`, th
 - Purpose: Shipping price matrix by print template + destination + method.
 - Key fields:
   - `product` (FK to `PrintTemplate`)
-  - `country` (`IE`/`US`)
+  - `country` (`IE`/`US`/`AU`/`RO`)
   - `method` (`budget`/`standard`/`express`)
   - `cost`
 - Constraints:
