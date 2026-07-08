@@ -113,6 +113,26 @@ class CheckoutCartCanonicalizationTests(SimpleTestCase):
 
 
 class PhysicalAddressValidationTests(SimpleTestCase):
+    def test_supported_shipping_countries_are_accepted(self):
+        cases = [
+            ("IE", "Dublin", "D01 F5P2", "Dublin"),
+            ("US", "Austin", "73301", "TX"),
+            ("AU", "Sydney", "2000", "NSW"),
+            ("RO", "Bucharest", "010071", ""),
+        ]
+
+        for country, town, postcode, county in cases:
+            with self.subTest(country=country):
+                errors = validate_physical_shipping_address(
+                    country=country,
+                    line1="123 Test St",
+                    town=town,
+                    postcode=postcode,
+                    county=county,
+                )
+
+                self.assertEqual(errors, {})
+
     def test_valid_us_zip_five_digit(self):
         errors = validate_physical_shipping_address(
             country="US",
@@ -161,6 +181,61 @@ class PhysicalAddressValidationTests(SimpleTestCase):
         )
         self.assertIn("postcode", errors)
 
+    def test_valid_au_address_requires_four_digit_postcode_and_state(self):
+        errors = validate_physical_shipping_address(
+            country="AU",
+            line1="1 George Street",
+            town="Sydney",
+            postcode="2000",
+            county="NSW",
+        )
+
+        self.assertEqual(errors, {})
+
+    def test_au_missing_state_territory_is_rejected(self):
+        errors = validate_physical_shipping_address(
+            country="AU",
+            line1="1 George Street",
+            town="Sydney",
+            postcode="2000",
+            county="",
+        )
+
+        self.assertIn("county", errors)
+
+    def test_au_invalid_postcode_is_rejected(self):
+        errors = validate_physical_shipping_address(
+            country="AU",
+            line1="1 George Street",
+            town="Sydney",
+            postcode="20000",
+            county="NSW",
+        )
+
+        self.assertIn("postcode", errors)
+
+    def test_valid_ro_address_does_not_require_county(self):
+        errors = validate_physical_shipping_address(
+            country="RO",
+            line1="1 Strada Test",
+            town="Bucharest",
+            postcode="010071",
+            county="",
+        )
+
+        self.assertEqual(errors, {})
+
+    def test_ro_invalid_postcode_is_rejected(self):
+        errors = validate_physical_shipping_address(
+            country="RO",
+            line1="1 Strada Test",
+            town="Bucharest",
+            postcode="01007",
+            county="",
+        )
+
+        self.assertIn("postcode", errors)
+
     def test_missing_required_fields(self):
         errors = validate_physical_shipping_address(
             country="IE",
@@ -207,7 +282,16 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
         def url(self):
             return self._fallback_url
 
-    def _build_order(self, *, bad_asset_url=False, prodigi_sku="ECO-CAN-12X18"):
+    def _build_order(
+        self,
+        *,
+        bad_asset_url=False,
+        prodigi_sku="ECO-CAN-12X18",
+        country="IE",
+        town="Dublin",
+        county="Dublin",
+        postcode="D01 F5P2",
+    ):
         high_res_file = (
             self._BadFileHandle()
             if bad_asset_url
@@ -227,10 +311,10 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             email="buyer@example.com",
             street_address1="1 Test Street",
             street_address2="",
-            town="Dublin",
-            county="Dublin",
-            postcode="D01 F5P2",
-            country="IE",
+            town=town,
+            county=county,
+            postcode=postcode,
+            country=country,
             shipping_method="budget",
             items=self._ItemsManager([item]),
         )
@@ -531,6 +615,26 @@ class ProdigiIntegrationSecurityTests(SimpleTestCase):
             payload["callbackUrl"],
             "https://api.example.com/api/checkout/prodigi/callback/?token=callback-secret",
         )
+
+    @patch("checkout.prodigi.requests.post")
+    def test_create_prodigi_order_uses_selected_destination_country(self, mock_post):
+        mock_response = Mock(status_code=201, headers={})
+        mock_response.json.return_value = {"order": {"id": "ord_prodigi_123"}}
+        mock_post.return_value = mock_response
+
+        with patch.dict(os.environ, {"PRODIGI_API_KEY": "test_key", "PRODIGI_SANDBOX": "True"}, clear=False):
+            create_prodigi_order(
+                self._build_order(
+                    country="AU",
+                    town="Sydney",
+                    county="NSW",
+                    postcode="2000",
+                )
+            )
+
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["recipient"]["address"]["countryCode"], "AU")
+        self.assertEqual(payload["recipient"]["address"]["townOrCity"], "Sydney")
 
     @override_settings(PRODIGI_CALLBACK_BASE_URL="", PRODIGI_CALLBACK_TOKEN="")
     @patch("checkout.prodigi.requests.post")
@@ -2717,7 +2821,17 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.url = reverse("create_payment_intent")
         self.validate_discount_url = reverse("validate_discount")
 
-    def _physical_checkout_payload(self, *, quantity=1, email="buyer@example.com", discount_code=""):
+    def _physical_checkout_payload(
+        self,
+        *,
+        quantity=1,
+        email="buyer@example.com",
+        discount_code="",
+        country="IE",
+        city="Dublin",
+        postal_code="D01 F5P2",
+        state="Dublin",
+    ):
         payload = {
             "cart": [
                 {
@@ -2730,10 +2844,10 @@ class CreatePaymentIntentSecurityTests(TestCase):
                 "email": email,
                 "address": {
                     "line1": "1 Test Street",
-                    "city": "Dublin",
-                    "country": "IE",
-                    "postal_code": "D01 F5P2",
-                    "state": "Dublin",
+                    "city": city,
+                    "country": country,
+                    "postal_code": postal_code,
+                    "state": state,
                 },
             },
         }
@@ -3543,6 +3657,23 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(shipping_quote.delivery_cost, Decimal("8.45"))
         self.assertFalse(shipping_quote.free_shipping_applied)
 
+    def test_calculate_physical_shipping_quote_uses_selected_country(self):
+        ProductShipping.objects.create(
+            product=self.template,
+            country="AU",
+            method="budget",
+            cost=Decimal("17.25"),
+        )
+
+        shipping_quote = calculate_physical_shipping_quote(
+            line_items=[(self.variant, 1)],
+            shipping_country="AU",
+            shipping_method="budget",
+        )
+
+        self.assertEqual(shipping_quote.delivery_cost, Decimal("17.25"))
+        self.assertFalse(shipping_quote.free_shipping_applied)
+
     def test_calculate_physical_shipping_quote_allows_zero_only_for_valid_free_shipping(self):
         shipping_quote = calculate_physical_shipping_quote(
             line_items=[(self.variant, 2)],
@@ -3566,6 +3697,48 @@ class CreatePaymentIntentSecurityTests(TestCase):
                 shipping_country="IE",
                 shipping_method="budget",
             )
+
+    @patch("checkout.views.stripe.PaymentIntent.create")
+    def test_physical_cart_accepts_new_supported_shipping_countries_when_quote_exists(self, mock_create):
+        mock_create.side_effect = [
+            Mock(
+                id="pi_supported_country_checkout_au",
+                client_secret="pi_supported_country_checkout_au_secret_test",
+            ),
+            Mock(
+                id="pi_supported_country_checkout_ro",
+                client_secret="pi_supported_country_checkout_ro_secret_test",
+            ),
+        ]
+        cases = [
+            ("AU", "Sydney", "2000", "NSW", Decimal("17.25")),
+            ("RO", "Bucharest", "010011", "Bucharest", Decimal("12.75")),
+        ]
+
+        for country, city, postal_code, state, cost in cases:
+            with self.subTest(country=country):
+                ProductShipping.objects.update_or_create(
+                    product=self.template,
+                    country=country,
+                    method="budget",
+                    defaults={"cost": cost},
+                )
+                payload = self._physical_checkout_payload(
+                    country=country,
+                    city=city,
+                    postal_code=postal_code,
+                    state=state,
+                )
+
+                response = self.client.post(
+                    self.url,
+                    data=json.dumps(payload),
+                    content_type="application/json",
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["shippingCost"], float(cost))
+
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_physical_cart_cannot_create_payment_intent_when_shipping_rule_missing(self, mock_create):

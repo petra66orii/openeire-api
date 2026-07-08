@@ -173,6 +173,8 @@ class ProductShipping(models.Model):
     COUNTRY_CHOICES = [
         ("IE", "Ireland"),
         ("US", "United States"),
+        ("AU", "Australia"),
+        ("RO", "Romania"),
     ]
     country = models.CharField(max_length=2, choices=COUNTRY_CHOICES)
 

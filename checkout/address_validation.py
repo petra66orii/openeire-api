@@ -4,7 +4,9 @@ import re
 US_ZIP_RE = re.compile(r"^\d{5}(?:-\d{4})?$")
 # Irish routing key is one letter + two digits, except special Dublin key D6W.
 IE_EIRCODE_RE = re.compile(r"^(?:[AC-FHKNPRTV-Y]\d{2}|D6W)[AC-FHKNPRTV-Y0-9]{4}$")
-ALLOWED_PHYSICAL_SHIPPING_COUNTRIES = {"IE", "US"}
+AU_POSTCODE_RE = re.compile(r"^\d{4}$")
+RO_POSTCODE_RE = re.compile(r"^\d{6}$")
+ALLOWED_PHYSICAL_SHIPPING_COUNTRIES = {"IE", "US", "AU", "RO"}
 
 
 def _clean(value):
@@ -35,8 +37,8 @@ def validate_physical_shipping_address(*, country, line1, town, postcode, county
 
     if country_code not in ALLOWED_PHYSICAL_SHIPPING_COUNTRIES:
         errors["country"] = (
-            f"Physical products can currently only be shipped to Ireland (IE) "
-            f"or the US. You selected {country_code}."
+            f"Physical products can currently only be shipped to Ireland (IE), "
+            f"the US, Australia (AU), or Romania (RO). You selected {country_code}."
         )
         return errors
 
@@ -56,5 +58,13 @@ def validate_physical_shipping_address(*, country, line1, town, postcode, county
         normalized_eircode = clean_postcode.replace(" ", "").upper()
         if clean_postcode and not IE_EIRCODE_RE.match(normalized_eircode):
             errors["postcode"] = "Enter a valid Irish Eircode (e.g., D01 F5P2)."
+    elif country_code == "AU":
+        if not clean_county:
+            errors["county"] = "State/Territory is required for Australian shipping addresses."
+        if clean_postcode and not AU_POSTCODE_RE.match(clean_postcode):
+            errors["postcode"] = "Enter a valid Australian postcode (4 digits, e.g., 2000)."
+    elif country_code == "RO":
+        if clean_postcode and not RO_POSTCODE_RE.match(clean_postcode):
+            errors["postcode"] = "Enter a valid Romanian postcode (6 digits, e.g., 010071)."
 
     return errors
