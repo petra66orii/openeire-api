@@ -47,7 +47,7 @@ def get_frontend_url():
     if frontend_url:
         return str(frontend_url).rstrip("/")
     if getattr(settings, "DEBUG", False) or getattr(settings, "IS_TEST_ENV", False):
-        return "http://localhost:5173"
+        return "http://localhost:3000"
     raise ImproperlyConfigured("FRONTEND_URL must be configured when DEBUG is False.")
 
 

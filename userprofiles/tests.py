@@ -63,7 +63,7 @@ class PasswordResetRequestTests(TestCase):
 class FrontendUrlConfigurationTests(TestCase):
     @override_settings(FRONTEND_URL=None, DEBUG=True, IS_TEST_ENV=False)
     def test_get_frontend_url_defaults_to_localhost_in_debug(self):
-        self.assertEqual(get_frontend_url(), "http://localhost:5173")
+        self.assertEqual(get_frontend_url(), "http://localhost:3000")
 
     @override_settings(FRONTEND_URL=None, DEBUG=False, IS_TEST_ENV=False)
     def test_get_frontend_url_requires_configuration_when_debug_is_false(self):
