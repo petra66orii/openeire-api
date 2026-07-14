@@ -965,7 +965,7 @@ class StripeWebhookLicenseTests(TestCase):
                     "id": "cs_realestate_deposit",
                     "payment_status": "paid",
                     "payment_intent": "pi_realestate_deposit",
-                    "amount_total": 14723,
+                    "amount_total": 11970,
                     "currency": "eur",
                     "metadata": {
                         "purpose": "realestate_deposit",
@@ -1030,7 +1030,7 @@ class StripeWebhookLicenseTests(TestCase):
             "id": "cs_realestate_deposit",
             "payment_status": "paid",
             "payment_intent": "pi_realestate_deposit",
-            "amount_total": 14723,
+            "amount_total": 11970,
             "currency": "eur",
             "metadata": {
                 "purpose": "realestate_deposit",

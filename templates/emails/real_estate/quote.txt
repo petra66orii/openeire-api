@@ -8,11 +8,12 @@ Package: {{ package_name|default:"Not specified" }}
 {% if addons %}Add-ons: {% for addon in addons %}{{ addon }}{% if not forloop.last %}; {% endif %}{% endfor %}
 {% endif %}{% if quote_total or vat_total or total_including_vat or deposit_amount or balance_due %}
 Quote summary
-{% if quote_total %}Quote total (ex VAT): {{ quote_total }}
-{% endif %}{% if vat_total %}VAT (23%): {{ vat_total }}
-{% endif %}{% if total_including_vat %}Total incl. VAT: {{ total_including_vat }}
+{% if quote_total %}{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}: {{ quote_total }}
+{% endif %}{% if vat_total %}VAT: {{ vat_total }}
+{% endif %}{% if total_including_vat %}Total payable: {{ total_including_vat }}
 {% endif %}{% if deposit_amount %}Deposit required: {{ deposit_amount }}
 {% endif %}{% if balance_due %}Balance on delivery: {{ balance_due }}
+{% endif %}{% if not vat_registered %}{{ vat_notice }}
 {% endif %}{% else %}Quote total: To be confirmed
 {% endif %}
 Ready to proceed?

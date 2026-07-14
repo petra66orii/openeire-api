@@ -138,6 +138,9 @@ def _build_booking_agreement_context(enquiry):
         ),
         "deposit_amount": _format_agreement_money(quote_amounts.get("deposit_amount")),
         "balance_due": _format_agreement_money(quote_amounts.get("balance_due")),
+        "vat_registered": quote_amounts.get("vat_registered", False),
+        "price_input_is_gross": quote_amounts.get("price_input_is_gross", True),
+        "vat_notice": "VAT not applicable — supplier not VAT registered",
     }
 
 

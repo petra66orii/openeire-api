@@ -135,6 +135,15 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "updated_at",
         "stripe_deposit_session_id",
         "deposit_paid_at",
+        "pricing_snapshot_version",
+        "price_input_is_gross",
+        "vat_registered_at_quote",
+        "quoted_vat_rate",
+        "quoted_subtotal",
+        "quoted_vat_amount",
+        "quoted_total",
+        "quoted_deposit_amount",
+        "quoted_balance_due",
     )
     actions = (
         "send_quote_email",
@@ -209,6 +218,27 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "review_link",
                     "booking_agreement_link",
                 )
+            },
+        ),
+        (
+            "Pricing snapshot",
+            {
+                "fields": (
+                    "pricing_snapshot_version",
+                    "price_input_is_gross",
+                    "vat_registered_at_quote",
+                    "quoted_vat_rate",
+                    "quoted_subtotal",
+                    "quoted_vat_amount",
+                    "quoted_total",
+                    "quoted_deposit_amount",
+                    "quoted_balance_due",
+                ),
+                "description": (
+                    "Immutable monetary values used for quote documents, deposits, "
+                    "balances, and Stripe validation. Existing quotes retain their "
+                    "original VAT treatment."
+                ),
             },
         ),
         (

@@ -47,19 +47,19 @@ class RealEstateEnquiry(models.Model):
         OTHER = "other", "Other"
 
     ADD_ON_LABELS = {
-        "additional_stills": "Additional edited stills - EUR 10+VAT per image",
-        "floor_plan": "Floor plan, 2D measured - EUR 75+VAT",
-        "rush_delivery": "Rush same-day delivery, stills only - EUR 75+VAT",
-        "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150+VAT",
-        "additional_social_cuts": "Additional social media cuts - EUR 50+VAT",
-        "travel_supplement": "Travel supplement beyond 40 km - EUR 0.50+VAT per km",
+        "additional_stills": "Additional edited stills - EUR 10 per image",
+        "floor_plan": "Floor plan, 2D measured - EUR 75",
+        "rush_delivery": "Rush same-day delivery, stills only - EUR 75",
+        "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
+        "additional_social_cuts": "Additional social media cuts - EUR 50",
+        "travel_supplement": "Travel supplement beyond 40 km - EUR 0.50 per km",
     }
 
     PACKAGE_SUMMARIES = {
-        PreferredPackage.ESSENTIAL: "Essential - EUR 175+VAT - 10 edited interior/exterior photos",
-        PreferredPackage.STARTER: "Starter - EUR 229+VAT - 20 edited interior/exterior photos + 5-8 aerial drone photos",
-        PreferredPackage.PRO: "Pro - EUR 399+VAT - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
-        PreferredPackage.PREMIUM: "Premium - EUR 579+VAT - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
+        PreferredPackage.ESSENTIAL: "Essential - EUR 175 - 10 edited interior/exterior photos",
+        PreferredPackage.STARTER: "Starter - EUR 229 - 20 edited interior/exterior photos + 5-8 aerial drone photos",
+        PreferredPackage.PRO: "Pro - EUR 399 - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
+        PreferredPackage.PREMIUM: "Premium - EUR 579 - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
         PreferredPackage.CUSTOM: "Custom - POA",
         PreferredPackage.NOT_SURE: "Not sure yet",
     }
@@ -83,6 +83,45 @@ class RealEstateEnquiry(models.Model):
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
     quoted_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    pricing_snapshot_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    price_input_is_gross = models.BooleanField(null=True, blank=True)
+    vat_registered_at_quote = models.BooleanField(null=True, blank=True)
+    quoted_vat_rate = models.DecimalField(
+        max_digits=6,
+        decimal_places=5,
+        null=True,
+        blank=True,
+    )
+    quoted_subtotal = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    quoted_vat_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    quoted_total = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    quoted_deposit_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    quoted_balance_due = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     shoot_date = models.DateField(null=True, blank=True)
     internal_notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

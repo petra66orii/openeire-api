@@ -6,7 +6,10 @@ Booking details
 Reference: {{ booking_reference|default:"To be confirmed" }}
 Property: {{ property_address|default:"Not specified" }}
 Proposed shoot: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
-Quote total (ex VAT): {{ quote_total|default:"To be confirmed" }}
+{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}: {{ quote_total|default:"To be confirmed" }}
+{% if not vat_registered %}VAT: {{ vat_total|default:"€0.00" }}
+{{ vat_notice }}
+{% endif %}
 Deposit request: Sent separately once the signed agreement has been returned.
 
 {% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}

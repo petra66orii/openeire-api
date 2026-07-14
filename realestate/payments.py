@@ -11,15 +11,50 @@ from .emails import get_realestate_site_url
 
 logger = logging.getLogger(__name__)
 
-VAT_RATE = Decimal("0.23")
 DEPOSIT_RATE = Decimal("0.30")
+PRICING_SNAPSHOT_VERSION = 1
+PRICING_SNAPSHOT_FIELDS = (
+    "pricing_snapshot_version",
+    "price_input_is_gross",
+    "vat_registered_at_quote",
+    "quoted_vat_rate",
+    "quoted_subtotal",
+    "quoted_vat_amount",
+    "quoted_total",
+    "quoted_deposit_amount",
+    "quoted_balance_due",
+)
 
 
 def _money(value):
     return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def calculate_realestate_deposit_amounts(enquiry):
+def _snapshot_is_complete(enquiry):
+    return all(getattr(enquiry, field, None) is not None for field in PRICING_SNAPSHOT_FIELDS)
+
+
+def _amounts_from_snapshot(enquiry):
+    quote_total = (
+        enquiry.quoted_total
+        if enquiry.price_input_is_gross
+        else enquiry.quoted_subtotal
+    )
+    return {
+        "quote_total": _money(quote_total),
+        "quote_subtotal": _money(enquiry.quoted_subtotal),
+        "vat_total": _money(enquiry.quoted_vat_amount),
+        "total_including_vat": _money(enquiry.quoted_total),
+        "deposit_amount": _money(enquiry.quoted_deposit_amount),
+        "balance_due": _money(enquiry.quoted_balance_due),
+        "vat_rate": Decimal(enquiry.quoted_vat_rate),
+        "vat_rate_percent": _money(Decimal(enquiry.quoted_vat_rate) * Decimal("100")),
+        "vat_registered": bool(enquiry.vat_registered_at_quote),
+        "price_input_is_gross": bool(enquiry.price_input_is_gross),
+    }
+
+
+def calculate_realestate_deposit_amounts(enquiry, *, persist_snapshot=True):
     if getattr(enquiry, "quoted_price", None) is None:
         raise ValueError("Quoted price is required before creating a deposit checkout.")
 
@@ -27,17 +62,60 @@ def calculate_realestate_deposit_amounts(enquiry):
     if quote_total <= 0:
         raise ValueError("Quoted price must be greater than zero.")
 
-    vat_total = _money(quote_total * VAT_RATE)
-    total_including_vat = _money(quote_total + vat_total)
+    if _snapshot_is_complete(enquiry):
+        return _amounts_from_snapshot(enquiry)
+
+    vat_registered = bool(getattr(settings, "VAT_REGISTERED", False))
+    vat_rate = Decimal(str(getattr(settings, "VAT_RATE", Decimal("0.23"))))
+    price_input_is_gross = bool(
+        getattr(settings, "REALESTATE_PRICE_INPUT_IS_GROSS", True)
+    )
+
+    if not vat_registered:
+        quote_subtotal = quote_total
+        vat_total = Decimal("0.00")
+        total_including_vat = quote_total
+    elif price_input_is_gross:
+        quote_subtotal = _money(quote_total / (Decimal("1.00") + vat_rate))
+        vat_total = _money(quote_total - quote_subtotal)
+        total_including_vat = quote_total
+    else:
+        quote_subtotal = quote_total
+        vat_total = _money(quote_subtotal * vat_rate)
+        total_including_vat = _money(quote_subtotal + vat_total)
+
     deposit_amount = _money(total_including_vat * DEPOSIT_RATE)
     balance_due = _money(total_including_vat - deposit_amount)
 
+    snapshot_values = {
+        "pricing_snapshot_version": PRICING_SNAPSHOT_VERSION,
+        "price_input_is_gross": price_input_is_gross,
+        "vat_registered_at_quote": vat_registered,
+        "quoted_vat_rate": vat_rate if vat_registered else Decimal("0.00"),
+        "quoted_subtotal": quote_subtotal,
+        "quoted_vat_amount": vat_total,
+        "quoted_total": total_including_vat,
+        "quoted_deposit_amount": deposit_amount,
+        "quoted_balance_due": balance_due,
+    }
+    for field, value in snapshot_values.items():
+        setattr(enquiry, field, value)
+    if persist_snapshot and getattr(enquiry, "pk", None):
+        enquiry.save(update_fields=[*PRICING_SNAPSHOT_FIELDS, "updated_at"])
+
     return {
         "quote_total": quote_total,
+        "quote_subtotal": quote_subtotal,
         "vat_total": vat_total,
         "total_including_vat": total_including_vat,
         "deposit_amount": deposit_amount,
         "balance_due": balance_due,
+        "vat_rate": vat_rate if vat_registered else Decimal("0.00"),
+        "vat_rate_percent": _money(
+            (vat_rate if vat_registered else Decimal("0.00")) * Decimal("100")
+        ),
+        "vat_registered": vat_registered,
+        "price_input_is_gross": price_input_is_gross,
     }
 
 

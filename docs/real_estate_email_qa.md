@@ -37,7 +37,8 @@ Use this checklist before enabling or changing any real estate email flow in pro
 - [ ] Quote emails clearly state the booking is confirmed only after both the Booking Agreement is signed and the booking deposit has cleared.
 - [ ] Quote emails include a "Proceed with this quote" mailto button when a reply email is configured.
 - [ ] Quote emails show a safe highlighted fallback message instead of a broken button when no reply email is configured.
-- [ ] Quote price summary displays only supplied rows: quote total ex VAT, VAT, total incl. VAT, deposit required, and balance on delivery.
+- [ ] New quote price summary displays package total, zero VAT, total payable, deposit required, balance on delivery, and the supplier-not-VAT-registered notice.
+- [ ] Historical quote price summaries retain their snapshotted VAT treatment and monetary values.
 - [ ] Quote price summary never shows `€None`, `€.00`, or blank rows.
 - [ ] Quote plain-text emails mirror the HTML quote summary and booking-confirmation conditions.
 - [ ] Booking/deposit emails use "Pay Secure Deposit" as the primary CTA when a deposit link is present.

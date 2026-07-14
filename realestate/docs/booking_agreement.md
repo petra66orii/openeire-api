@@ -48,9 +48,14 @@ and
 The Client books the following package:
 
 **Package name:** {{ package_name }}  
-**Package fee excluding VAT:** {{ quote_total }}  
+**{% if vat_registered and not price_input_is_gross %}Package fee excluding VAT{% else %}Package total{% endif %}:** {{ quote_total }}
+
 **VAT:** {{ vat_total }}  
-**Total fee including VAT:** {{ total_including_vat }}  
+**Total fee payable:** {{ total_including_vat }}
+
+{% if not vat_registered %}*{{ vat_notice }}*
+
+{% endif %}
 **Deposit required:** {{ deposit_amount }}  
 **Balance due on delivery:** {{ balance_due }}
 
