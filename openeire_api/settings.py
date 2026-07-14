@@ -434,7 +434,6 @@ def require_env_in_production(name, value, *, debug, is_test_env):
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://openeire.onrender.com",
 ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -448,7 +447,6 @@ CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:3000",
     "https://openeire.ie",
     "https://openeire.online",
-    "https://openeire.onrender.com",
 ]
 
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
