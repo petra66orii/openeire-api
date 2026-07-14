@@ -24,6 +24,7 @@ from .emails import format_money
 from .emails import send_templated_email
 from .models import RealEstateEnquiry
 from .models import RealEstateTimelineEvent
+from .payments import calculate_realestate_deposit_amounts
 
 
 REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
@@ -34,10 +35,14 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "package_name": "Pro package",
     "addons": ["2D measured floor plan", "Additional social media cuts"],
     "quote_total": "399",
-    "vat_total": "91.77",
-    "total_including_vat": "490.77",
-    "deposit_amount": "147.23",
-    "balance_due": "343.54",
+    "vat_total": "0.00",
+    "total_including_vat": "399.00",
+    "deposit_amount": "119.70",
+    "balance_due": "279.30",
+    "vat_registered": False,
+    "vat_rate_percent": Decimal("0.00"),
+    "price_input_is_gross": True,
+    "vat_notice": "VAT not applicable — supplier not VAT registered",
     "shoot_date": "2026-06-20",
     "shoot_time": "10:00",
     "booking_reference": "RE-123",
@@ -55,6 +60,90 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "cta_url": "",
     "cta_label": "",
 }
+
+
+class RealEstatePricingTests(TestCase):
+    def _enquiry(self, **overrides):
+        values = {
+            "name": "Jane Agent",
+            "email": "jane@example.com",
+            "phone": "+353 87 123 4567",
+            "client_type": RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            "property_address": "Example House",
+            "county": "Galway",
+            "property_type": "Detached house",
+            "preferred_package": RealEstateEnquiry.PreferredPackage.PRO,
+            "quoted_price": Decimal("399.00"),
+            "consent_to_contact": True,
+        }
+        values.update(overrides)
+        return RealEstateEnquiry.objects.create(**values)
+
+    @override_settings(
+        VAT_REGISTERED=False,
+        VAT_RATE=Decimal("0.23"),
+        REALESTATE_PRICE_INPUT_IS_GROSS=True,
+    )
+    def test_vat_disabled_treats_quote_as_final_total_and_persists_snapshot(self):
+        enquiry = self._enquiry()
+
+        amounts = calculate_realestate_deposit_amounts(enquiry)
+
+        self.assertEqual(amounts["quote_total"], Decimal("399.00"))
+        self.assertEqual(amounts["vat_total"], Decimal("0.00"))
+        self.assertEqual(amounts["total_including_vat"], Decimal("399.00"))
+        self.assertEqual(amounts["deposit_amount"], Decimal("119.70"))
+        self.assertEqual(amounts["balance_due"], Decimal("279.30"))
+        enquiry.refresh_from_db()
+        self.assertFalse(enquiry.vat_registered_at_quote)
+        self.assertTrue(enquiry.price_input_is_gross)
+        self.assertEqual(enquiry.quoted_total, Decimal("399.00"))
+
+    @override_settings(
+        VAT_REGISTERED=True,
+        VAT_RATE=Decimal("0.23"),
+        REALESTATE_PRICE_INPUT_IS_GROSS=True,
+    )
+    def test_future_vat_enabled_gross_price_extracts_vat_without_increasing_total(self):
+        amounts = calculate_realestate_deposit_amounts(self._enquiry())
+
+        self.assertEqual(amounts["quote_subtotal"], Decimal("324.39"))
+        self.assertEqual(amounts["vat_total"], Decimal("74.61"))
+        self.assertEqual(amounts["total_including_vat"], Decimal("399.00"))
+        self.assertEqual(amounts["deposit_amount"], Decimal("119.70"))
+
+    @override_settings(
+        VAT_REGISTERED=True,
+        VAT_RATE=Decimal("0.23"),
+        REALESTATE_PRICE_INPUT_IS_GROSS=False,
+    )
+    def test_future_vat_enabled_net_price_adds_configured_vat(self):
+        amounts = calculate_realestate_deposit_amounts(self._enquiry())
+
+        self.assertEqual(amounts["vat_total"], Decimal("91.77"))
+        self.assertEqual(amounts["total_including_vat"], Decimal("490.77"))
+        self.assertEqual(amounts["deposit_amount"], Decimal("147.23"))
+        self.assertEqual(amounts["balance_due"], Decimal("343.54"))
+
+    @override_settings(VAT_REGISTERED=False)
+    def test_existing_legacy_snapshot_is_not_recalculated(self):
+        enquiry = self._enquiry(
+            pricing_snapshot_version=1,
+            price_input_is_gross=False,
+            vat_registered_at_quote=True,
+            quoted_vat_rate=Decimal("0.23"),
+            quoted_subtotal=Decimal("399.00"),
+            quoted_vat_amount=Decimal("91.77"),
+            quoted_total=Decimal("490.77"),
+            quoted_deposit_amount=Decimal("147.23"),
+            quoted_balance_due=Decimal("343.54"),
+        )
+
+        amounts = calculate_realestate_deposit_amounts(enquiry)
+
+        self.assertEqual(amounts["vat_total"], Decimal("91.77"))
+        self.assertEqual(amounts["total_including_vat"], Decimal("490.77"))
+        self.assertEqual(amounts["deposit_amount"], Decimal("147.23"))
 
 
 class RealEstateEmailTemplateTests(SimpleTestCase):
@@ -207,16 +296,16 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertEqual(format_money(None), "")
         self.assertEqual(format_money(""), "")
         self.assertEqual(format_money("null"), "")
-        self.assertEqual(format_money("EUR 399+VAT"), "")
+        self.assertEqual(format_money("EUR 399"), "€399.00")
 
     def test_quote_email_renders_logo_cta_and_price_summary(self):
         context = {
             **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
             "quote_total": "€399.00",
-            "vat_total": "€91.77",
-            "total_including_vat": "€490.77",
-            "deposit_amount": "€147.23",
-            "balance_due": "€343.54",
+            "vat_total": "€0.00",
+            "total_including_vat": "€399.00",
+            "deposit_amount": "€119.70",
+            "balance_due": "€279.30",
         }
 
         html = render_to_string("emails/real_estate/quote.html", context)
@@ -226,19 +315,19 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("Aerial Photography", html)
         self.assertIn("Property Media", html)
         self.assertIn("Visual Licensing", html)
-        self.assertIn("Quote total (ex VAT)", html)
+        self.assertIn("Package total", html)
         self.assertIn("€399.00", html)
-        self.assertIn("VAT (23%)", html)
-        self.assertIn("€91.77", html)
-        self.assertIn("Total incl. VAT", html)
-        self.assertIn("€490.77", html)
+        self.assertIn("VAT", html)
+        self.assertIn("€0.00", html)
+        self.assertIn("Total payable", html)
         self.assertIn("Deposit required", html)
-        self.assertIn("€147.23", html)
+        self.assertIn("€119.70", html)
         self.assertIn("Balance on delivery", html)
-        self.assertIn("€343.54", html)
+        self.assertIn("€279.30", html)
+        self.assertIn("VAT not applicable", html)
         self.assertIn("Proceed with this quote", html)
         self.assertIn("mailto:shoots@openeire.ie", html)
-        self.assertIn("Quote total (ex VAT): €399.00", text)
+        self.assertIn("Package total: €399.00", text)
         self.assertIn("Proceed with this quote: shoots@openeire.ie", text)
 
     def test_quote_email_omits_blank_summary_rows_and_broken_cta(self):
@@ -489,7 +578,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("**Access notes / restrictions:** ______________________________", rendered)
         self.assertIn("**Travel details:** ______________________________", rendered)
         self.assertIn("**VAT:** ______________________________", rendered)
-        self.assertIn("**Total fee including VAT:** ______________________________", rendered)
+        self.assertIn("**Total fee payable:** ______________________________", rendered)
         self.assertIn("**Deposit required:** ______________________________", rendered)
         self.assertIn("**Balance due on delivery:** ______________________________", rendered)
         self.assertNotIn("To be confirmed", rendered)
@@ -513,11 +602,12 @@ class BookingAgreementDocumentTests(TestCase):
 
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("**Package fee excluding VAT:** EUR 399.00", rendered)
-        self.assertIn("**VAT:** EUR 91.77", rendered)
-        self.assertIn("**Total fee including VAT:** EUR 490.77", rendered)
-        self.assertIn("**Deposit required:** EUR 147.23", rendered)
-        self.assertIn("**Balance due on delivery:** EUR 343.54", rendered)
+        self.assertIn("**Package total:** EUR 399.00", rendered)
+        self.assertIn("**VAT:** EUR 0.00", rendered)
+        self.assertIn("**Total fee payable:** EUR 399.00", rendered)
+        self.assertIn("**Deposit required:** EUR 119.70", rendered)
+        self.assertIn("**Balance due on delivery:** EUR 279.30", rendered)
+        self.assertIn("VAT not applicable", rendered)
         self.assertIn("Signed electronically for and on behalf of OpenEire Studios", rendered)
         self.assertIn("Name: Gerard Deely", rendered)
         self.assertIn("Title: OpenEire Studios", rendered)
@@ -601,6 +691,14 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.data["status"], "new")
         self.assertEqual(response.data["message"], "Enquiry received successfully.")
         self.assertNotIn("internal_notes", response.data)
+        for private_pricing_field in (
+            "quoted_price",
+            "quoted_vat_amount",
+            "quoted_total",
+            "quoted_deposit_amount",
+            "quoted_balance_due",
+        ):
+            self.assertNotIn(private_pricing_field, response.data)
         self.assertEqual(
             enquiry.delivery_provider,
             RealEstateEnquiry.DeliveryProvider.MYAIRBRIDGE,
@@ -1061,7 +1159,9 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         mock_session_create.assert_called_once()
         call_kwargs = mock_session_create.call_args.kwargs
         self.assertEqual(call_kwargs["mode"], "payment")
-        self.assertEqual(call_kwargs["line_items"][0]["price_data"]["unit_amount"], 14723)
+        self.assertEqual(call_kwargs["line_items"][0]["price_data"]["unit_amount"], 11970)
+        self.assertNotIn("tax_rates", call_kwargs["line_items"][0])
+        self.assertNotIn("automatic_tax", call_kwargs)
         self.assertEqual(call_kwargs["metadata"]["realestate_enquiry_id"], str(self.enquiry.pk))
         self.assertEqual(call_kwargs["metadata"]["purpose"], "realestate_deposit")
         mock_send_templated_email.assert_called_once()
@@ -1070,8 +1170,8 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             email_context["deposit_payment_link"],
             "https://checkout.stripe.com/c/pay/realestate",
         )
-        self.assertIn("147.23", email_context["deposit_amount"])
-        self.assertIn("343.54", email_context["balance_due"])
+        self.assertIn("119.70", email_context["deposit_amount"])
+        self.assertIn("279.30", email_context["balance_due"])
         event = self.enquiry.timeline_events.get(
             event_type=RealEstateTimelineEvent.EventType.DEPOSIT_REQUEST_SENT
         )

@@ -16,19 +16,19 @@
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px; border-top:1px solid #E5E7EB;">
         {% if quote_total %}
           <tr>
-            <td style="padding:12px 0 0; color:#5F6673;">Quote total (ex VAT)</td>
+            <td style="padding:12px 0 0; color:#5F6673;">{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}</td>
             <td align="right" style="padding:12px 0 0; font-weight:700;">{{ quote_total }}</td>
           </tr>
         {% endif %}
         {% if vat_total %}
           <tr>
-            <td style="padding:8px 0 0; color:#5F6673;">VAT (23%)</td>
+            <td style="padding:8px 0 0; color:#5F6673;">VAT{% if vat_registered %} ({{ vat_rate_percent|floatformat:"-2" }}%){% endif %}</td>
             <td align="right" style="padding:8px 0 0; font-weight:700;">{{ vat_total }}</td>
           </tr>
         {% endif %}
         {% if total_including_vat %}
           <tr>
-            <td style="padding:8px 0 0; color:#5F6673;">Total incl. VAT</td>
+            <td style="padding:8px 0 0; color:#5F6673;">Total payable</td>
             <td align="right" style="padding:8px 0 0; font-weight:800;">{{ total_including_vat }}</td>
           </tr>
         {% endif %}
@@ -44,7 +44,8 @@
             <td align="right" style="padding:8px 0 0; font-weight:700;">{{ balance_due }}</td>
           </tr>
         {% endif %}
-      </table>
+    </table>
+    {% if not vat_registered %}<p style="margin:12px 0 0; color:#5F6673; font-size:13px;">{{ vat_notice }}</p>{% endif %}
     {% endif %}
   </div>
 {% endblock %}

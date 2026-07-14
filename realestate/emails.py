@@ -77,6 +77,8 @@ def format_money(value):
         if not cleaned_value or cleaned_value.lower() in {"none", "null"}:
             return ""
         numeric_value = cleaned_value.replace("€", "").replace(",", "").strip()
+        if numeric_value.upper().startswith("EUR "):
+            numeric_value = numeric_value[4:].strip()
     else:
         numeric_value = str(value).strip()
 
@@ -194,6 +196,10 @@ def build_realestate_email_context(enquiry, **overrides):
         "total_including_vat": "",
         "deposit_amount": "",
         "balance_due": "",
+        "vat_registered": False,
+        "vat_rate_percent": Decimal("0.00"),
+        "price_input_is_gross": True,
+        "vat_notice": "VAT not applicable — supplier not VAT registered",
         "shoot_date": _format_date(getattr(enquiry, "shoot_date", None)),
         "shoot_time": "",
         "booking_reference": (

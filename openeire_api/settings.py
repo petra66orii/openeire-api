@@ -1,5 +1,6 @@
 import os
 import logging
+from decimal import Decimal
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
@@ -616,6 +617,16 @@ def _stripe_payment_method_types_from_env(raw_value):
 
 STRIPE_PAYMENT_METHOD_TYPES = _stripe_payment_method_types_from_env(
     os.getenv("STRIPE_PAYMENT_METHOD_TYPES", "card")
+)
+
+# Real-estate prices are advertised and entered as final customer totals. Keep
+# the VAT capability configurable so registration can be enabled later without
+# changing historical quote snapshots.
+VAT_REGISTERED = env_bool(os.getenv("VAT_REGISTERED"), default=False)
+VAT_RATE = Decimal(os.getenv("VAT_RATE", "0.23"))
+REALESTATE_PRICE_INPUT_IS_GROSS = env_bool(
+    os.getenv("REALESTATE_PRICE_INPUT_IS_GROSS"),
+    default=True,
 )
 CHECKOUT_TERMS_VERSION = os.getenv("CHECKOUT_TERMS_VERSION", "2026-06-23")
 CHECKOUT_PRIVACY_VERSION = os.getenv("CHECKOUT_PRIVACY_VERSION", "2026-06-23")

@@ -12,7 +12,8 @@
     <p style="margin:0 0 6px;"><strong>Reference:</strong> {{ booking_reference|default:"To be confirmed" }}</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Proposed shoot:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
-    <p style="margin:0 0 6px;"><strong>Quote total (ex VAT):</strong> {{ quote_total|default:"To be confirmed" }}</p>
+    <p style="margin:0 0 6px;"><strong>{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}:</strong> {{ quote_total|default:"To be confirmed" }}</p>
+    {% if not vat_registered %}<p style="margin:0 0 6px;"><strong>VAT:</strong> {{ vat_total|default:"€0.00" }}</p><p style="margin:0 0 6px;">{{ vat_notice }}</p>{% endif %}
     <p style="margin:0;"><strong>Deposit request:</strong> Sent separately once the signed agreement has been returned.</p>
   </div>
 {% endblock %}

@@ -133,6 +133,9 @@ Stripe:
 - `STRIPE_PUBLIC_KEY`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `VAT_REGISTERED` (defaults to `False`)
+- `VAT_RATE` (defaults to `0.23`)
+- `REALESTATE_PRICE_INPUT_IS_GROSS` (defaults to `True`; advertised and manually entered real-estate prices are final totals)
 - `STRIPE_TIMEOUT_SECONDS`
 - `STRIPE_MAX_NETWORK_RETRIES`
 - `STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS`

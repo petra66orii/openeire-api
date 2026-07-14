@@ -8,6 +8,8 @@ Property: {{ property_address|default:"Not specified" }}
 Proposed shoot: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
 Deposit: {{ deposit_amount|default:"To be confirmed" }}
 Balance due: {{ balance_due|default:"To be confirmed" }}
+{% if not vat_registered %}{{ vat_notice }}
+{% endif %}
 
 {% if deposit_payment_link %}Pay Secure Deposit: {{ deposit_payment_link }}
 {% endif %}{% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
