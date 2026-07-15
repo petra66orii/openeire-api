@@ -1,6 +1,6 @@
 Hi {{ first_name|default:"there" }},
 
-Thanks for getting in touch with OpenEire Studios. We have received your property media request and will review the package, property details and preferred timing.
+Thanks for getting in touch with OpenÉire Studios. We have received your property media request and will review the package, property details and preferred timing.
 
 Request summary
 Property: {{ property_address|default:"Not specified" }}
@@ -9,7 +9,7 @@ Preferred date: {{ shoot_date|default:"Not specified" }}
 
 We will come back to you within 24 hours with next steps. If anything changes in the meantime, simply reply to this email.
 
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie
 Serving Connacht and wider Ireland by arrangement

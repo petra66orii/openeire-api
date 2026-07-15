@@ -1,0 +1,218 @@
+<style>
+  .re-ops {
+    margin: 0 0 1.5rem;
+    padding: 1rem;
+    border: 1px solid var(--hairline-color);
+    border-radius: 8px;
+    background: var(--body-bg);
+  }
+  .re-ops h2 {
+    margin: 0 0 .75rem;
+    font-size: 1.25rem;
+  }
+  .re-ops-grid {
+    display: grid;
+    gap: .75rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+  .re-ops-card {
+    border: 1px solid var(--hairline-color);
+    border-radius: 6px;
+    padding: .85rem;
+    background: var(--darkened-bg);
+  }
+  .re-ops-card h3 {
+    margin: 0 0 .5rem;
+    font-size: .85rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--body-quiet-color);
+  }
+  .re-ops-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: .35rem .75rem;
+    margin: 0;
+  }
+  .re-ops-list dt {
+    margin: 0;
+    color: var(--body-quiet-color);
+  }
+  .re-ops-list dd {
+    margin: 0;
+    font-weight: 600;
+  }
+  .re-ops-badge {
+    display: inline-block;
+    padding: .15rem .45rem;
+    border-radius: 999px;
+    background: var(--selected-bg);
+    color: var(--body-fg);
+    font-size: .78rem;
+    font-weight: 700;
+  }
+  .re-ops-next {
+    margin-top: .9rem;
+    padding: .85rem;
+    border-left: 4px solid var(--primary);
+    background: var(--selected-row);
+  }
+  .re-ops-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+    margin: .85rem 0 0;
+  }
+  .re-ops-button {
+    display: inline-block;
+    padding: .45rem .7rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--button-bg);
+    color: var(--button-fg) !important;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .re-ops-button.primary {
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+  .re-ops-button.danger {
+    background: #ba2121;
+    border-color: #ba2121;
+  }
+  .re-ops-table-wrap {
+    overflow-x: auto;
+    margin-top: 1rem;
+  }
+  .re-ops-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .re-ops-table th,
+  .re-ops-table td {
+    padding: .45rem;
+    border-bottom: 1px solid var(--hairline-color);
+    text-align: left;
+    white-space: nowrap;
+  }
+</style>
+
+<section class="re-ops">
+  <h2>Real-estate operations hub</h2>
+
+  <div class="re-ops-grid">
+    <div class="re-ops-card">
+      <h3>Booking</h3>
+      <dl class="re-ops-list">
+        <dt>Status</dt><dd><span class="re-ops-badge">{{ hub.booking.status }}</span></dd>
+        <dt>Shoot</dt><dd>{{ hub.booking.shoot }}</dd>
+        <dt>Package</dt><dd>{{ hub.booking.package }}</dd>
+        <dt>Arrangement</dt><dd>{{ hub.booking.arrangement }}</dd>
+        <dt>Expected method</dt><dd>{{ hub.booking.expected_method }}</dd>
+        <dt>Agreement</dt><dd>{{ hub.booking.agreement }}</dd>
+      </dl>
+    </div>
+
+    <div class="re-ops-card">
+      <h3>Financial</h3>
+      <dl class="re-ops-list">
+        <dt>Total</dt><dd>{{ hub.financial.total }}</dd>
+        <dt>Deposit required</dt><dd>{{ hub.financial.deposit_required }}</dd>
+        <dt>Deposit paid</dt><dd>{{ hub.financial.deposit_paid }}</dd>
+        <dt>Balance due</dt><dd>{{ hub.financial.balance_due }}</dd>
+        <dt>Paid</dt><dd>{{ hub.financial.paid }}</dd>
+        <dt>Outstanding</dt><dd>{{ hub.financial.outstanding }}</dd>
+        <dt>Invoice</dt><dd>{{ hub.financial.invoice_numbers }}</dd>
+        <dt>Stripe invoice</dt><dd>{{ hub.financial.stripe_status }}</dd>
+        <dt>Payment</dt><dd>{{ hub.financial.payment_status }}</dd>
+      </dl>
+    </div>
+
+    <div class="re-ops-card">
+      <h3>Delivery</h3>
+      <dl class="re-ops-list">
+        <dt>State</dt><dd><span class="re-ops-badge">{{ hub.delivery.state }}</span></dd>
+        <dt>Reason</dt><dd>{{ hub.delivery.reason }}</dd>
+        <dt>Provider</dt><dd>{{ hub.delivery.provider }}</dd>
+        <dt>Link</dt><dd>{{ hub.delivery.link_status }}</dd>
+        <dt>Override</dt><dd>{{ hub.delivery.override }}</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="re-ops-next">
+    <strong>Recommended next step:</strong> {{ hub.recommended.label }}
+  </div>
+
+  <div class="re-ops-actions" aria-label="Real-estate operations actions">
+    {% for button in hub.buttons %}
+      <a class="re-ops-button {{ button.style }}" href="{{ button.href }}">{{ button.label }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="re-ops-table-wrap">
+    <h3>Related invoices</h3>
+    <table class="re-ops-table">
+      <thead><tr><th>Invoice</th><th>Type</th><th>Status</th><th>Total</th><th>Paid</th><th>Outstanding</th><th>Stripe</th><th>Links</th></tr></thead>
+      <tbody>
+        {% for invoice in hub.invoices %}
+          <tr>
+            <td><a href="{{ invoice.url }}">{{ invoice.number }}</a></td>
+            <td>{{ invoice.type }}</td>
+            <td>{{ invoice.status }}</td>
+            <td>{{ invoice.total }}</td>
+            <td>{{ invoice.paid }}</td>
+            <td>{{ invoice.outstanding }}</td>
+            <td>{{ invoice.stripe_status }}</td>
+            <td>{% if invoice.hosted_url %}<a href="{{ invoice.hosted_url }}" target="_blank" rel="noopener noreferrer">Hosted</a>{% endif %}{% if invoice.pdf_url %} <a href="{{ invoice.pdf_url }}" target="_blank" rel="noopener noreferrer">PDF</a>{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="8">No invoices yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="re-ops-table-wrap">
+    <h3>Related payments</h3>
+    <table class="re-ops-table">
+      <thead><tr><th>Invoice</th><th>Method</th><th>Status</th><th>Amount</th><th>Date</th><th>Receipt</th><th>Reference</th></tr></thead>
+      <tbody>
+        {% for payment in hub.payments %}
+          <tr>
+            <td><a href="{{ payment.invoice_url }}">{{ payment.invoice_number }}</a></td>
+            <td>{{ payment.method }}</td>
+            <td>{{ payment.status }}</td>
+            <td>{{ payment.amount }}</td>
+            <td>{{ payment.paid_at|default:"—" }}</td>
+            <td>{{ payment.receipt_number }}</td>
+            <td>{{ payment.reference }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="7">No payments yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="re-ops-table-wrap">
+    <h3>Delivery overrides</h3>
+    <table class="re-ops-table">
+      <thead><tr><th>State</th><th>Reason</th><th>Created by</th><th>Created</th><th>Revoked</th></tr></thead>
+      <tbody>
+        {% for override in hub.overrides %}
+          <tr>
+            <td>{{ override.state }}</td>
+            <td>{{ override.reason }}</td>
+            <td>{{ override.created_by }}</td>
+            <td>{{ override.created_at }}</td>
+            <td>{{ override.revoked_at|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">No delivery overrides.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

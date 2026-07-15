@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>Outstanding: EUR {{ invoice.amount_outstanding }}</p>
+<form method="post">{% csrf_token %}
+  {{ form.as_p }}
+  <input type="hidden" name="action" value="record_manual_payment_action">
+  <input type="hidden" name="_selected_action" value="{{ invoice.pk }}">
+  <button type="submit" name="confirm_manual_payment" value="1">Record payment</button>
+</form>
+{% endblock %}

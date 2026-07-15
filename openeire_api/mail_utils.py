@@ -19,7 +19,8 @@ def extract_email_address(value, fallback_address=DEFAULT_STUDIO_EMAIL):
 
 def format_branded_sender(value, fallback_address=DEFAULT_STUDIO_EMAIL):
     address = extract_email_address(value, fallback_address=fallback_address)
-    return formataddr((BRAND_DISPLAY_NAME, address))
+    display_name = getattr(settings, "BUSINESS_DISPLAY_NAME", BRAND_DISPLAY_NAME)
+    return formataddr((display_name, address))
 
 
 def get_default_from_email():

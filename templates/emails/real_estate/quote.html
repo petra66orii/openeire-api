@@ -1,6 +1,6 @@
 {% extends "emails/base_email.html" %}
 {% block title %}Property media quote{% endblock %}
-{% block preheader %}Your property media quote from OpenEire Studios is ready to review.{% endblock %}
+{% block preheader %}Your property media quote from OpenÉire Studios is ready to review.{% endblock %}
 {% block heading %}Your property media quote{% endblock %}
 {% block body %}
   <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
@@ -44,20 +44,31 @@
             <td align="right" style="padding:8px 0 0; font-weight:700;">{{ balance_due }}</td>
           </tr>
         {% endif %}
+        {% if not is_deposit_then_balance and payment_due_date %}
+          <tr>
+            <td style="padding:8px 0 0; color:#5F6673;">Payment due</td>
+            <td align="right" style="padding:8px 0 0; font-weight:700;">{{ payment_due_date }}</td>
+          </tr>
+        {% endif %}
     </table>
     {% if not vat_registered %}<p style="margin:12px 0 0; color:#5F6673; font-size:13px;">{{ vat_notice }}</p>{% endif %}
+    <p style="margin:12px 0 0; color:#5F6673; font-size:13px;">{{ quote_payment_rule }}</p>
     {% endif %}
   </div>
 {% endblock %}
 {% block cta %}
   <div style="margin-top:24px; padding:20px; background:#0F172A; border:1px solid #1F2937; border-radius:16px; color:#FAFAF9;">
     <p style="margin:0 0 8px; font-size:18px; font-weight:800;">Ready to proceed?</p>
-    <p style="margin:0 0 14px; color:#D1D5DB; line-height:1.6;">Reply to this email and we'll issue the Booking Agreement and booking deposit request.</p>
-    <p style="margin:0 0 8px; font-weight:700;">Your booking is only confirmed once BOTH:</p>
-    <ul style="margin:0 0 18px 20px; padding:0; color:#D1D5DB; line-height:1.6;">
-      <li>the Booking Agreement has been signed</li>
-      <li>the booking deposit has cleared</li>
-    </ul>
+    <p style="margin:0 0 14px; color:#D1D5DB; line-height:1.6;">{% if deposit_amount %}Reply to this email and we'll issue the Booking Agreement and booking deposit request.{% else %}Reply to this email and we'll issue the Booking Agreement with the selected payment arrangement.{% endif %}</p>
+    {% if deposit_amount %}
+      <p style="margin:0 0 8px; font-weight:700;">Your booking is only confirmed once BOTH:</p>
+      <ul style="margin:0 0 18px 20px; padding:0; color:#D1D5DB; line-height:1.6;">
+        <li>the Booking Agreement has been signed</li>
+        <li>the booking deposit has cleared</li>
+      </ul>
+    {% else %}
+      <p style="margin:0 0 18px; color:#D1D5DB; line-height:1.6;">{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}</p>
+    {% endif %}
     {% if quote_reply_mailto %}
       <a href="{{ quote_reply_mailto }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Proceed with this quote</a>
     {% else %}

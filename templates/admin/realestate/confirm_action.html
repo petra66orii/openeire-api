@@ -1,0 +1,22 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  {% if invoice %}<p>Invoice: <strong>{{ invoice.invoice_number }}</strong></p>{% endif %}
+  {% if template_base or recipient or amount or due_date %}
+    <div class="module aligned">
+      {% if template_base %}<p><strong>Email template:</strong> {{ template_base }}</p>{% endif %}
+      <p><strong>Payment arrangement:</strong> {{ arrangement }}</p>
+      {% if recipient %}<p><strong>Recipient:</strong> {{ recipient }}</p>{% endif %}
+      {% if amount %}<p><strong>Amount:</strong> {{ amount }}</p>{% endif %}
+      {% if due_date %}<p><strong>Due date:</strong> {{ due_date }}</p>{% endif %}
+    </div>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    {% if invoice %}<input type="hidden" name="invoice" value="{{ invoice.pk }}">{% endif %}
+    <button type="submit" class="{% if danger %}deletelink{% else %}default{% endif %}">Confirm</button>
+    <a href="{% url 'customadmin:realestate_realestateenquiry_change' enquiry.pk %}" class="button cancel-link">Cancel</a>
+  </form>
+{% endblock %}

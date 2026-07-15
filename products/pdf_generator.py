@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape as xml_escape
 from django.conf import settings
 from django.utils import timezone
 from openeire_api.pdf_markdown import render_markdown_to_flowables
+from openeire_api.business_identity import get_business_identity
 
 from .file_access import get_asset_file_name, open_asset_file
 
@@ -28,7 +29,6 @@ from dateutil.relativedelta import relativedelta
 DEFAULT_TERMS_VERSION = getattr(settings, "LICENCE_TERMS_VERSION", "RM-1.0")
 DEFAULT_MASTER_AGREEMENT = getattr(settings, "LICENCE_MASTER_AGREEMENT", None)
 DEFAULT_HASH_MAX_BYTES = int(getattr(settings, "LICENCE_HASH_MAX_BYTES", 50 * 1024 * 1024))
-DEFAULT_SIGNATURE_NAME = getattr(settings, "LICENCE_SIGNATURE_NAME", "Gerard Deely")
 DEFAULT_SIGNATURE_TITLE = getattr(settings, "LICENCE_SIGNATURE_TITLE", "Licensing Officer")
 DEFAULT_SIGNATURE_TEXT = getattr(
     settings,
@@ -349,11 +349,13 @@ def generate_licence_certificate_pdf(license_request, issued_at=None, terms_vers
     activation_date = issue_date
     expiry_date = _compute_expiry_date(license_request, issued_at)
 
-    licensor_name = _safe_value(getattr(settings, "LICENSOR_NAME", "OpenÉire Studios"))
-    licensor_registered_name = _optional_safe_value(getattr(settings, "LICENSOR_REGISTERED_NAME", licensor_name)) or licensor_name
-    licensor_address = _optional_safe_value(getattr(settings, "LICENSOR_ADDRESS", ""))
-    licensor_registration = _optional_safe_value(getattr(settings, "LICENSOR_REGISTRATION_NUMBER", ""))
-    licensor_email = _optional_safe_value(getattr(settings, "LICENSOR_CONTACT_EMAIL", settings.DEFAULT_FROM_EMAIL or ""))
+    identity = get_business_identity(private_legal_document=True)
+    licensor_name = _safe_value(identity.display_name)
+    # BUSINESS_LEGAL_NAME is deliberately not used without a separate policy.
+    licensor_registered_name = licensor_name
+    licensor_address = _optional_safe_value(identity.address)
+    licensor_registration = _optional_safe_value(identity.registration_number)
+    licensor_email = _optional_safe_value(identity.email or getattr(settings, "LICENSOR_CONTACT_EMAIL", ""))
     licensor_website = _optional_safe_value(getattr(settings, "LICENSOR_WEBSITE", ""))
 
     licensee_name = _safe_value(license_request.company or license_request.client_name)
@@ -361,7 +363,7 @@ def generate_licence_certificate_pdf(license_request, issued_at=None, terms_vers
     licensee_address = _optional_safe_value("")
     licensee_email = _optional_safe_value(license_request.email)
 
-    signature_name = _safe_value(DEFAULT_SIGNATURE_NAME)
+    signature_name = _safe_value(identity.signatory_name or identity.display_name)
     signature_title = _safe_value(DEFAULT_SIGNATURE_TITLE)
     signature_text = _safe_value(DEFAULT_SIGNATURE_TEXT)
 

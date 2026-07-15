@@ -1,0 +1,21 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Property media invoice{% endblock %}
+{% block preheader %}Your property media invoice is ready.{% endblock %}
+{% block heading %}Your property media invoice is ready{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">Your {{ invoice_type|default:"invoice" }} for {{ property_address|default:"the property" }} is ready.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 6px;"><strong>Invoice:</strong> {{ invoice_number|default:"To be confirmed" }}</p>
+    <p style="margin:0 0 6px;"><strong>Amount outstanding:</strong> {{ outstanding_amount|default:"To be confirmed" }}</p>
+    {% if payment_due_date %}<p style="margin:0 0 6px;"><strong>Due date:</strong> {{ payment_due_date }}</p>{% endif %}
+    <p style="margin:0;">{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}</p>
+  </div>
+{% endblock %}
+{% block cta %}
+  {% if stripe_hosted_invoice_url %}
+    <p style="margin:24px 0 0; text-align:center;"><a href="{{ stripe_hosted_invoice_url }}" style="display:inline-block; background:#16A34A; color:#FFFFFF; padding:14px 22px; border-radius:999px; text-decoration:none; font-weight:800;">Open Invoice</a></p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <form method="post">
+    {% csrf_token %}
+    {% if override %}<input type="hidden" name="override" value="{{ override.pk }}">{% endif %}
+    {{ form.as_p }}
+    <button type="submit" class="{% if danger %}deletelink{% else %}default{% endif %}">Confirm</button>
+    <a href="{% url 'customadmin:realestate_realestateenquiry_change' enquiry.pk %}" class="button cancel-link">Cancel</a>
+  </form>
+{% endblock %}

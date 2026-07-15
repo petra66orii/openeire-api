@@ -1,0 +1,14 @@
+Hi {{ first_name|default:"there" }},
+
+Your {{ invoice_type|default:"invoice" }} for {{ property_address|default:"the property" }} is ready.
+
+Invoice: {{ invoice_number|default:"To be confirmed" }}
+Amount outstanding: {{ outstanding_amount|default:"To be confirmed" }}
+{% if payment_due_date %}Due date: {{ payment_due_date }}
+{% endif %}{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
+
+{% if stripe_hosted_invoice_url %}Open Invoice: {{ stripe_hosted_invoice_url }}
+{% endif %}
+OpenÉire Studios
+studio@openeire.ie
+https://openeire.ie

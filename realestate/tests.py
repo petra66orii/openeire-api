@@ -4,11 +4,13 @@ from unittest.mock import Mock, call, patch
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
 from django.core import mail
 from django.core.cache import caches
 from django.template.loader import get_template, render_to_string
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from openeire_api.admin import custom_admin_site
@@ -19,10 +21,16 @@ from .documents import build_booking_agreement_filename
 from .documents import _build_booking_agreement_context
 from .documents import _load_booking_agreement_template
 from .documents import generate_booking_agreement_pdf
+from .documents import render_booking_agreement_markdown
 from .emails import build_realestate_email_context
 from .emails import format_money
 from .emails import send_templated_email
+from .finance import ensure_invoices_for_arrangement
+from .finance import record_realestate_payment
 from .models import RealEstateEnquiry
+from .models import RealEstateBookingAgreementSnapshot
+from .models import RealEstateInvoice
+from .models import RealEstatePayment
 from .models import RealEstateTimelineEvent
 from .payments import calculate_realestate_deposit_amounts
 
@@ -157,6 +165,11 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         "follow_up",
         "weather_reschedule",
         "thank_you",
+        "invoice_issued",
+        "payment_reminder",
+        "cash_receipt",
+        "payment_received",
+        "overdue_payment",
     )
 
     def test_real_estate_html_and_text_templates_render(self):
@@ -177,8 +190,8 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                     REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
                 )
 
-                self.assertIn("OpenEire Studios", html)
-                self.assertIn("OpenEire Studios", text)
+                self.assertIn("OpenÉire Studios", html)
+                self.assertIn("OpenÉire Studios", text)
                 self.assertIn("Example House, Salthill, Galway", html)
                 self.assertIn("Example House, Salthill, Galway", text)
                 self.assertNotIn("{{", html)
@@ -194,7 +207,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         )
 
         self.assertIn('src="https://openeire.ie/static/emails/openeire-studios-logo.png"', html)
-        self.assertIn('alt="OpenEire Studios"', html)
+        self.assertIn('alt="OpenÉire Studios"', html)
 
     def test_base_template_falls_back_to_text_when_logo_url_missing(self):
         html = render_to_string(
@@ -205,7 +218,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             },
         )
 
-        self.assertIn(">OpenEire Studios<", html)
+        self.assertIn(">OpenÉire Studios<", html)
         self.assertNotIn("<img", html)
 
     def test_real_estate_email_templates_keep_required_flow_wording(self):
@@ -249,11 +262,11 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("Review Booking Agreement:", booking_text)
         self.assertIn("Pay Secure Deposit:", deposit_text)
         self.assertIn(
-            "Your booking remains provisional until the signed agreement has been received and the booking deposit has cleared.",
+            "Your booking is confirmed according to the selected payment arrangement.",
             booking_text,
         )
         self.assertIn(
-            "We have received the signed agreement and deposit in cleared funds",
+            "Your property shoot is now confirmed.",
             confirmation_text,
         )
         self.assertIn("Download Media:", delivery_text)
@@ -265,7 +278,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
 
     @override_settings(
         EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        DEFAULT_FROM_EMAIL="OpenEire Studios <studio@openeire.ie>",
+        DEFAULT_FROM_EMAIL="OpenÉire Studios <studio@openeire.ie>",
     )
     def test_send_templated_email_sends_text_and_html_versions(self):
         mail.outbox = []
@@ -329,6 +342,42 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("mailto:shoots@openeire.ie", html)
         self.assertIn("Package total: €399.00", text)
         self.assertIn("Proceed with this quote: shoots@openeire.ie", text)
+
+    def test_full_on_shoot_day_email_templates_render_payment_rule(self):
+        context = {
+            **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+            "deposit_amount": "",
+            "balance_due": "",
+            "total_required": "€399.00",
+            "payment_arrangement_label": "Full payment on shoot day",
+            "is_full_on_shoot_day": True,
+            "payment_due_date": "21 July 2026",
+            "expected_payment_method": "Cash",
+            "booking_confirmation_rule": (
+                "Booking may be confirmed while unpaid under the approved "
+                "full-payment-on-shoot-day arrangement."
+            ),
+            "quote_payment_rule": (
+                "The full amount is due on the shoot date; final delivery remains locked "
+                "until full payment is recorded."
+            ),
+        }
+
+        quote_html = render_to_string("emails/real_estate/quote.html", context)
+        quote_text = render_to_string("emails/real_estate/quote.txt", context)
+        booking_html = render_to_string("emails/real_estate/booking_agreement.html", context)
+        booking_text = render_to_string("emails/real_estate/booking_agreement.txt", context)
+        confirmation_text = render_to_string("emails/real_estate/confirmation.txt", context)
+        confirmation_rule = context["booking_confirmation_rule"]
+
+        self.assertIn("Full payment on shoot day", confirmation_text)
+        self.assertIn("€399.00 on 21 July 2026 by Cash", confirmation_text)
+        self.assertIn("full amount is due on the shoot date", quote_html)
+        self.assertIn("Payment due: 21 July 2026", quote_text)
+        self.assertEqual(booking_html.count(confirmation_rule), 1)
+        self.assertEqual(booking_text.count(confirmation_rule), 1)
+        self.assertNotIn("Deposit required", quote_text)
+        self.assertNotIn("Balance on delivery", quote_text)
 
     def test_quote_email_omits_blank_summary_rows_and_broken_cta(self):
         context = {
@@ -580,7 +629,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("**VAT:** ______________________________", rendered)
         self.assertIn("**Total fee payable:** ______________________________", rendered)
         self.assertIn("**Deposit required:** ______________________________", rendered)
-        self.assertIn("**Balance due on delivery:** ______________________________", rendered)
+        self.assertIn("**Remaining balance:** ______________________________", rendered)
         self.assertNotIn("To be confirmed", rendered)
         self.assertNotIn("To be confirmed by the Client", rendered)
 
@@ -606,11 +655,11 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("**VAT:** EUR 0.00", rendered)
         self.assertIn("**Total fee payable:** EUR 399.00", rendered)
         self.assertIn("**Deposit required:** EUR 119.70", rendered)
-        self.assertIn("**Balance due on delivery:** EUR 279.30", rendered)
+        self.assertIn("**Remaining balance:** EUR 279.30", rendered)
         self.assertIn("VAT not applicable", rendered)
-        self.assertIn("Signed electronically for and on behalf of OpenEire Studios", rendered)
-        self.assertIn("Name: Gerard Deely", rendered)
-        self.assertIn("Title: OpenEire Studios", rendered)
+        self.assertIn("Signed electronically for and on behalf of OpenÉire Studios", rendered)
+        self.assertIn("Name: Gerry Deely", rendered)
+        self.assertIn("Title: OpenÉire Studios", rendered)
         self.assertIn("Signed by or on behalf of the Client:", rendered)
         self.assertIn("Name: ______________________________", rendered)
         self.assertIn("Title: ______________________________", rendered)
@@ -623,6 +672,88 @@ class BookingAgreementDocumentTests(TestCase):
             "private property owner, the Client may permit one appointed estate agent/auctioneer acting on their behalf",
             rendered,
         )
+
+    def test_full_upfront_agreement_contains_no_deposit_or_balance_wording(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price="399.00",
+            consent_to_contact=True,
+            payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
+            expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.STRIPE,
+        )
+        rendered = self._render_booking_agreement_markdown(enquiry)
+
+        self.assertIn("**Payment arrangement:** Full payment upfront", rendered)
+        self.assertIn("**Full payment due:** EUR 399.00", rendered)
+        self.assertIn("No separate deposit or balance split applies", rendered)
+        self.assertIn("less any amount already paid", rendered)
+        self.assertNotIn("**Deposit required:**", rendered)
+        self.assertNotIn("**Remaining balance:**", rendered)
+
+    def test_full_on_shoot_day_cash_agreement_for_kevin(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Kevin O'Flynn",
+            email="kevin@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Confirmed Pro Shoot",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price="399.00",
+            shoot_date="2026-07-21",
+            consent_to_contact=True,
+            payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.CASH,
+        )
+        rendered = self._render_booking_agreement_markdown(enquiry)
+
+        self.assertIn("**Payment arrangement:** Full payment on shoot day", rendered)
+        self.assertIn("**Full payment due:** EUR 399.00", rendered)
+        self.assertIn("**Payment due date:** 21 July 2026", rendered)
+        self.assertIn("**Expected payment method:** Cash", rendered)
+        self.assertIn("booking may be confirmed after the signed Booking Agreement is received, before payment is made", rendered)
+        self.assertIn("Final high-resolution media and usage rights remain withheld until full payment has been received", rendered)
+        self.assertIn("a receipt will be issued", rendered)
+        self.assertIn("not contingent on the property being sold, let, or otherwise completed", rendered)
+        self.assertNotIn("**Deposit required:**", rendered)
+        self.assertNotIn("**Remaining balance:**", rendered)
+
+    def test_booking_agreement_snapshot_remains_unchanged_after_enquiry_edits(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Kevin O'Flynn",
+            email="kevin@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Confirmed Pro Shoot",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price="399.00",
+            shoot_date="2026-07-21",
+            consent_to_contact=True,
+            payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.CASH,
+        )
+        first = render_booking_agreement_markdown(enquiry)
+        enquiry.payment_due_date = "2026-07-30"
+        enquiry.expected_payment_method = RealEstateEnquiry.ExpectedPaymentMethod.BANK_TRANSFER
+        enquiry.save(update_fields=["payment_due_date", "expected_payment_method"])
+        second = render_booking_agreement_markdown(enquiry)
+
+        self.assertEqual(first, second)
+        snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
+        self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
+        self.assertEqual(snapshot.total_required, Decimal("399.00"))
+        self.assertEqual(snapshot.payment_due_date.isoformat(), "2026-07-21")
+        self.assertEqual(snapshot.expected_payment_method, RealEstateEnquiry.ExpectedPaymentMethod.CASH)
 
 
 class RealEstateTimelineEventTests(TestCase):
@@ -735,7 +866,7 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(client_email.to, ["jane@example.com"])
         self.assertEqual(client_email.reply_to, ["shoots@openeire.ie"])
         self.assertIn(
-            "Property shoot request received - OpenEire Studios",
+            "Property shoot request received - OpenÉire Studios",
             client_email.subject,
         )
         self.assertIn("Example House, Salthill, Galway", client_email.body)
@@ -876,14 +1007,25 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             (
                 "proposed_shoot_date",
                 "booking_agreement_received",
-                "deposit_payment_link",
-                "stripe_deposit_session_id",
-                "deposit_paid",
-                "deposit_paid_at",
                 "delivery_provider",
                 "delivery_link",
                 "review_link",
                 "booking_agreement_link",
+            ),
+        )
+        compatibility_fieldset = next(
+            fieldset
+            for fieldset in self.model_admin.fieldsets
+            if fieldset[0] == "Compatibility payment fields"
+        )
+        self.assertIn("collapse", compatibility_fieldset[1]["classes"])
+        self.assertEqual(
+            compatibility_fieldset[1]["fields"],
+            (
+                "deposit_payment_link",
+                "stripe_deposit_session_id",
+                "deposit_paid",
+                "deposit_paid_at",
             ),
         )
         self.assertIn("booking_agreement_received", self.model_admin.list_display)
@@ -942,7 +1084,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertEqual(event.created_by, self.user)
 
     @patch("realestate.admin.send_templated_email")
-    def test_send_delivery_email_warns_when_delivery_link_missing(self, mock_send_templated_email):
+    def test_send_delivery_email_is_blocked_when_unpaid(self, mock_send_templated_email):
         request = self._request()
 
         self.model_admin.send_delivery_email(
@@ -950,23 +1092,18 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
         )
 
-        mock_send_templated_email.assert_called_once()
-        warning_calls = [
+        mock_send_templated_email.assert_not_called()
+        error_calls = [
             call
             for call in self.model_admin.message_user.call_args_list
-            if call.kwargs.get("level") == messages.WARNING
+            if call.kwargs.get("level") == messages.ERROR
         ]
         self.assertTrue(
             any(
-                "Delivery email sent, but no delivery CTA was included because no delivery link is stored."
+                "Blocked delivery"
                 in call.args[1]
-                for call in warning_calls
+                for call in error_calls
             )
-        )
-        self.model_admin.message_user.assert_any_call(
-            request,
-            "Delivery email sent for 1 enquiry(s).",
-            level=messages.SUCCESS,
         )
 
     @patch("realestate.admin.send_templated_email")
@@ -1064,6 +1201,99 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             if call.kwargs.get("level") == messages.WARNING
         ]
         self.assertEqual(warning_calls, [])
+        snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=self.enquiry)
+        self.assertEqual(snapshot.created_by, self.user)
+
+    def test_operations_download_invoice_requires_change_permission(self):
+        invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        limited_user = get_user_model().objects.create_user(
+            username="limited",
+            email="limited@example.com",
+            password="password123",
+            is_staff=True,
+        )
+        request = self.factory.get(
+            "/secret-control-panel/realestate/realestateenquiry/ops/",
+            data={"invoice": invoice.pk},
+        )
+        request.user = limited_user
+
+        with self.assertRaises(PermissionDenied):
+            self.model_admin.operations_action_view(
+                request,
+                str(self.enquiry.pk),
+                "download-local-invoice",
+            )
+
+    def test_operations_invoice_lookup_rejects_void_invoice_id(self):
+        invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        invoice.status = RealEstateInvoice.Status.VOID
+        invoice.save(update_fields=["status", "updated_at"])
+        request = self.factory.get(
+            "/secret-control-panel/realestate/realestateenquiry/ops/",
+            data={"invoice": invoice.pk},
+        )
+        request.user = self.user
+
+        with self.assertRaises(RealEstateInvoice.DoesNotExist):
+            self.model_admin._get_ops_invoice(self.enquiry, request)
+
+    def test_email_confirmation_preview_uses_selected_invoice_amount(self):
+        deposit, balance = ensure_invoices_for_arrangement(self.enquiry)
+        request = self.factory.get(
+            "/secret-control-panel/realestate/realestateenquiry/ops/",
+            data={"invoice": deposit.pk},
+        )
+        request.user = self.user
+
+        response = self.model_admin._confirm_email_action(
+            request,
+            self.enquiry,
+            action="send-invoice-issued-email",
+            title="Send invoice issued email",
+            template_base="invoice_issued",
+            invoice=deposit,
+        )
+
+        self.assertEqual(response.context_data["invoice"], deposit)
+        self.assertIn("119.70", response.context_data["amount"])
+        self.assertNotIn(f"{balance.total:.2f}", response.context_data["amount"])
+
+    @patch("realestate.admin.send_templated_email")
+    def test_cash_receipt_email_uses_selected_payment_receipt(self, mock_send_templated_email):
+        invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        first_payment, _ = record_realestate_payment(
+            invoice=invoice,
+            amount=Decimal("40.00"),
+            method=RealEstatePayment.Method.CASH,
+            paid_at=timezone.now(),
+            recorded_by=self.user,
+            external_reference="First cash part",
+        )
+        second_payment, _ = record_realestate_payment(
+            invoice=invoice,
+            amount=Decimal("30.00"),
+            method=RealEstatePayment.Method.CASH,
+            paid_at=timezone.now(),
+            recorded_by=self.user,
+            external_reference="Second cash part",
+        )
+        request = self.factory.post(
+            "/secret-control-panel/realestate/realestateenquiry/ops/",
+            data={"payment": first_payment.pk},
+        )
+        request.user = self.user
+
+        self.model_admin.operations_action_view(
+            request,
+            str(self.enquiry.pk),
+            "send-cash-receipt-email",
+        )
+
+        mock_send_templated_email.assert_called_once()
+        context = mock_send_templated_email.call_args.kwargs["context"]
+        self.assertEqual(context["cash_receipt_number"], first_payment.cash_receipt_number)
+        self.assertNotEqual(context["cash_receipt_number"], second_payment.cash_receipt_number)
 
     @patch("realestate.admin.send_templated_email")
     def test_weather_reschedule_skips_without_revised_date(self, mock_send_templated_email):
@@ -1087,6 +1317,9 @@ class RealEstateEnquiryAdminActionTests(TestCase):
     @patch("realestate.admin.send_templated_email", side_effect=RuntimeError("smtp offline"))
     def test_action_failure_surfaces_admin_error_message(self, mock_send_templated_email):
         request = self._request()
+        self.enquiry.deposit_paid = True
+        self.enquiry.deposit_paid_at = timezone.now()
+        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at"])
 
         self.model_admin.send_confirmation_email(
             request,

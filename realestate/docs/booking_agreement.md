@@ -1,9 +1,10 @@
-# OpenEire Real Estate Media Booking Agreement
+# {{ business_display_name }} Real Estate Media Booking Agreement
 
-Booking reference: **{{ booking_reference }}**  
+Booking reference: **{{ booking_reference }}**
 Issued on: **{{ issued_on }}**
+Agreement version: **{{ agreement_template_version }}**
 
-This Booking Agreement forms part of the Agreement between OpenEire Studios (OpenEire) and the Client for the provision of real estate media services. It should be read together with the OpenEire Property Media Service Terms, which set out the core legal terms governing property photography, videography, drone operations, licensing, payment, liability, and cancellation.
+This Booking Agreement forms part of the Agreement between {{ business_display_name }} (OpenEire) and the Client for the provision of real estate media services for the specific property booking set out below. It should be read together with the OpenEire Property Media Service Terms, which set out the core legal terms governing property photography, videography, drone operations, licensing, payment, liability, and cancellation.
 
 Drone operations in Europe are governed under the EASA framework, including Regulation (EU) 2019/947, and are administered in Ireland by the Irish Aviation Authority.
 
@@ -13,32 +14,32 @@ Drone operations in Europe are governed under the EASA framework, including Regu
 
 This Booking Agreement is entered into between:
 
-**OpenEire Studios**  
-7A The Crescent, Loughrea  
-studio@openeire.ie
+**{{ business_display_name }}**
+{{ business_address }}
+{{ business_email }}
 
 and
 
-**Client name:** {{ client_name }}  
-**Agency / business name:** {{ company_name }}  
-**Contact name:** {{ client_contact_name }}  
-**Email:** {{ email }}  
-**Telephone:** {{ phone }}  
+**Client name:** {{ client_name }}
+**Agency / business name:** {{ company_name }}
+**Contact name:** {{ client_contact_name }}
+**Email:** {{ email }}
+**Telephone:** {{ phone }}
 **Registered / business address:** {{ registered_business_address }}
 
 ---
 
 ## 2. Property and Booking Details
 
-**Property address:** {{ property_address }}  
-**Property type:** {{ property_type }}  
-**Listing type:** {{ listing_type }}  
-**Shoot date:** {{ shoot_date }}  
-**Shoot time:** {{ shoot_time }}  
-**Access contact on site:** {{ access_contact }}  
-**Access notes / restrictions:** {{ access_notes }}  
-**Drone services included:** Subject to the selected package, agreed add-ons, legal conditions, weather, safety, and operational restrictions on the day  
-**Travel supplement applies:** If agreed in writing before the shoot  
+**Property address:** {{ property_address }}
+**Property type:** {{ property_type }}
+**Listing type:** {{ listing_type }}
+**Shoot date:** {{ shoot_date }}
+**Shoot time:** {{ shoot_time }}
+**Access contact on site:** {{ access_contact }}
+**Access notes / restrictions:** {{ access_notes }}
+**Drone services included:** Subject to the selected package, agreed add-ons, legal conditions, weather, safety, and operational restrictions on the day
+**Travel supplement applies:** If agreed in writing before the shoot
 **Travel details:** {{ travel_details }}
 
 ---
@@ -47,17 +48,27 @@ and
 
 The Client books the following package:
 
-**Package name:** {{ package_name }}  
+**Package name:** {{ package_name }}
 **{% if vat_registered and not price_input_is_gross %}Package fee excluding VAT{% else %}Package total{% endif %}:** {{ quote_total }}
 
-**VAT:** {{ vat_total }}  
-**Total fee payable:** {{ total_including_vat }}
+**VAT:** {{ vat_total }}
+**Total fee payable:** {{ total_required }}
 
 {% if not vat_registered %}*{{ vat_notice }}*
 
 {% endif %}
-**Deposit required:** {{ deposit_amount }}  
-**Balance due on delivery:** {{ balance_due }}
+**Payment arrangement:** {{ payment_arrangement_label }}
+**Payment due date:** {{ payment_due_date }}
+**Expected payment method:** {{ expected_payment_method }}
+
+{% if is_split_payment %}
+**Deposit required:** {{ deposit_amount }}
+**Remaining balance:** {{ balance_due }}
+{% elif is_custom_payment %}
+**Approved custom payment schedule:** {{ custom_payment_terms }}
+{% else %}
+**Full payment due:** {{ total_required }}
+{% endif %}
 
 Included Deliverables:
 
@@ -74,27 +85,25 @@ Only the Deliverables expressly listed above are included in this Booking Agreem
 
 ---
 
-## 4. Fee, Deposit and Payment Terms
+## 4. Fee and Payment Terms
 
-4.1 The Client shall pay a booking deposit equal to 30% of the Total Fee in order to secure the booking.
+4.1 {{ payment_clause_text }}
 
-4.2 The proposed Shoot Date and Shoot Time are reserved provisionally. The booking is not confirmed until OpenEire has received both the signed Booking Agreement and the booking deposit in cleared funds. Until confirmation, OpenEire reserves the right to release the proposed booking slot to another client.
+4.2 {{ booking_confirmation_text }} Until confirmation, OpenEire reserves the right to release the proposed booking slot to another client.
 
-4.3 The remaining balance shall be due on the day of delivery of the Deliverables.
+4.3 OpenEire may withhold delivery of the Deliverables until 100% of the Total Fee and any other sums due have been paid in full.
 
-4.4 OpenEire may withhold delivery of the Deliverables until 100% of the Total Fee and any other sums due have been paid in full.
+4.4 No licence shall take effect until all sums due have been paid in full.
 
-4.5 No licence shall take effect until all sums due have been paid in full.
-
-4.6 Any additional work, amendments, extra travel, waiting time, extended attendance, additional outputs, or post-booking scope changes requested by the Client may be charged separately at OpenEire's then-current rates.
+4.5 Any additional work, amendments, extra travel, waiting time, extended attendance, additional outputs, or post-booking scope changes requested by the Client may be charged separately at OpenEire's then-current rates.
 
 ---
 
 ## 5. Cancellation and Rescheduling
 
-5.1 If the Client cancels the booking more than 72 hours before the Shoot Date, the deposit shall be retained by OpenEire and no further fee shall be due.
+5.1 If the Client cancels the booking more than 72 hours before the Shoot Date, {% if is_split_payment %}the deposit shall be retained by OpenEire and no further fee shall be due{% else %}OpenEire may retain any amount already paid against administration, scheduling, preparation, and other work already performed, and no further fee shall be due unless otherwise set out in the approved payment terms{% endif %}.
 
-5.2 If the Client cancels the booking between 24 and 72 hours before the Shoot Date, 50% of the Total Fee shall be payable by the Client, less any deposit already paid.
+5.2 {{ cancellation_payment_text }}
 
 5.3 If the Client cancels the booking less than 24 hours before the Shoot Date, or if OpenEire attends the Property and cannot reasonably perform the Services due to lack of access, inaccurate instructions, an unready site, or other Client-side failure, 100% of the Total Fee shall be payable.
 
@@ -144,18 +153,18 @@ Only the Deliverables expressly listed above are included in this Booking Agreem
 
 ## 9. Signatures and Acceptance
 
-Signed electronically for and on behalf of OpenEire Studios
+Signed electronically for and on behalf of {{ business_display_name }}
 
-Name: Gerard Deely  
-Title: OpenEire Studios  
+Name: {{ business_signatory_name }}
+Title: {{ business_display_name }}
 Date: {{ issued_on }}
 
 Signed by or on behalf of the Client:
 
-Name: ______________________________  
-Title: ______________________________  
+Name: ______________________________
+Title: ______________________________
 Date: ______________________________
 
-By signing electronically and by paying the booking deposit after receipt of this Booking Agreement, the Client confirms that it has read, understood, and agreed to this Booking Agreement and the OpenEire Property Media Service Terms.
+{{ acceptance_text }}
 
-The booking shall not be confirmed until both the signed Booking Agreement and the booking deposit have been received by OpenEire.
+{{ booking_confirmation_text }}
