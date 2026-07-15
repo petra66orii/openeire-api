@@ -1,0 +1,8 @@
+{% extends "admin/change_form.html" %}
+
+{% block field_sets %}
+  {% if operations_hub %}
+    {% include "admin/realestate/enquiry/operations_hub.html" with hub=operations_hub %}
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

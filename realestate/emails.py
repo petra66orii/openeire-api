@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from urllib.parse import urlparse
 
 from django.conf import settings
+from openeire_api.business_identity import get_business_identity, public_business_context
 from django.core.mail import EmailMessage
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
@@ -14,6 +15,7 @@ from django.templatetags.static import static
 from django.urls import reverse
 
 from openeire_api.mail_utils import get_default_from_email
+from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment
 
 
 logger = logging.getLogger(__name__)
@@ -111,7 +113,116 @@ def build_realestate_admin_url(enquiry, request=None):
 
 
 def _format_date(value):
-    return value.isoformat() if value else "Not specified"
+    if not value:
+        return "Not specified"
+    return value if isinstance(value, str) else value.isoformat()
+
+
+def _format_display_date(value):
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return value.strftime("%d %B %Y")
+
+
+def _active_invoices(enquiry):
+    if not getattr(enquiry, "pk", None):
+        return []
+    return list(
+        enquiry.invoices.exclude(status=RealEstateInvoice.Status.VOID)
+        .prefetch_related("payments")
+        .order_by("created_at")
+    )
+
+
+def _invoice_by_type(invoices, invoice_type):
+    return next((invoice for invoice in invoices if invoice.invoice_type == invoice_type), None)
+
+
+def _email_financial_context(enquiry):
+    arrangement = getattr(
+        enquiry,
+        "payment_arrangement",
+        RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE,
+    )
+    invoices = _active_invoices(enquiry)
+    deposit_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.DEPOSIT)
+    balance_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.BALANCE)
+    full_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.FULL)
+    invoice = full_invoice or balance_invoice or deposit_invoice or (invoices[0] if invoices else None)
+
+    total_required = (
+        getattr(enquiry, "custom_required_total", None)
+        if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
+        else None
+    ) or (full_invoice.total if full_invoice else None) or getattr(enquiry, "quoted_total", None) or getattr(enquiry, "quoted_price", None)
+    deposit_amount = deposit_invoice.total if deposit_invoice else getattr(enquiry, "quoted_deposit_amount", None)
+    balance_due = balance_invoice.total if balance_invoice else getattr(enquiry, "quoted_balance_due", None)
+    if arrangement != RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
+        deposit_amount = None
+        balance_due = None
+
+    due_date = getattr(enquiry, "payment_due_date", None)
+    if not due_date and arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY:
+        due_date = getattr(enquiry, "shoot_date", None)
+    if not due_date and invoice and invoice.due_at:
+        due_date = invoice.due_at.date()
+
+    latest_cash_receipt = ""
+    if invoice:
+        cash_payment = (
+            RealEstatePayment.objects.filter(
+                invoice__enquiry=enquiry,
+                cash_receipt_number__gt="",
+            )
+            .order_by("-paid_at", "-created_at")
+            .first()
+        )
+        latest_cash_receipt = cash_payment.cash_receipt_number if cash_payment else ""
+
+    if arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
+        booking_confirmation_rule = "Booking is confirmed after the signed agreement and cleared deposit are received."
+        quote_payment_rule = "A 30% deposit secures the booking, with the remaining balance due under the agreed terms."
+    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT:
+        booking_confirmation_rule = "Booking is confirmed after the signed agreement and full payment are received."
+        quote_payment_rule = "Full payment is required before booking confirmation; no deposit or balance split applies."
+    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY:
+        booking_confirmation_rule = "Booking may be confirmed while unpaid under the approved full-payment-on-shoot-day arrangement."
+        quote_payment_rule = "The full amount is due on the shoot date; final delivery remains locked until full payment is recorded."
+    else:
+        booking_confirmation_rule = str(getattr(enquiry, "custom_payment_terms", "") or "Approved custom terms apply.")
+        quote_payment_rule = booking_confirmation_rule
+
+    return {
+        "payment_arrangement": arrangement,
+        "payment_arrangement_label": (
+            enquiry.get_payment_arrangement_display()
+            if hasattr(enquiry, "get_payment_arrangement_display")
+            else arrangement
+        ),
+        "is_deposit_then_balance": arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE,
+        "is_full_upfront": arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
+        "is_full_on_shoot_day": arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+        "is_custom_payment": arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM,
+        "total_required": total_required or "",
+        "deposit_amount": deposit_amount or "",
+        "balance_due": balance_due or "",
+        "payment_due_date": _format_display_date(due_date),
+        "expected_payment_method": (
+            enquiry.get_expected_payment_method_display()
+            if hasattr(enquiry, "get_expected_payment_method_display")
+            else ""
+        ),
+        "custom_payment_terms": getattr(enquiry, "custom_payment_terms", "") or "",
+        "booking_confirmation_rule": booking_confirmation_rule,
+        "quote_payment_rule": quote_payment_rule,
+        "invoice_number": invoice.invoice_number if invoice else "",
+        "invoice_type": invoice.get_invoice_type_display() if invoice else "",
+        "stripe_hosted_invoice_url": invoice.stripe_hosted_invoice_url if invoice else "",
+        "outstanding_amount": invoice.amount_outstanding if invoice else total_required or "",
+        "cash_receipt_number": latest_cash_receipt,
+    }
 
 
 def _as_recipient_list(value):
@@ -174,7 +285,10 @@ def build_realestate_email_context(enquiry, **overrides):
     logo_url = get_realestate_email_logo_url()
     quote_reply_mailto = f"mailto:{reply_to_email}" if reply_to_email else ""
 
+    financial_context = _email_financial_context(enquiry)
     context = {
+        **public_business_context(),
+        **financial_context,
         "brand_logo_url": logo_url,
         "email_logo_url": logo_url,
         "cta_url": "",
@@ -191,11 +305,9 @@ def build_realestate_email_context(enquiry, **overrides):
         "addons": enquiry.get_add_on_labels()
         if hasattr(enquiry, "get_add_on_labels")
         else [],
-        "quote_total": getattr(enquiry, "quoted_price", None) or "",
+        "quote_total": getattr(enquiry, "quoted_subtotal", None) or getattr(enquiry, "quoted_price", None) or "",
         "vat_total": "",
-        "total_including_vat": "",
-        "deposit_amount": "",
-        "balance_due": "",
+        "total_including_vat": financial_context["total_required"],
         "vat_registered": False,
         "vat_rate_percent": Decimal("0.00"),
         "price_input_is_gross": True,
@@ -223,8 +335,10 @@ def build_realestate_email_context(enquiry, **overrides):
         "quote_total",
         "vat_total",
         "total_including_vat",
+        "total_required",
         "deposit_amount",
         "balance_due",
+        "outstanding_amount",
     ):
         context[money_field] = format_money(context.get(money_field))
 
@@ -273,7 +387,7 @@ def send_realestate_internal_notification_email(enquiry, request=None):
 
 
 def send_realestate_client_confirmation_email(enquiry):
-    subject = "Property shoot request received - OpenEire Studios"
+    subject = f"Property shoot request received - {get_business_identity().display_name}"
     return send_templated_email(
         subject=subject,
         to=[enquiry.email],

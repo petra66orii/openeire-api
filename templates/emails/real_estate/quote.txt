@@ -13,21 +13,25 @@ Quote summary
 {% endif %}{% if total_including_vat %}Total payable: {{ total_including_vat }}
 {% endif %}{% if deposit_amount %}Deposit required: {{ deposit_amount }}
 {% endif %}{% if balance_due %}Balance on delivery: {{ balance_due }}
+{% endif %}{% if not is_deposit_then_balance and payment_due_date %}Payment due: {{ payment_due_date }}
 {% endif %}{% if not vat_registered %}{{ vat_notice }}
-{% endif %}{% else %}Quote total: To be confirmed
+{% endif %}{{ quote_payment_rule }}
+{% else %}Quote total: To be confirmed
 {% endif %}
 Ready to proceed?
-Reply to this email and we'll issue the Booking Agreement and booking deposit request.
+{% if deposit_amount %}Reply to this email and we'll issue the Booking Agreement and booking deposit request.{% else %}Reply to this email and we'll issue the Booking Agreement with the selected payment arrangement.{% endif %}
 
-Your booking is only confirmed once BOTH:
+{% if deposit_amount %}Your booking is only confirmed once BOTH:
 - the Booking Agreement has been signed
 - the booking deposit has cleared
+{% else %}{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
+{% endif %}
 
 {% if quote_reply_email %}Proceed with this quote: {{ quote_reply_email }}
 {% else %}Reply details are being confirmed. Please contact studio@openeire.ie and quote this property address.
 {% endif %}
 This quote does not confirm a booking or reserve a shoot date.
 
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie

@@ -40,6 +40,16 @@ Set values for the variables used by settings and integrations:
   - `LICENSOR_CONTACT_EMAIL` (optional, falls back to `LICENSING_FROM_EMAIL`)
   - `REALESTATE_NOTIFICATION_EMAIL` (defaults to `shoots@openeire.ie`)
   - `REALESTATE_REPLY_TO_EMAIL` (defaults to `shoots@openeire.ie`)
+  - `BUSINESS_DISPLAY_NAME` (defaults to `OpenÉire Studios`)
+  - `BUSINESS_SIGNATORY_NAME` (defaults to `Gerry Deely`; private legal documents only)
+  - `SHOW_SIGNATORY_ON_LEGAL_DOCUMENTS` (defaults to `true`)
+  - `BUSINESS_ADDRESS`, `BUSINESS_EMAIL`, `BUSINESS_PHONE`
+  - `BUSINESS_REGISTRATION_NUMBER`
+  - `REALESTATE_STRIPE_INVOICE_DUE_DAYS` (defaults to `7`)
+
+`BUSINESS_LEGAL_NAME` is reserved private configuration and is not rendered by
+customer documents. Enabling legal-name output requires a separate, explicitly
+approved document policy after accountant/legal confirmation.
   - `REALESTATE_ADMIN_BASE_URL` (optional; used to build absolute admin links in internal enquiry emails)
   - `LICENCE_ADMIN_NOTIFICATION_RECIPIENTS`
   - `BREVO_ENABLED`

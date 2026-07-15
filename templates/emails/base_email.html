@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{% block title %}OpenEire Studios{% endblock %}</title>
+    <title>{% block title %}{{ business_display_name|default:"OpenÉire Studios" }}{% endblock %}</title>
   </head>
   <body
     style="
@@ -27,7 +27,7 @@
         font-size: 1px;
       "
     >
-      {% block preheader %}OpenEire Studios update{% endblock %}
+      {% block preheader %}{{ business_display_name|default:"OpenÉire Studios" }} update{% endblock %}
     </div>
     <table
       role="presentation"
@@ -58,7 +58,7 @@
                 <img
                   src="{{ email_logo_url }}"
                   width="200"
-                  alt="OpenEire Studios"
+                  alt="{{ business_display_name|default:'OpenÉire Studios' }}"
                   style="
                     display: block;
                     width: 200px;
@@ -79,7 +79,7 @@
                     text-align: center;
                   "
                 >
-                  OpenEire Studios
+                  {{ business_display_name|default:"OpenÉire Studios" }}
                 </div>
                 {% endif %}
                 <div
@@ -154,7 +154,7 @@
                   line-height: 1.6;
                 "
               >
-                <strong style="color: #fafaf9">OpenEire Studios</strong><br />
+                <strong style="color: #fafaf9">{{ business_display_name|default:"OpenÉire Studios" }}</strong><br />
                 <a
                   href="mailto:studio@openeire.ie"
                   style="color: #16a34a; text-decoration: none"

@@ -1,0 +1,11 @@
+Hi {{ first_name|default:"there" }},
+
+Thank you. We have recorded your cash payment for {{ property_address|default:"the property" }}.
+
+Receipt: {{ cash_receipt_number|default:"To be confirmed" }}
+Invoice: {{ invoice_number|default:"To be confirmed" }}
+Outstanding: {{ outstanding_amount|default:"€0.00" }}
+
+OpenÉire Studios
+studio@openeire.ie
+https://openeire.ie

@@ -6,17 +6,22 @@ Booking details
 Reference: {{ booking_reference|default:"To be confirmed" }}
 Property: {{ property_address|default:"Not specified" }}
 Proposed shoot: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
-{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}: {{ quote_total|default:"To be confirmed" }}
-{% if not vat_registered %}VAT: {{ vat_total|default:"€0.00" }}
-{{ vat_notice }}
+Package total: {{ total_required|default:"To be confirmed" }}
+Payment arrangement: {{ payment_arrangement_label|default:"To be confirmed" }}
+{% if is_deposit_then_balance %}Deposit: {{ deposit_amount|default:"To be confirmed" }}
+Balance: {{ balance_due|default:"To be confirmed" }}
+{% else %}{% if payment_due_date %}Payment due: {{ payment_due_date }}
+{% endif %}{% if expected_payment_method %}Expected method: {{ expected_payment_method }}
+{% endif %}{% endif %}{% if is_custom_payment and custom_payment_terms %}Approved schedule: {{ custom_payment_terms }}
+{% endif %}{% if not vat_registered %}{{ vat_notice }}
 {% endif %}
-Deposit request: Sent separately once the signed agreement has been returned.
+{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
 
 {% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
 {% else %}Booking Agreement: attached or to follow
 {% endif %}
-Your booking remains provisional until the signed agreement has been received and the booking deposit has cleared.
+{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
 
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie

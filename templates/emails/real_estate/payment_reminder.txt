@@ -1,0 +1,14 @@
+Hi {{ first_name|default:"there" }},
+
+A payment remains outstanding for {{ property_address|default:"the property" }}.
+
+Invoice: {{ invoice_number|default:"To be confirmed" }}
+Outstanding: {{ outstanding_amount|default:"To be confirmed" }}
+{% if payment_due_date %}Due date: {{ payment_due_date }}
+{% endif %}Final high-resolution media and usage rights remain withheld until full payment has been received.
+
+{% if stripe_hosted_invoice_url %}Pay Invoice: {{ stripe_hosted_invoice_url }}
+{% endif %}
+OpenÉire Studios
+studio@openeire.ie
+https://openeire.ie

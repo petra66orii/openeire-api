@@ -1,0 +1,9 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>This confirms that local payment is already safely recorded. Stripe will be marked paid out of band and no Stripe charge will be created.</p>
+<form method="post">{% csrf_token %}
+  <input type="hidden" name="action" value="mark_stripe_paid_out_of_band_action">
+  {% for invoice in invoices %}<input type="hidden" name="_selected_action" value="{{ invoice.pk }}">{% endfor %}
+  <button type="submit" name="confirm_out_of_band" value="1">Confirm paid out of band</button>
+</form>
+{% endblock %}

@@ -17,6 +17,6 @@ Balance due: {{ balance_due|default:"To be confirmed" }}
 {% endif %}
 Your booking will be confirmed once the deposit has been received in cleared funds.
 
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie

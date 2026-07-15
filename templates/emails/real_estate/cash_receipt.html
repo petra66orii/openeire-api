@@ -1,0 +1,15 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Cash payment receipt{% endblock %}
+{% block preheader %}Receipt for your property media payment.{% endblock %}
+{% block heading %}Cash payment receipt{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
+  <p style="margin:0;">Thank you. We have recorded your cash payment for {{ property_address|default:"the property" }}.</p>
+{% endblock %}
+{% block details_card %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
+    <p style="margin:0 0 6px;"><strong>Receipt:</strong> {{ cash_receipt_number|default:"To be confirmed" }}</p>
+    <p style="margin:0 0 6px;"><strong>Invoice:</strong> {{ invoice_number|default:"To be confirmed" }}</p>
+    <p style="margin:0;"><strong>Outstanding:</strong> {{ outstanding_amount|default:"€0.00" }}</p>
+  </div>
+{% endblock %}

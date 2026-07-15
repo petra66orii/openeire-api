@@ -12,9 +12,18 @@
     <p style="margin:0 0 6px;"><strong>Reference:</strong> {{ booking_reference|default:"To be confirmed" }}</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Proposed shoot:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
-    <p style="margin:0 0 6px;"><strong>{% if vat_registered and not price_input_is_gross %}Quote total (ex VAT){% else %}Package total{% endif %}:</strong> {{ quote_total|default:"To be confirmed" }}</p>
-    {% if not vat_registered %}<p style="margin:0 0 6px;"><strong>VAT:</strong> {{ vat_total|default:"€0.00" }}</p><p style="margin:0 0 6px;">{{ vat_notice }}</p>{% endif %}
-    <p style="margin:0;"><strong>Deposit request:</strong> Sent separately once the signed agreement has been returned.</p>
+    <p style="margin:0 0 6px;"><strong>Package total:</strong> {{ total_required|default:"To be confirmed" }}</p>
+    <p style="margin:0 0 6px;"><strong>Payment arrangement:</strong> {{ payment_arrangement_label|default:"To be confirmed" }}</p>
+    {% if is_deposit_then_balance %}
+      <p style="margin:0 0 6px;"><strong>Deposit:</strong> {{ deposit_amount|default:"To be confirmed" }}</p>
+      <p style="margin:0 0 6px;"><strong>Balance:</strong> {{ balance_due|default:"To be confirmed" }}</p>
+    {% else %}
+      {% if payment_due_date %}<p style="margin:0 0 6px;"><strong>Payment due:</strong> {{ payment_due_date }}</p>{% endif %}
+      {% if expected_payment_method %}<p style="margin:0 0 6px;"><strong>Expected method:</strong> {{ expected_payment_method }}</p>{% endif %}
+    {% endif %}
+    {% if is_custom_payment and custom_payment_terms %}<p style="margin:0 0 6px;"><strong>Approved schedule:</strong> {{ custom_payment_terms }}</p>{% endif %}
+    {% if not vat_registered %}<p style="margin:8px 0 0; color:#5F6673; font-size:13px;">{{ vat_notice }}</p>{% endif %}
+    <p style="margin:12px 0 0; color:#5F6673; font-size:13px;">{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}</p>
   </div>
 {% endblock %}
 {% block cta %}
@@ -23,5 +32,5 @@
   {% endif %}
 {% endblock %}
 {% block service_note %}
-  <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">Your booking remains provisional until the signed agreement has been received and the booking deposit has cleared.</p>
+  <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}</p>
 {% endblock %}

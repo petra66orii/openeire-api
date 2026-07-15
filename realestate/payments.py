@@ -6,6 +6,8 @@ from urllib.parse import urljoin
 import stripe
 from django.conf import settings
 
+from openeire_api.business_identity import get_business_identity
+
 from .emails import get_realestate_site_url
 
 
@@ -136,17 +138,14 @@ def _checkout_return_url(path):
     return urljoin(get_realestate_site_url().rstrip("/") + "/", path.lstrip("/"))
 
 
-def _stripe_metadata(enquiry):
+def _stripe_metadata(enquiry, invoice=None):
     return {
         "realestate_enquiry_id": str(enquiry.pk),
-        "client_name": str(getattr(enquiry, "name", "") or "")[:500],
-        "property_address": str(getattr(enquiry, "property_address", "") or "")[:500],
-        "package_name": (
-            enquiry.get_preferred_package_display()
-            if hasattr(enquiry, "get_preferred_package_display")
-            else str(getattr(enquiry, "preferred_package", "") or "")
-        )[:500],
+        "job_reference": f"RE-{enquiry.pk}",
+        "package_reference": str(getattr(enquiry, "preferred_package", "") or "")[:100],
         "purpose": "realestate_deposit",
+        "brand": get_business_identity().display_name,
+        **({"realestate_invoice_number": invoice.invoice_number} if invoice else {}),
     }
 
 
@@ -154,6 +153,9 @@ def create_realestate_deposit_checkout_session(enquiry):
     if not getattr(enquiry, "pk", None):
         raise ValueError("Enquiry must be saved before creating a deposit checkout.")
 
+    from .finance import ensure_standard_realestate_invoices
+
+    deposit_invoice, _ = ensure_standard_realestate_invoices(enquiry)
     amounts = calculate_realestate_deposit_amounts(enquiry)
     amount_in_cents = int(
         (amounts["deposit_amount"] * Decimal("100")).quantize(
@@ -170,7 +172,7 @@ def create_realestate_deposit_checkout_session(enquiry):
         timeout=getattr(settings, "STRIPE_TIMEOUT_SECONDS", 10)
     )
 
-    metadata = _stripe_metadata(enquiry)
+    metadata = _stripe_metadata(enquiry, deposit_invoice)
     session_kwargs = {
         "mode": "payment",
         "payment_method_types": _configured_stripe_payment_method_types(),
@@ -180,7 +182,10 @@ def create_realestate_deposit_checkout_session(enquiry):
                     "currency": "eur",
                     "unit_amount": amount_in_cents,
                     "product_data": {
-                        "name": f"OpenEire real estate booking deposit - RE-{enquiry.pk}",
+                        "name": (
+                            f"{get_business_identity().display_name} "
+                            f"real estate booking deposit - RE-{enquiry.pk}"
+                        ),
                         "metadata": metadata,
                     },
                 },

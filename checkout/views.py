@@ -673,7 +673,64 @@ class DiscountValidationView(APIView):
 class StripeWebhookView(APIView):
     authentication_classes = [] 
     permission_classes = [AllowAny]
-    SUPPORTED_EVENT_TYPES = {'payment_intent.succeeded', 'checkout.session.completed'}
+    SUPPORTED_EVENT_TYPES = {
+        'payment_intent.succeeded', 'checkout.session.completed',
+        'invoice.finalized', 'invoice.sent', 'invoice.paid',
+        'invoice.payment_failed', 'invoice.voided', 'invoice.marked_uncollectible',
+    }
+
+    def _handle_realestate_invoice_event(self, event_type, stripe_invoice):
+        from realestate.finance import record_realestate_payment
+        from realestate.models import RealEstateInvoice, RealEstatePayment
+
+        metadata = stripe_invoice.get('metadata') or {}
+        number = str(metadata.get('realestate_invoice_number') or '').strip()
+        stripe_id = str(stripe_invoice.get('id') or '').strip()
+        invoice = RealEstateInvoice.objects.select_for_update().filter(
+            Q(invoice_number=number) | Q(stripe_invoice_id=stripe_id)
+        ).select_related('enquiry').first()
+        if invoice is None:
+            return False
+        if stripe_id and invoice.stripe_invoice_id and stripe_id != invoice.stripe_invoice_id:
+            raise RuntimeError('Stripe invoice did not match the stored local invoice.')
+
+        stripe_status = str(stripe_invoice.get('status') or event_type.split('.', 1)[1])
+        fields = ['stripe_invoice_status', 'updated_at']
+        invoice.stripe_invoice_status = stripe_status
+        for source, target in (
+            ('number', 'stripe_invoice_number'), ('hosted_invoice_url', 'stripe_hosted_invoice_url'),
+            ('invoice_pdf', 'stripe_invoice_pdf_url'),
+        ):
+            value = str(stripe_invoice.get(source) or '')
+            if value:
+                setattr(invoice, target, value)
+                fields.append(target)
+
+        if event_type == 'invoice.paid':
+            currency = str(stripe_invoice.get('currency') or '').upper()
+            amount_paid = int(stripe_invoice.get('amount_paid') or 0)
+            expected = int(invoice.total * Decimal('100'))
+            if currency != invoice.currency or amount_paid != expected:
+                raise RuntimeError('Stripe invoice paid amount or currency did not match the local invoice.')
+            if invoice.amount_outstanding:
+                record_realestate_payment(
+                    invoice=invoice, amount=invoice.amount_outstanding,
+                    method=RealEstatePayment.Method.STRIPE_INVOICE,
+                    paid_at=timezone.now(), stripe_payment_intent_id=str(stripe_invoice.get('payment_intent') or ''),
+                    stripe_charge_id=str(stripe_invoice.get('charge') or ''),
+                    external_reference=stripe_id,
+                    notes='Reconciled from Stripe invoice.paid webhook.',
+                )
+            invoice.stripe_invoice_status = 'paid'
+        elif event_type == 'invoice.voided':
+            if not invoice.amount_paid:
+                invoice.status = RealEstateInvoice.Status.VOID
+                fields.append('status')
+        elif event_type == 'invoice.marked_uncollectible':
+            invoice.status = RealEstateInvoice.Status.OVERDUE
+            fields.append('status')
+        invoice.save(update_fields=tuple(dict.fromkeys(fields)))
+        return True
 
     def _stale_processing_seconds(self):
         return int(getattr(settings, "STRIPE_WEBHOOK_STALE_PROCESSING_SECONDS", 600))
@@ -886,7 +943,8 @@ class StripeWebhookView(APIView):
 
     def _handle_realestate_deposit_payment(self, session):
         metadata = session.get('metadata') or {}
-        if metadata.get('purpose') != 'realestate_deposit':
+        purpose = metadata.get('purpose')
+        if purpose not in {'realestate_deposit', 'realestate_balance'}:
             return False
 
         payment_status = session.get('payment_status')
@@ -918,16 +976,39 @@ class StripeWebhookView(APIView):
                 f"unknown enquiry {enquiry_id}."
             )
 
-        stored_session_id = str(enquiry.stripe_deposit_session_id or "").strip()
+        from realestate.finance import ensure_standard_realestate_invoices, record_realestate_payment
+        from realestate.models import RealEstateInvoice, RealEstatePayment
+
+        deposit_invoice, balance_invoice = ensure_standard_realestate_invoices(enquiry)
+        invoice = deposit_invoice if purpose == 'realestate_deposit' else balance_invoice
+        invoice_number = str(metadata.get('realestate_invoice_number') or '').strip()
+        if invoice_number and invoice_number != invoice.invoice_number:
+            raise RuntimeError("Paid real estate checkout referenced the wrong invoice.")
+
+        stored_session_id = str(
+            enquiry.stripe_deposit_session_id if purpose == 'realestate_deposit'
+            else invoice.stripe_checkout_session_id
+            or ""
+        ).strip()
         if stored_session_id and checkout_session_id != stored_session_id:
             raise RuntimeError(
                 "Paid real estate deposit checkout session did not match "
                 "the stored enquiry session."
             )
 
+        if checkout_session_id and RealEstatePayment.objects.filter(
+            stripe_checkout_session_id=checkout_session_id,
+            status=RealEstatePayment.Status.SUCCEEDED,
+        ).exists():
+            logger.info(
+                "Real estate checkout session already recorded; skipping. session_id=%s",
+                checkout_session_id,
+            )
+            return True
+
         expected_amount_cents = int(
             (
-                calculate_realestate_deposit_amounts(enquiry)["deposit_amount"]
+                invoice.amount_outstanding
                 * Decimal("100")
             ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         )
@@ -939,42 +1020,27 @@ class StripeWebhookView(APIView):
                 "expected booking deposit."
             )
 
-        if enquiry.deposit_paid:
-            logger.info(
-                "Real estate deposit already marked paid; skipping. enquiry_id=%s",
-                enquiry.pk,
-            )
-            return True
-
         paid_at = timezone.now()
-        update_fields = ["deposit_paid", "deposit_paid_at", "updated_at"]
-        enquiry.deposit_paid = True
-        enquiry.deposit_paid_at = paid_at
-
-        if checkout_session_id and not enquiry.stripe_deposit_session_id:
-            enquiry.stripe_deposit_session_id = checkout_session_id
-            update_fields.append("stripe_deposit_session_id")
-
-        if enquiry.status not in {
-            RealEstateEnquiry.Status.BOOKED,
-            RealEstateEnquiry.Status.COMPLETED,
-            RealEstateEnquiry.Status.CLOSED,
-            RealEstateEnquiry.Status.SPAM,
-        }:
-            enquiry.status = RealEstateEnquiry.Status.BOOKED
-            update_fields.append("status")
-
-        enquiry.save(update_fields=update_fields)
-        record_timeline_event(
-            enquiry,
-            RealEstateTimelineEvent.EventType.DEPOSIT_PAID,
-            status=RealEstateTimelineEvent.EventStatus.COMPLETED,
-            actor_type=RealEstateTimelineEvent.ActorType.SYSTEM,
-            title="Deposit paid",
-            notes="Stripe confirmed payment for the real estate booking deposit.",
-            reference_url=enquiry.deposit_payment_link,
-            stripe_session_id=checkout_session_id,
+        payment, created = record_realestate_payment(
+            invoice=invoice,
+            amount=amount_total / 100,
+            method=(RealEstatePayment.Method.STRIPE_DEPOSIT_CHECKOUT if purpose == 'realestate_deposit' else RealEstatePayment.Method.STRIPE_BALANCE_CHECKOUT),
+            paid_at=paid_at,
+            stripe_checkout_session_id=checkout_session_id,
+            stripe_payment_intent_id=str(session.get('payment_intent') or ''),
         )
+        if created and purpose == 'realestate_deposit':
+            record_timeline_event(
+                enquiry,
+                RealEstateTimelineEvent.EventType.DEPOSIT_PAID,
+                status=RealEstateTimelineEvent.EventStatus.COMPLETED,
+                actor_type=RealEstateTimelineEvent.ActorType.SYSTEM,
+                title="Deposit paid",
+                notes="Stripe confirmed payment for the real estate booking deposit.",
+                reference_url=enquiry.deposit_payment_link,
+                stripe_session_id=checkout_session_id,
+            )
+
         logger.info(
             "Real estate deposit marked paid. enquiry_id=%s session_id=%s",
             enquiry.pk,
@@ -1473,6 +1539,10 @@ class StripeWebhookView(APIView):
                     handled_realestate_deposit = self._handle_realestate_deposit_payment(session)
                 if not handled_realestate_deposit:
                     self._handle_license_payment(request, session)
+            elif event_type.startswith('invoice.'):
+                stripe_invoice = event['data']['object']
+                with transaction.atomic():
+                    self._handle_realestate_invoice_event(event_type, stripe_invoice)
         except DRFValidationError as e:
             processing_error = str(e.detail if hasattr(e, "detail") else e)
             # A signed, successful PaymentIntent backed by a checkout snapshot

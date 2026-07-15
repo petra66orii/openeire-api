@@ -7,6 +7,6 @@ New date: {{ new_date|default:"To be confirmed" }}{% if shoot_time %} at {{ shoo
 
 Please reply to confirm if the proposed timing works for the vendor, agent or access holder.
 
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie

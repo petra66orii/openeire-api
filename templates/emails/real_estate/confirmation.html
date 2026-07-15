@@ -4,7 +4,7 @@
 {% block heading %}Your property shoot is confirmed{% endblock %}
 {% block body %}
   <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
-  <p style="margin:0;">We have received the signed agreement and deposit in cleared funds, so your property shoot is now confirmed.</p>
+  <p style="margin:0;">{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }} Your property shoot is now confirmed.</p>
 {% endblock %}
 {% block details_card %}
   <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
@@ -12,7 +12,9 @@
     <p style="margin:0 0 6px;"><strong>Reference:</strong> {{ booking_reference|default:"To be confirmed" }}</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Shoot date:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
-    <p style="margin:0;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Payment arrangement:</strong> {{ payment_arrangement_label|default:"Not specified" }}</p>
+    {% if is_full_on_shoot_day %}<p style="margin:0;"><strong>Payment due:</strong> {{ total_required }} on {{ payment_due_date }}{% if expected_payment_method %} by {{ expected_payment_method }}{% endif %}</p>{% endif %}
   </div>
 {% endblock %}
 {% block service_note %}

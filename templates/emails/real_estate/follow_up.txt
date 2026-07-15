@@ -9,6 +9,6 @@ Property: {{ property_address|default:"Not specified" }}
 {% if review_link %}Leave a Google Review:
 {{ review_link }}
 {% endif %}
-OpenEire Studios
+OpenÉire Studios
 studio@openeire.ie
 https://openeire.ie
