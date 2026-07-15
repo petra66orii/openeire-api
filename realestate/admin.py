@@ -94,11 +94,11 @@ class RealEstateInvoiceInline(admin.TabularInline):
     def stripe_links_inline(self, obj):
         links = []
         if obj.stripe_hosted_invoice_url:
-            links.append(format_html('<a href="{}" target="_blank">Hosted</a>', obj.stripe_hosted_invoice_url))
+            links.append(format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Hosted</a>', obj.stripe_hosted_invoice_url))
         if obj.stripe_invoice_pdf_url:
-            links.append(format_html('<a href="{}" target="_blank">PDF</a>', obj.stripe_invoice_pdf_url))
+            links.append(format_html('<a href="{}" target="_blank" rel="noopener noreferrer">PDF</a>', obj.stripe_invoice_pdf_url))
         if obj.stripe_checkout_url:
-            links.append(format_html('<a href="{}" target="_blank">Checkout</a>', obj.stripe_checkout_url))
+            links.append(format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Checkout</a>', obj.stripe_checkout_url))
         return mark_safe(" · ".join(str(link) for link in links)) if links else "—"
 
     def has_add_permission(self, request, obj=None):
@@ -429,7 +429,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         for invoice in invoices:
             url = reverse("customadmin:realestate_realestateinvoice_change", args=(invoice.pk,))
             stripe_link = (
-                f' <a href="{invoice.stripe_hosted_invoice_url}" target="_blank">Stripe invoice</a>'
+                f' <a href="{invoice.stripe_hosted_invoice_url}" target="_blank" rel="noopener noreferrer">Stripe invoice</a>'
                 if invoice.stripe_hosted_invoice_url else ""
             )
             rows.append(
@@ -1531,15 +1531,6 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 created += 1
         if created:
             self.message_user(request, f"Created balance Checkout for {created} enquiry(s).", level=messages.SUCCESS)
-        for enquiry in queryset:
-            record_timeline_event(
-                enquiry,
-                RealEstateTimelineEvent.EventType.DELIVERY_RELEASED,
-                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
-                title="Delivery released",
-                notes="Delivery email released after server-side financial gate.",
-                created_by=request.user,
-            )
 
     @admin.action(description="Send follow-up email")
     def send_follow_up_email(self, request, queryset):
@@ -1693,11 +1684,11 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
 
     @admin.display(description="Stripe hosted invoice")
     def stripe_hosted_link(self, obj):
-        return format_html('<a href="{}" target="_blank">Open invoice</a>', obj.stripe_hosted_invoice_url) if obj and obj.stripe_hosted_invoice_url else "—"
+        return format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Open invoice</a>', obj.stripe_hosted_invoice_url) if obj and obj.stripe_hosted_invoice_url else "—"
 
     @admin.display(description="Stripe PDF")
     def stripe_pdf_link(self, obj):
-        return format_html('<a href="{}" target="_blank">Download Stripe PDF</a>', obj.stripe_invoice_pdf_url) if obj and obj.stripe_invoice_pdf_url else "—"
+        return format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Download Stripe PDF</a>', obj.stripe_invoice_pdf_url) if obj and obj.stripe_invoice_pdf_url else "—"
 
     def get_readonly_fields(self, request, obj=None):
         if obj and obj.status != RealEstateInvoice.Status.DRAFT:

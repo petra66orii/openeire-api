@@ -365,12 +365,17 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
 
         quote_html = render_to_string("emails/real_estate/quote.html", context)
         quote_text = render_to_string("emails/real_estate/quote.txt", context)
+        booking_html = render_to_string("emails/real_estate/booking_agreement.html", context)
+        booking_text = render_to_string("emails/real_estate/booking_agreement.txt", context)
         confirmation_text = render_to_string("emails/real_estate/confirmation.txt", context)
+        confirmation_rule = context["booking_confirmation_rule"]
 
         self.assertIn("Full payment on shoot day", confirmation_text)
         self.assertIn("€399.00 on 21 July 2026 by Cash", confirmation_text)
         self.assertIn("full amount is due on the shoot date", quote_html)
         self.assertIn("Payment due: 21 July 2026", quote_text)
+        self.assertEqual(booking_html.count(confirmation_rule), 1)
+        self.assertEqual(booking_text.count(confirmation_rule), 1)
         self.assertNotIn("Deposit required", quote_text)
         self.assertNotIn("Balance on delivery", quote_text)
 

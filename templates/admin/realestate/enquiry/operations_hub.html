@@ -165,7 +165,7 @@
             <td>{{ invoice.paid }}</td>
             <td>{{ invoice.outstanding }}</td>
             <td>{{ invoice.stripe_status }}</td>
-            <td>{% if invoice.hosted_url %}<a href="{{ invoice.hosted_url }}" target="_blank">Hosted</a>{% endif %}{% if invoice.pdf_url %} <a href="{{ invoice.pdf_url }}" target="_blank">PDF</a>{% endif %}</td>
+            <td>{% if invoice.hosted_url %}<a href="{{ invoice.hosted_url }}" target="_blank" rel="noopener noreferrer">Hosted</a>{% endif %}{% if invoice.pdf_url %} <a href="{{ invoice.pdf_url }}" target="_blank" rel="noopener noreferrer">PDF</a>{% endif %}</td>
           </tr>
         {% empty %}
           <tr><td colspan="8">No invoices yet.</td></tr>

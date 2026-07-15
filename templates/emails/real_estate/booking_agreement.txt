@@ -20,7 +20,6 @@ Balance: {{ balance_due|default:"To be confirmed" }}
 {% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
 {% else %}Booking Agreement: attached or to follow
 {% endif %}
-{{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
 
 OpenÉire Studios
 studio@openeire.ie

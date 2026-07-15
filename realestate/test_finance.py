@@ -1,13 +1,13 @@
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.management import call_command
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.template.loader import render_to_string
@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from .documents import build_booking_agreement_filename, generate_booking_agreement_pdf
 from .finance import (
+    _refresh_invoice_and_compatibility,
     can_release_realestate_delivery,
     create_realestate_balance_checkout_session,
     ensure_standard_realestate_invoices,
@@ -33,7 +34,7 @@ from .financial_documents import (
     generate_cash_receipt_pdf,
     generate_invoice_pdf,
 )
-from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment
+from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment, RealEstateTimelineEvent
 from .payments import _stripe_metadata, calculate_realestate_deposit_amounts
 from checkout.views import StripeWebhookView
 
@@ -113,6 +114,37 @@ class RealEstateFinanceTests(TestCase):
             recorded_by=self.staff, external_reference="Jane", notes="balance",
         )
         self.assertTrue(can_release_realestate_delivery(self.enquiry))
+
+    def test_delivery_ready_timeline_event_is_recorded_once(self):
+        record_realestate_payment(
+            invoice=self.deposit, amount=self.deposit.total,
+            method=RealEstatePayment.Method.CASH, paid_at=timezone.now(),
+            recorded_by=self.staff, external_reference="Jane", notes="deposit",
+        )
+        record_realestate_payment(
+            invoice=self.balance, amount=self.balance.total,
+            method=RealEstatePayment.Method.BANK_TRANSFER, paid_at=timezone.now(),
+            recorded_by=self.staff, external_reference="Jane", notes="balance",
+        )
+        _refresh_invoice_and_compatibility(
+            self.balance,
+            paid_at=timezone.now(),
+            actor=self.staff,
+        )
+
+        self.assertEqual(
+            self.enquiry.timeline_events.filter(
+                event_type=RealEstateTimelineEvent.EventType.DELIVERY_READY,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            self.enquiry.timeline_events.filter(
+                event_type=RealEstateTimelineEvent.EventType.INVOICE_PAID,
+                notes__contains=self.balance.invoice_number,
+            ).count(),
+            1,
+        )
 
     def test_override_requires_staff_reason_and_can_be_revoked(self):
         with self.assertRaises(ValidationError):
@@ -464,6 +496,9 @@ class RealEstateAdminOperationsHubTests(TestCase):
             "ops", "ops@example.com", "password"
         )
         self.client.force_login(self.admin_user)
+        self.factory = RequestFactory()
+        self.model_admin = RealEstateEnquiryAdmin(RealEstateEnquiry, custom_admin_site)
+        self.model_admin.message_user = Mock()
 
     def make_enquiry(self, arrangement, **overrides):
         values = {
@@ -593,6 +628,31 @@ class RealEstateAdminOperationsHubTests(TestCase):
         self.assertEqual(enquiry.invoices.count(), 1)
         invoice = enquiry.invoices.get()
         self.assertEqual(invoice.invoice_type, RealEstateInvoice.InvoiceType.FULL)
+
+    @patch("realestate.finance.stripe.checkout.Session.create")
+    def test_balance_checkout_action_does_not_record_delivery_released(self, create):
+        create.return_value = {"id": "cs_balance", "url": "https://checkout.test/balance"}
+        enquiry = self.make_enquiry(
+            RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE,
+            status=RealEstateEnquiry.Status.QUOTED,
+        )
+        request = self.factory.post("/admin/realestate/realestateenquiry/")
+        request.user = self.admin_user
+
+        self.model_admin.create_balance_checkout(
+            request,
+            RealEstateEnquiry.objects.filter(pk=enquiry.pk),
+        )
+
+        self.assertEqual(
+            enquiry.timeline_events.filter(
+                event_type=RealEstateTimelineEvent.EventType.DELIVERY_RELEASED,
+            ).count(),
+            0,
+        )
+        self.assertEqual(enquiry.invoices.count(), 2)
+        balance = enquiry.invoices.get(invoice_type=RealEstateInvoice.InvoiceType.BALANCE)
+        self.assertEqual(balance.stripe_checkout_session_id, "cs_balance")
 
     def test_record_cash_payment_action_creates_one_payment_and_receipt(self):
         enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)

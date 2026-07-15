@@ -180,6 +180,9 @@ def record_realestate_payment(
         outstanding = money(invoice.total - _successful_total(invoice))
         if amount > outstanding:
             raise ValidationError("Payment exceeds the invoice amount outstanding.")
+        was_release_ready = can_release_realestate_delivery(invoice.enquiry)
+    else:
+        was_release_ready = None
 
     receipt_number = ""
     if method == RealEstatePayment.Method.CASH and status == RealEstatePayment.Status.SUCCEEDED:
@@ -213,23 +216,37 @@ def record_realestate_payment(
             created_by=recorded_by,
             stripe_session_id=stripe_checkout_session_id,
         )
-        _refresh_invoice_and_compatibility(invoice, paid_at=paid_at, actor=recorded_by)
+        _refresh_invoice_and_compatibility(
+            invoice,
+            paid_at=paid_at,
+            actor=recorded_by,
+            was_release_ready=was_release_ready,
+        )
     return payment, True
 
 
-def _refresh_invoice_and_compatibility(invoice, *, paid_at, actor=None):
+def _refresh_invoice_and_compatibility(invoice, *, paid_at, actor=None, was_release_ready=None):
     paid = money(_successful_total(invoice))
+    if was_release_ready is None:
+        was_release_ready = can_release_realestate_delivery(invoice.enquiry)
     if paid >= invoice.total:
+        was_paid = (
+            RealEstateInvoice.objects.filter(pk=invoice.pk)
+            .values_list("status", flat=True)
+            .first()
+            == RealEstateInvoice.Status.PAID
+        )
         invoice.status = RealEstateInvoice.Status.PAID
         invoice.paid_at = invoice.paid_at or paid_at
         invoice.save(update_fields=("status", "paid_at", "updated_at"))
-        record_timeline_event(
-            invoice.enquiry,
-            RealEstateTimelineEvent.EventType.INVOICE_PAID,
-            title="Invoice paid in full",
-            notes=f"Invoice {invoice.invoice_number} paid in full.",
-            created_by=actor,
-        )
+        if not was_paid:
+            record_timeline_event(
+                invoice.enquiry,
+                RealEstateTimelineEvent.EventType.INVOICE_PAID,
+                title="Invoice paid in full",
+                notes=f"Invoice {invoice.invoice_number} paid in full.",
+                created_by=actor,
+            )
         if invoice.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT:
             enquiry = invoice.enquiry
             enquiry.deposit_paid = True
@@ -263,7 +280,7 @@ def _refresh_invoice_and_compatibility(invoice, *, paid_at, actor=None):
         invoice.status = RealEstateInvoice.Status.PARTIALLY_PAID
         invoice.save(update_fields=("status", "updated_at"))
 
-    if can_release_realestate_delivery(invoice.enquiry):
+    if not was_release_ready and can_release_realestate_delivery(invoice.enquiry):
         record_timeline_event(
             invoice.enquiry,
             RealEstateTimelineEvent.EventType.DELIVERY_READY,

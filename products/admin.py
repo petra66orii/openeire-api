@@ -534,7 +534,7 @@ class LicenseRequestAdmin(admin.ModelAdmin):
             if not doc.file:
                 continue
             links.append(
-                f'<a href="{doc.file.url}" target="_blank">{doc.get_doc_type_display()}</a>'
+                f'<a href="{doc.file.url}" target="_blank" rel="noopener noreferrer">{doc.get_doc_type_display()}</a>'
             )
         return mark_safe("<br>".join(links) if links else "-")
     licence_documents_links.short_description = "Generated Documents"
@@ -1291,7 +1291,7 @@ class LicenceDocumentAdmin(admin.ModelAdmin):
     def file_link(self, obj):
         if not obj.file:
             return "-"
-        return format_html('<a href="{}" target="_blank">Download</a>', obj.file.url)
+        return format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Download</a>', obj.file.url)
     file_link.short_description = 'File'
 
 
