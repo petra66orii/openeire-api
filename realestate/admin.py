@@ -1,3 +1,5 @@
+import logging
+
 from django.contrib import admin
 from django.contrib import messages
 from django import forms
@@ -24,12 +26,15 @@ from .models import RealEstateDeliveryOverride, RealEstateInvoice, RealEstatePay
 from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
-from .payments import create_realestate_deposit_checkout_session
+from .payments import prepare_realestate_deposit_checkout_session
 from .timeline import record_timeline_event
 from .financial_documents import (
     build_invoice_filename, build_receipt_filename,
     generate_invoice_pdf, generate_cash_receipt_pdf,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class RealEstateTimelineEventInline(admin.TabularInline):
@@ -860,13 +865,25 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             })
         if invoice or payment:
             context = build_realestate_email_context(enquiry, **context)
-        send_templated_email(
-            subject=subject,
-            to=[email],
-            template_base=template_base,
-            context=context,
-            reply_to=self._get_reply_to(),
-        )
+        try:
+            send_templated_email(
+                subject=subject,
+                to=[email],
+                template_base=template_base,
+                context=context,
+                reply_to=self._get_reply_to(),
+            )
+        except Exception as exc:
+            self._record_email_timeline_event(
+                enquiry,
+                request,
+                template_base=template_base,
+                email=email,
+                context=context,
+                status=RealEstateTimelineEvent.EventStatus.FAILED,
+                notes=f"{exc.__class__.__name__}: {exc}",
+            )
+            raise
         self._record_email_timeline_event(
             enquiry,
             request,
@@ -1190,23 +1207,45 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         if not event_config:
             return
         event_type, title, reference_context_key = event_config
-        record_timeline_event(
-            enquiry,
-            event_type,
-            status=status,
-            actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
-            title=title,
-            notes=notes,
-            email_template=template_base,
-            recipient_email=email,
-            reference_url=context.get(reference_context_key, "")
-            if reference_context_key
-            else "",
-            stripe_session_id=getattr(enquiry, "stripe_deposit_session_id", "")
-            if template_base == "deposit_request"
-            else "",
-            created_by=getattr(request, "user", None),
-        )
+        try:
+            record_timeline_event(
+                enquiry,
+                event_type,
+                status=status,
+                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+                title=title,
+                notes=notes,
+                email_template=template_base,
+                recipient_email=email,
+                reference_url=context.get(reference_context_key, "")
+                if reference_context_key
+                else "",
+                stripe_session_id=getattr(enquiry, "stripe_deposit_session_id", "")
+                if template_base == "deposit_request"
+                else "",
+                created_by=getattr(request, "user", None),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to record real estate email timeline event. "
+                "enquiry_id=%s template=%s status=%s",
+                enquiry.pk,
+                template_base,
+                status,
+            )
+            if status == RealEstateTimelineEvent.EventStatus.SENT:
+                warning = (
+                    f"{enquiry}: the email was sent, but its timeline event could not "
+                    "be recorded. Check server logs."
+                )
+            else:
+                warning = (
+                    f"{enquiry}: the email failed, and its failure timeline event could "
+                    "not be recorded. Check server logs."
+                )
+            self.message_user(request, warning, level=messages.WARNING)
+            return False
+        return True
 
     def _send_email_action(
         self,
@@ -1355,6 +1394,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         sent_count = 0
         failed_count = 0
         skipped_count = 0
+        paid_count = 0
         warnings = []
 
         for enquiry in queryset:
@@ -1381,17 +1421,23 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 continue
 
             context = self._build_base_context(enquiry)
-            if not context.get("deposit_payment_link"):
-                try:
-                    context["deposit_payment_link"] = create_realestate_deposit_checkout_session(
-                        enquiry
-                    )
-                except Exception as exc:
-                    failed_count += 1
-                    warnings.append(
-                        f"{enquiry}: deposit checkout creation failed ({exc.__class__.__name__}: {exc})."
-                    )
-                    continue
+            try:
+                checkout = prepare_realestate_deposit_checkout_session(enquiry)
+            except Exception as exc:
+                failed_count += 1
+                warnings.append(
+                    f"{enquiry}: deposit checkout preparation failed "
+                    f"({exc.__class__.__name__}: {exc})."
+                )
+                continue
+            if checkout.payment_already_exists:
+                paid_count += 1
+                warnings.append(
+                    f"{enquiry}: the deposit payment is already recorded; "
+                    "no payment request email was sent."
+                )
+                continue
+            context["deposit_payment_link"] = checkout.checkout_url
 
             try:
                 send_templated_email(
@@ -1436,6 +1482,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 request,
                 f"Skipped {skipped_count} enquiry(s) because required data was missing.",
                 level=messages.WARNING,
+            )
+        if paid_count:
+            self.message_user(
+                request,
+                f"Payment already exists for {paid_count} enquiry(s); no deposit request email was sent.",
+                level=messages.INFO,
             )
         if failed_count:
             self.message_user(

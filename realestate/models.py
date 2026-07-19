@@ -146,6 +146,7 @@ class RealEstateEnquiry(models.Model):
     booking_agreement_received = models.BooleanField(default=False)
     deposit_payment_link = models.URLField(max_length=500, blank=True)
     stripe_deposit_session_id = models.CharField(max_length=255, blank=True)
+    stripe_deposit_creation_key = models.CharField(max_length=255, blank=True)
     deposit_paid = models.BooleanField(default=False)
     deposit_paid_at = models.DateTimeField(null=True, blank=True)
     booking_agreement_link = models.URLField(blank=True)
@@ -286,7 +287,7 @@ class RealEstateTimelineEvent(models.Model):
 
     email_template = models.CharField(max_length=100, blank=True)
     recipient_email = models.EmailField(blank=True)
-    reference_url = models.URLField(blank=True)
+    reference_url = models.URLField(max_length=2048, blank=True)
     stripe_session_id = models.CharField(max_length=255, blank=True)
 
     created_by = models.ForeignKey(
