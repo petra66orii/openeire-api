@@ -990,12 +990,27 @@ class StripeWebhookView(APIView):
             else invoice.stripe_checkout_session_id
             or ""
         ).strip()
-        if stored_session_id and checkout_session_id != stored_session_id:
+        recovered_from = str(session.get('recovered_from') or '').strip()
+        if (
+            purpose == 'realestate_deposit'
+            and recovered_from
+            and invoice_number != invoice.invoice_number
+        ):
+            raise RuntimeError(
+                "Recovered real estate deposit checkout is missing the expected invoice identity."
+            )
+        session_matches_stored = (
+            checkout_session_id == stored_session_id
+            or (
+                purpose == 'realestate_deposit'
+                and recovered_from == stored_session_id
+            )
+        )
+        if stored_session_id and not session_matches_stored:
             raise RuntimeError(
                 "Paid real estate deposit checkout session did not match "
                 "the stored enquiry session."
             )
-
         if checkout_session_id and RealEstatePayment.objects.filter(
             stripe_checkout_session_id=checkout_session_id,
             status=RealEstatePayment.Status.SUCCEEDED,
@@ -1019,6 +1034,15 @@ class StripeWebhookView(APIView):
                 "Paid real estate deposit amount did not match the "
                 "expected booking deposit."
             )
+
+        accepted_recovery = (
+            purpose == 'realestate_deposit'
+            and recovered_from == stored_session_id
+            and bool(checkout_session_id)
+        )
+        if accepted_recovery:
+            enquiry.stripe_deposit_session_id = checkout_session_id
+            enquiry.save(update_fields=('stripe_deposit_session_id', 'updated_at'))
 
         paid_at = timezone.now()
         payment, created = record_realestate_payment(
@@ -1046,6 +1070,14 @@ class StripeWebhookView(APIView):
             enquiry.pk,
             checkout_session_id or "unknown",
         )
+        if accepted_recovery:
+            logger.info(
+                "Accepted recovered real estate deposit session. enquiry_id=%s "
+                "session_id=%s recovered_from=%s",
+                enquiry.pk,
+                checkout_session_id,
+                recovered_from,
+            )
         return True
 
     def post(self, request):

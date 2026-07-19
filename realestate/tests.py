@@ -1,12 +1,15 @@
 from decimal import Decimal
+from html.parser import HTMLParser
 from unittest.mock import Mock, call, patch
 
+import stripe
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core import mail
 from django.core.cache import caches
+from django.db import DataError
 from django.template.loader import get_template, render_to_string
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -33,6 +36,8 @@ from .models import RealEstateInvoice
 from .models import RealEstatePayment
 from .models import RealEstateTimelineEvent
 from .payments import calculate_realestate_deposit_amounts
+from .payments import create_realestate_deposit_checkout_session
+from .payments import prepare_realestate_deposit_checkout_session
 
 
 REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
@@ -152,6 +157,323 @@ class RealEstatePricingTests(TestCase):
         self.assertEqual(amounts["vat_total"], Decimal("91.77"))
         self.assertEqual(amounts["total_including_vat"], Decimal("490.77"))
         self.assertEqual(amounts["deposit_amount"], Decimal("147.23"))
+
+
+@override_settings(STRIPE_SECRET_KEY="sk_test_deposit_sessions")
+class RealEstateDepositCheckoutSessionTests(TestCase):
+    def setUp(self):
+        self.enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price=Decimal("399.00"),
+            consent_to_contact=True,
+        )
+        self.deposit_invoice, _balance_invoice = ensure_invoices_for_arrangement(
+            self.enquiry
+        )
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/existing"
+        self.enquiry.save(
+            update_fields=("stripe_deposit_session_id", "deposit_payment_link")
+        )
+
+    def _session(self, **overrides):
+        values = {
+            "id": self.enquiry.stripe_deposit_session_id,
+            "url": self.enquiry.deposit_payment_link,
+            "status": "open",
+            "payment_status": "unpaid",
+            "expires_at": int(timezone.now().timestamp()) + 7200,
+            "amount_total": 11970,
+            "currency": "eur",
+            "livemode": False,
+            "payment_intent": "pi_test_deposit",
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "realestate_invoice_number": self.deposit_invoice.invoice_number,
+            },
+        }
+        values.update(overrides)
+        return values
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_valid_open_unpaid_session_is_reused_without_duplicate_checkout(
+        self, mock_retrieve, mock_create
+    ):
+        mock_retrieve.return_value = self._session()
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertTrue(result.reused)
+        self.assertEqual(result.checkout_url, self.enquiry.deposit_payment_link)
+        mock_retrieve.assert_called_once_with("cs_test_existing")
+        mock_create.assert_not_called()
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_expired_session_is_replaced(self, mock_retrieve, mock_create):
+        mock_retrieve.return_value = self._session(
+            status="expired",
+            expires_at=int(timezone.now().timestamp()) - 60,
+        )
+        mock_create.return_value = {
+            "id": "cs_test_replacement",
+            "url": "https://checkout.stripe.com/replacement",
+        }
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertFalse(result.reused)
+        self.assertEqual(result.session_id, "cs_test_replacement")
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.stripe_deposit_session_id, "cs_test_replacement")
+        create_kwargs = mock_create.call_args.kwargs
+        self.assertEqual(create_kwargs["after_expiration"], {"recovery": {"enabled": True}})
+        remaining = create_kwargs["expires_at"] - int(timezone.now().timestamp())
+        self.assertGreaterEqual(remaining, (24 * 60 * 60) - 2)
+        self.assertLessEqual(remaining, 24 * 60 * 60)
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_missing_session_is_replaced(self, mock_retrieve, mock_create):
+        mock_retrieve.side_effect = stripe.error.InvalidRequestError(
+            "No such Checkout Session", "id", code="resource_missing"
+        )
+        mock_create.return_value = {
+            "id": "cs_test_missing_replacement",
+            "url": "https://checkout.stripe.com/missing-replacement",
+        }
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertEqual(result.session_id, "cs_test_missing_replacement")
+        mock_create.assert_called_once()
+
+    @patch("realestate.payments.stripe.checkout.Session.expire")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_mismatched_sessions_are_replaced(
+        self, mock_retrieve, mock_create, mock_expire
+    ):
+        mismatch_overrides = {
+            "amount": {"amount_total": 11971},
+            "currency": {"currency": "usd"},
+            "enquiry metadata": {
+                "metadata": {
+                    "purpose": "realestate_deposit",
+                    "realestate_enquiry_id": "999999",
+                    "realestate_invoice_number": self.deposit_invoice.invoice_number,
+                }
+            },
+            "invoice metadata": {
+                "metadata": {
+                    "purpose": "realestate_deposit",
+                    "realestate_enquiry_id": str(self.enquiry.pk),
+                    "realestate_invoice_number": "OE-RE-2099-9999",
+                }
+            },
+            "environment": {"livemode": True},
+        }
+
+        for index, (label, overrides) in enumerate(mismatch_overrides.items(), start=1):
+            with self.subTest(mismatch=label):
+                stored_id = f"cs_test_invalid_{index}"
+                self.enquiry.stripe_deposit_session_id = stored_id
+                self.enquiry.deposit_payment_link = f"https://checkout.stripe.com/invalid-{index}"
+                self.enquiry.stripe_deposit_creation_key = ""
+                self.enquiry.save(
+                    update_fields=(
+                        "stripe_deposit_session_id",
+                        "deposit_payment_link",
+                        "stripe_deposit_creation_key",
+                    )
+                )
+                mock_retrieve.return_value = self._session(id=stored_id, **overrides)
+                mock_create.return_value = {
+                    "id": f"cs_test_valid_{index}",
+                    "url": f"https://checkout.stripe.com/valid-{index}",
+                }
+                mock_create.reset_mock()
+
+                result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+                self.assertEqual(result.session_id, f"cs_test_valid_{index}")
+                mock_create.assert_called_once()
+                mock_expire.assert_called_with(stored_id)
+
+    @patch("realestate.payments.stripe.checkout.Session.expire")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_session_near_expiry_is_replaced(
+        self, mock_retrieve, mock_create, mock_expire
+    ):
+        mock_retrieve.return_value = self._session(
+            expires_at=int(timezone.now().timestamp()) + (15 * 60)
+        )
+        mock_create.return_value = {
+            "id": "cs_test_near_expiry_replacement",
+            "url": "https://checkout.stripe.com/near-expiry-replacement",
+        }
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertEqual(result.session_id, "cs_test_near_expiry_replacement")
+        mock_expire.assert_called_once_with("cs_test_existing")
+        mock_create.assert_called_once()
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_deliberate_replacements_use_fresh_idempotency_keys(
+        self, mock_retrieve, mock_create
+    ):
+        mock_retrieve.return_value = self._session(status="expired")
+        mock_create.side_effect = (
+            {"id": "cs_test_replacement_1", "url": "https://checkout.stripe.com/new-1"},
+            {"id": "cs_test_replacement_2", "url": "https://checkout.stripe.com/new-2"},
+        )
+
+        prepare_realestate_deposit_checkout_session(self.enquiry)
+        self.enquiry.stripe_deposit_session_id = "cs_test_expired_again"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/expired-again"
+        self.enquiry.save(
+            update_fields=("stripe_deposit_session_id", "deposit_payment_link")
+        )
+        mock_retrieve.return_value = self._session(status="expired")
+        prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        first_key = mock_create.call_args_list[0].kwargs["idempotency_key"]
+        second_key = mock_create.call_args_list[1].kwargs["idempotency_key"]
+        self.assertNotEqual(first_key, second_key)
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_network_retry_reuses_one_creation_attempt_idempotency_key(self, mock_create):
+        self.enquiry.stripe_deposit_session_id = ""
+        self.enquiry.deposit_payment_link = ""
+        self.enquiry.save(
+            update_fields=("stripe_deposit_session_id", "deposit_payment_link")
+        )
+        mock_create.side_effect = (
+            stripe.error.APIConnectionError("network timeout"),
+            {"id": "cs_test_after_retry", "url": "https://checkout.stripe.com/after-retry"},
+        )
+
+        with self.assertRaisesRegex(stripe.error.APIConnectionError, "network timeout"):
+            prepare_realestate_deposit_checkout_session(self.enquiry)
+        self.enquiry.refresh_from_db()
+        persisted_key = self.enquiry.stripe_deposit_creation_key
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertEqual(result.session_id, "cs_test_after_retry")
+        self.assertTrue(persisted_key)
+        self.assertEqual(
+            mock_create.call_args_list[0].kwargs["idempotency_key"],
+            mock_create.call_args_list[1].kwargs["idempotency_key"],
+        )
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.stripe_deposit_creation_key, "")
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_permanent_creation_error_clears_attempt_key(self, mock_create):
+        self.enquiry.stripe_deposit_session_id = ""
+        self.enquiry.deposit_payment_link = ""
+        self.enquiry.save(
+            update_fields=("stripe_deposit_session_id", "deposit_payment_link")
+        )
+        mock_create.side_effect = stripe.error.InvalidRequestError(
+            "Invalid Checkout parameter",
+            "after_expiration",
+        )
+
+        with self.assertRaises(stripe.error.InvalidRequestError):
+            prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.stripe_deposit_creation_key, "")
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.expire")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_concurrent_replacement_reuses_session_saved_by_other_request(
+        self,
+        mock_retrieve,
+        mock_expire,
+        mock_create,
+    ):
+        replacement_id = "cs_test_concurrent_replacement"
+        replacement_url = "https://checkout.stripe.com/concurrent-replacement"
+        replacement_session = self._session(
+            id=replacement_id,
+            url=replacement_url,
+        )
+        mock_retrieve.side_effect = (
+            self._session(expires_at=int(timezone.now().timestamp()) + (15 * 60)),
+            replacement_session,
+        )
+
+        def save_concurrent_replacement(_session_id):
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk).update(
+                stripe_deposit_session_id=replacement_id,
+                deposit_payment_link=replacement_url,
+            )
+
+        mock_expire.side_effect = save_concurrent_replacement
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertTrue(result.reused)
+        self.assertEqual(result.session_id, replacement_id)
+        mock_create.assert_not_called()
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_complete_paid_session_is_reconciled_without_new_checkout(
+        self, mock_retrieve, mock_create
+    ):
+        mock_retrieve.return_value = self._session(status="complete", payment_status="paid")
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+        second_result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertTrue(result.payment_already_exists)
+        self.assertTrue(second_result.payment_already_exists)
+        mock_create.assert_not_called()
+        payments = RealEstatePayment.objects.filter(
+            stripe_checkout_session_id="cs_test_existing"
+        )
+        self.assertEqual(payments.count(), 1)
+        payment = payments.get()
+        self.assertEqual(payment.amount, Decimal("119.70"))
+        self.enquiry.refresh_from_db()
+        self.assertTrue(self.enquiry.deposit_paid)
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    @patch("realestate.payments.stripe.checkout.Session.retrieve")
+    def test_mismatched_paid_session_requires_review_without_replacement(
+        self, mock_retrieve, mock_create
+    ):
+        mock_retrieve.return_value = self._session(
+            status="complete",
+            payment_status="paid",
+            amount_total=1,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "manual review"):
+            prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        mock_create.assert_not_called()
+        self.assertFalse(
+            RealEstatePayment.objects.filter(
+                stripe_checkout_session_id="cs_test_existing"
+            ).exists()
+        )
 
 
 class RealEstateEmailTemplateTests(SimpleTestCase):
@@ -417,14 +739,38 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn('href="mailto:shoots@openeire.ie"', html)
 
     def test_booking_deposit_cta_appears_with_deposit_link(self):
+        checkout_url = (
+            "https://checkout.stripe.com/c/pay/cs_test_example"
+            "?prefilled_email=jane%40example.com#fidkdWxOYHwnPyd1blpxYHZxWjA0"
+        )
+        context = {**REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT, "deposit_payment_link": checkout_url}
         html = render_to_string(
             "emails/real_estate/deposit_request.html",
-            REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+            context,
         )
 
         self.assertIn("Pay Secure Deposit", html)
-        self.assertIn("https://checkout.stripe.com/example", html)
         self.assertIn("Review Booking Agreement", html)
+
+        class DepositLinkParser(HTMLParser):
+            href = None
+            current_href = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "a":
+                    self.current_href = dict(attrs).get("href")
+
+            def handle_endtag(self, tag):
+                if tag == "a":
+                    self.current_href = None
+
+            def handle_data(self, data):
+                if data.strip() == "Pay Secure Deposit":
+                    self.href = self.current_href
+
+        parser = DepositLinkParser()
+        parser.feed(html)
+        self.assertEqual(parser.href, checkout_url)
 
     def test_delivery_cta_appears_with_delivery_link(self):
         html = render_to_string(
@@ -757,6 +1103,11 @@ class BookingAgreementDocumentTests(TestCase):
 
 
 class RealEstateTimelineEventTests(TestCase):
+    def test_reference_url_has_explicit_checkout_safe_max_length(self):
+        field = RealEstateTimelineEvent._meta.get_field("reference_url")
+
+        self.assertEqual(field.max_length, 2048)
+
     def test_timeline_event_model_can_be_created(self):
         enquiry = RealEstateEnquiry.objects.create(
             name="Jane Agent",
@@ -1373,9 +1724,11 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         request = self._request()
         self.enquiry.booking_agreement_received = True
         self.enquiry.save(update_fields=["booking_agreement_received"])
+        checkout_url = "https://checkout.stripe.com/c/pay/" + ("a" * 250)
+        self.assertGreater(len(checkout_url), 200)
         mock_session_create.return_value = {
             "id": "cs_realestate_deposit",
-            "url": "https://checkout.stripe.com/c/pay/realestate",
+            "url": checkout_url,
         }
 
         self.model_admin.send_deposit_request_email(
@@ -1386,7 +1739,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.enquiry.refresh_from_db()
         self.assertEqual(
             self.enquiry.deposit_payment_link,
-            "https://checkout.stripe.com/c/pay/realestate",
+            checkout_url,
         )
         self.assertEqual(self.enquiry.stripe_deposit_session_id, "cs_realestate_deposit")
         mock_session_create.assert_called_once()
@@ -1401,7 +1754,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         email_context = mock_send_templated_email.call_args.kwargs["context"]
         self.assertEqual(
             email_context["deposit_payment_link"],
-            "https://checkout.stripe.com/c/pay/realestate",
+            checkout_url,
         )
         self.assertIn("119.70", email_context["deposit_amount"])
         self.assertIn("279.30", email_context["balance_due"])
@@ -1409,9 +1762,121 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             event_type=RealEstateTimelineEvent.EventType.DEPOSIT_REQUEST_SENT
         )
         self.assertEqual(event.status, RealEstateTimelineEvent.EventStatus.SENT)
-        self.assertEqual(event.reference_url, "https://checkout.stripe.com/c/pay/realestate")
+        self.assertEqual(event.reference_url, checkout_url)
         self.assertEqual(event.stripe_session_id, "cs_realestate_deposit")
 
+    @override_settings(STRIPE_SECRET_KEY="sk_test_admin")
+    @patch("realestate.admin.record_timeline_event", side_effect=DataError("timeline unavailable"))
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_timeline_failure_after_send_is_warning_not_email_failure(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+        mock_record_timeline_event,
+    ):
+        request = self._request()
+        deposit_invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/existing"
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.save(
+            update_fields=[
+                "booking_agreement_received",
+                "deposit_payment_link",
+                "stripe_deposit_session_id",
+            ]
+        )
+
+        valid_session = {
+            "id": "cs_test_existing",
+            "url": self.enquiry.deposit_payment_link,
+            "status": "open",
+            "payment_status": "unpaid",
+            "expires_at": int(timezone.now().timestamp()) + 7200,
+            "amount_total": 11970,
+            "currency": "eur",
+            "livemode": False,
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "realestate_invoice_number": deposit_invoice.invoice_number,
+            },
+        }
+        with patch(
+            "realestate.payments.stripe.checkout.Session.retrieve",
+            return_value=valid_session,
+        ):
+            with self.assertLogs("realestate.admin", level="ERROR") as logs:
+                response = self.model_admin.operations_action_view(
+                    request,
+                    str(self.enquiry.pk),
+                    "send-deposit-request",
+                )
+
+        self.assertEqual(response.status_code, 302)
+        mock_session_create.assert_not_called()
+        mock_send_templated_email.assert_called_once()
+        mock_record_timeline_event.assert_called_once()
+        self.assertIn("Failed to record real estate email timeline event", logs.output[0])
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Deposit request email sent for 1 enquiry(s).",
+            level=messages.SUCCESS,
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(any("the email was sent" in message for message in warning_messages))
+        self.assertFalse(
+            any(
+                call.kwargs.get("level") == messages.ERROR
+                for call in self.model_admin.message_user.call_args_list
+            )
+        )
+
+    @patch("realestate.admin.record_timeline_event", side_effect=DataError("timeline unavailable"))
+    @patch("realestate.admin.send_templated_email", side_effect=RuntimeError("smtp offline"))
+    def test_email_failure_is_not_masked_when_failed_timeline_write_also_fails(
+        self,
+        mock_send_templated_email,
+        mock_record_timeline_event,
+    ):
+        request = self._request()
+        self.enquiry.deposit_paid = True
+        self.enquiry.deposit_paid_at = timezone.now()
+        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at"])
+
+        with self.assertLogs("realestate.admin", level="ERROR") as logs:
+            self.model_admin.send_confirmation_email(
+                request,
+                RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+            )
+
+        mock_send_templated_email.assert_called_once()
+        mock_record_timeline_event.assert_called_once()
+        failed_event_call = mock_record_timeline_event.call_args
+        self.assertEqual(
+            failed_event_call.kwargs["status"],
+            RealEstateTimelineEvent.EventStatus.FAILED,
+        )
+        self.assertIn("RuntimeError: smtp offline", failed_event_call.kwargs["notes"])
+        self.assertIn("Failed to record real estate email timeline event", logs.output[0])
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Confirmation email failed for 1 enquiry(s).",
+            level=messages.ERROR,
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(any("the email failed" in message for message in warning_messages))
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_admin")
     @patch("realestate.admin.send_templated_email")
     @patch("realestate.payments.stripe.checkout.Session.create")
     def test_deposit_request_reuses_existing_link(
@@ -1420,16 +1885,41 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         mock_send_templated_email,
     ):
         request = self._request()
+        deposit_invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
         self.enquiry.booking_agreement_received = True
         self.enquiry.deposit_payment_link = "https://checkout.stripe.com/existing"
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
         self.enquiry.save(
-            update_fields=["booking_agreement_received", "deposit_payment_link"]
+            update_fields=[
+                "booking_agreement_received",
+                "deposit_payment_link",
+                "stripe_deposit_session_id",
+            ]
         )
 
-        self.model_admin.send_deposit_request_email(
-            request,
-            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
-        )
+        valid_session = {
+            "id": "cs_test_existing",
+            "url": self.enquiry.deposit_payment_link,
+            "status": "open",
+            "payment_status": "unpaid",
+            "expires_at": int(timezone.now().timestamp()) + 7200,
+            "amount_total": 11970,
+            "currency": "eur",
+            "livemode": False,
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "realestate_invoice_number": deposit_invoice.invoice_number,
+            },
+        }
+        with patch(
+            "realestate.payments.stripe.checkout.Session.retrieve",
+            return_value=valid_session,
+        ):
+            self.model_admin.send_deposit_request_email(
+                request,
+                RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+            )
 
         mock_session_create.assert_not_called()
         mock_send_templated_email.assert_called_once()
@@ -1437,6 +1927,104 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             mock_send_templated_email.call_args.kwargs["context"]["deposit_payment_link"],
             "https://checkout.stripe.com/existing",
         )
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_admin")
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_paid_deposit_session_is_reconciled_without_duplicate_email_or_session(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+        deposit_invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/already-paid"
+        self.enquiry.stripe_deposit_session_id = "cs_test_already_paid"
+        self.enquiry.save(
+            update_fields=(
+                "booking_agreement_received",
+                "deposit_payment_link",
+                "stripe_deposit_session_id",
+            )
+        )
+        paid_session = {
+            "id": "cs_test_already_paid",
+            "url": self.enquiry.deposit_payment_link,
+            "status": "complete",
+            "payment_status": "paid",
+            "expires_at": int(timezone.now().timestamp()) + 3600,
+            "amount_total": 11970,
+            "currency": "eur",
+            "livemode": False,
+            "payment_intent": "pi_test_already_paid",
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "realestate_invoice_number": deposit_invoice.invoice_number,
+            },
+        }
+
+        with patch(
+            "realestate.payments.stripe.checkout.Session.retrieve",
+            return_value=paid_session,
+        ):
+            self.model_admin.send_deposit_request_email(
+                request,
+                RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+            )
+
+        mock_session_create.assert_not_called()
+        mock_send_templated_email.assert_not_called()
+        self.assertTrue(
+            RealEstatePayment.objects.filter(
+                stripe_checkout_session_id="cs_test_already_paid",
+                status=RealEstatePayment.Status.SUCCEEDED,
+            ).exists()
+        )
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Payment already exists for 1 enquiry(s); no deposit request email was sent.",
+            level=messages.INFO,
+        )
+
+    @patch("realestate.admin.send_templated_email")
+    @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_deposit_request_rejects_non_deposit_payment_arrangements(
+        self,
+        mock_session_create,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+        arrangements = (
+            RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
+            RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            RealEstateEnquiry.PaymentArrangement.CUSTOM,
+        )
+
+        for arrangement in arrangements:
+            with self.subTest(arrangement=arrangement):
+                self.model_admin.message_user.reset_mock()
+                self.enquiry.payment_arrangement = arrangement
+                self.enquiry.booking_agreement_received = True
+                if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM:
+                    self.enquiry.custom_payment_terms = "50% now, 50% on delivery"
+                    self.enquiry.custom_required_total = Decimal("399.00")
+                self.enquiry.save()
+
+                self.model_admin.send_deposit_request_email(
+                    request,
+                    RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+                )
+
+                self.model_admin.message_user.assert_any_call(
+                    request,
+                    "Skipped 1 enquiry(s) because required data was missing.",
+                    level=messages.WARNING,
+                )
+
+        mock_session_create.assert_not_called()
+        mock_send_templated_email.assert_not_called()
 
     @patch("realestate.admin.send_templated_email")
     @patch("realestate.payments.stripe.checkout.Session.create")

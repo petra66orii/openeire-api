@@ -45,6 +45,23 @@ Use this checklist before enabling or changing any real estate email flow in pro
 - [ ] Booking/deposit emails show "Review Booking Agreement" as a secondary text link when an agreement link is present.
 - [ ] Booking/deposit emails state the booking is not confirmed until the agreement is signed and the deposit is received in cleared funds.
 - [ ] Confirmation emails are sent only after the signed agreement and cleared deposit are received.
+
+## Deposit Checkout link lifetime
+
+Deposit-request emails currently contain a raw Stripe Checkout URL. Each Session is
+created with Stripe's maximum 24-hour lifetime, so the URL is not a durable payment
+address. Before an admin email is sent, the stored Session is retrieved and reused
+only while it is open, unpaid, correctly scoped, and at least 30 minutes from expiry.
+Expired or invalid Sessions are replaced, and Stripe after-expiration recovery is
+enabled for clients who open an older email.
+
+The recommended durable design is a stable, signed OpenÉire URL in the email. That
+endpoint should validate the signature and enquiry, then redirect to a current valid
+Checkout Session (creating one when required). This keeps short-lived Stripe URLs out
+of long-lived email content. The existing hosted-invoice workflow is another viable
+option for deposits and already provides a durable Stripe-hosted payment page, but
+adopting it would change deposit collection, invoice delivery, reminder, and webhook
+semantics and should be planned as a separate payment-flow migration.
 - [ ] Delivery emails include a "Download Media" CTA when a delivery link is present.
 - [ ] Delivery emails include the agreed commercial marketing licence wording and do not imply ownership transfer.
 - [ ] Follow-up emails include a "Leave a Google Review" CTA only when a review link exists.

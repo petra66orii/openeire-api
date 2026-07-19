@@ -37,7 +37,9 @@ from products.models import (
     generate_variants_for_photo,
 )
 from realestate.models import RealEstateEnquiry
+from realestate.models import RealEstatePayment
 from realestate.models import RealEstateTimelineEvent
+from realestate.finance import ensure_invoices_for_arrangement
 from .discounts import record_discount_redemption
 from .attempts import canonicalize_cart
 from .models import CheckoutAttempt, DiscountRedemption, Order, OrderItem, ProductShipping
@@ -1072,6 +1074,67 @@ class StripeWebhookLicenseTests(TestCase):
         )
         self.assertEqual(event.status, "FAILED")
         self.assertIn("stored enquiry session", event.error_message)
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_deposit_webhook_accepts_recovered_session(self, mock_construct):
+        enquiry = self._create_realestate_deposit_enquiry()
+        deposit_invoice = ensure_invoices_for_arrangement(enquiry)[0]
+        mock_construct.return_value = self._realestate_deposit_event(
+            enquiry,
+            event_id="evt_realestate_recovered_session",
+            id="cs_realestate_recovered",
+            recovered_from="cs_realestate_deposit",
+            metadata={
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(enquiry.pk),
+                "realestate_invoice_number": deposit_invoice.invoice_number,
+            },
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        enquiry.refresh_from_db()
+        self.assertTrue(enquiry.deposit_paid)
+        self.assertEqual(enquiry.stripe_deposit_session_id, "cs_realestate_recovered")
+        self.assertTrue(
+            RealEstatePayment.objects.filter(
+                stripe_checkout_session_id="cs_realestate_recovered",
+                status=RealEstatePayment.Status.SUCCEEDED,
+            ).exists()
+        )
+
+    @patch("checkout.views.stripe.Webhook.construct_event")
+    def test_realestate_recovered_session_requires_invoice_identity(self, mock_construct):
+        enquiry = self._create_realestate_deposit_enquiry()
+        mock_construct.return_value = self._realestate_deposit_event(
+            enquiry,
+            event_id="evt_realestate_recovered_missing_invoice",
+            id="cs_realestate_recovered",
+            recovered_from="cs_realestate_deposit",
+        )
+
+        response = self.client.post(
+            self.url,
+            data="{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        enquiry.refresh_from_db()
+        self.assertFalse(enquiry.deposit_paid)
+        self.assertEqual(enquiry.stripe_deposit_session_id, "cs_realestate_deposit")
+        self.assertFalse(
+            RealEstatePayment.objects.filter(
+                stripe_checkout_session_id="cs_realestate_recovered"
+            ).exists()
+        )
 
     @patch("checkout.views.stripe.Webhook.construct_event")
     def test_realestate_deposit_webhook_fails_on_amount_mismatch(self, mock_construct):
