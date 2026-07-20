@@ -19,6 +19,7 @@ from .emails import build_realestate_email_context
 from .emails import get_realestate_reply_to_email
 from .emails import send_templated_email
 from .documents import build_booking_agreement_filename
+from .documents import booking_agreement_missing_requirements
 from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
 from .models import RealEstateTimelineEvent
@@ -325,6 +326,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 "fields": (
                     "preferred_package",
                     "add_ons",
+                    "travel_supplement_amount",
+                    "travel_details",
                     "preferred_date",
                     "message",
                 )
@@ -1287,8 +1290,10 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 ]
             if missing_requirements:
                 skipped_count += 1
+                missing_verb = "are" if len(missing_requirements) > 1 else "is"
                 warnings.append(
-                    f"{enquiry}: skipped because {', '.join(missing_requirements)} is missing."
+                    f"{enquiry}: skipped because {', '.join(missing_requirements)} "
+                    f"{missing_verb} missing."
                 )
                 continue
 
@@ -1379,6 +1384,10 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             subject=f"Booking Agreement for your property media booking - {get_business_identity().display_name}",
             template_base="booking_agreement",
             description="Booking agreement email",
+            required_context=lambda enquiry, context: [
+                (requirement, False)
+                for requirement in booking_agreement_missing_requirements(enquiry)
+            ],
             attachment_builder=lambda enquiry, context: [
                 (
                     build_booking_agreement_filename(enquiry),

@@ -92,6 +92,24 @@ class RealEstateEnquiry(models.Model):
     company_name = models.CharField(max_length=255, blank=True)
     eircode = models.CharField(max_length=20, blank=True)
     add_ons = models.JSONField(default=list, blank=True)
+    travel_supplement_amount = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text=(
+            "Exact travel supplement already included in the quoted price. "
+            "Required before issuing an agreement when the travel add-on is selected."
+        ),
+    )
+    travel_details = models.TextField(
+        blank=True,
+        help_text=(
+            "Explain the agreed travel basis, such as chargeable distance or destination. "
+            "Required before issuing an agreement when the travel add-on is selected."
+        ),
+    )
     preferred_date = models.DateField(null=True, blank=True)
     how_heard = models.CharField(max_length=32, choices=HowHeard.choices, blank=True)
     message = models.TextField(blank=True)

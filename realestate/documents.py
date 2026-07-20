@@ -75,6 +75,25 @@ def _booking_reference(enquiry):
     return f"RE-{enquiry.id}" if getattr(enquiry, "id", None) else "RE-DRAFT"
 
 
+def _has_travel_supplement(enquiry):
+    return "travel_supplement" in (getattr(enquiry, "add_ons", None) or [])
+
+
+def booking_agreement_missing_requirements(enquiry):
+    if not _has_travel_supplement(enquiry):
+        return []
+
+    missing = []
+    travel_amount = _decimal_or_none(
+        getattr(enquiry, "travel_supplement_amount", None)
+    )
+    if travel_amount is None or travel_amount <= 0:
+        missing.append("travel supplement amount")
+    if not str(getattr(enquiry, "travel_details", "") or "").strip():
+        missing.append("travel details")
+    return missing
+
+
 def build_booking_agreement_filename(enquiry):
     reference = _booking_reference(enquiry).lower()
     name_part = slugify(getattr(enquiry, "name", "") or "client") or "client"
@@ -279,6 +298,7 @@ def _build_booking_agreement_context(enquiry):
     is_full_upfront = arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT
     is_full_on_shoot_day = arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY
     is_custom_payment = arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
+    has_travel_supplement = _has_travel_supplement(enquiry)
 
     return {
         **identity.as_context(),
@@ -304,7 +324,23 @@ def _build_booking_agreement_context(enquiry):
         "shoot_time": blank_if_missing(getattr(enquiry, "shoot_time", "")),
         "access_contact": blank_if_missing(getattr(enquiry, "access_contact", "")),
         "access_notes": blank_if_missing(getattr(enquiry, "access_notes", "")),
-        "travel_details": blank_if_missing(getattr(enquiry, "travel_details", "")),
+        "travel_supplement_applies": (
+            "Yes - included in the quoted services total"
+            if has_travel_supplement
+            else "No"
+        ),
+        "travel_supplement_amount": (
+            _format_agreement_money(
+                getattr(enquiry, "travel_supplement_amount", None)
+            )
+            if has_travel_supplement
+            else ""
+        ),
+        "travel_details": (
+            blank_if_missing(getattr(enquiry, "travel_details", ""))
+            if has_travel_supplement
+            else "Not applicable"
+        ),
         "package_name": _agreement_currency_text(
             enquiry.get_preferred_package_summary()
             if hasattr(enquiry, "get_preferred_package_summary")
@@ -371,6 +407,13 @@ def render_booking_agreement_markdown(
         existing = enquiry.booking_agreement_snapshots.first()
         if existing:
             return existing.rendered_markdown
+
+    missing_requirements = booking_agreement_missing_requirements(enquiry)
+    if missing_requirements:
+        raise ValueError(
+            "Booking Agreement cannot be generated until the following travel "
+            f"information is provided: {', '.join(missing_requirements)}."
+        )
 
     context = _build_booking_agreement_context(enquiry)
     rendered_markdown = Template(_load_booking_agreement_template()).render(

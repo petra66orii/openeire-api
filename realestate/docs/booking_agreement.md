@@ -47,7 +47,7 @@ and
 | Access contact on site | {{ access_contact }} |
 | Access notes / restrictions | {{ access_notes }} |
 | Drone services included | Subject to the selected package, agreed add-ons, legal conditions, weather, safety, and operational restrictions on the day |
-| Travel supplement applies | If agreed in writing before the shoot |
+| Travel supplement applies | {{ travel_supplement_applies }} |
 | Travel details | {{ travel_details }} |
 
 ---
@@ -59,7 +59,8 @@ The Client books the following package:
 | Package and payment details | Information |
 | --- | --- |
 | Package name | {{ package_name }} |
-| {% if vat_registered and not price_input_is_gross %}Package fee excluding VAT{% else %}Package total{% endif %} | {{ quote_total }} |
+{% if travel_supplement_amount %}| Travel supplement included | {{ travel_supplement_amount }} |
+{% endif %}| {% if vat_registered and not price_input_is_gross %}Quoted services subtotal excluding VAT{% else %}Quoted services total{% endif %} | {{ quote_total }} |
 | VAT | {{ vat_total }} |
 | Total fee payable | {{ total_required }} |
 | Payment arrangement | {{ payment_arrangement_label }} |

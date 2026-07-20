@@ -996,7 +996,8 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("| Shoot time | Not provided |", rendered)
         self.assertIn("| Access contact on site | Not provided |", rendered)
         self.assertIn("| Access notes / restrictions | Not provided |", rendered)
-        self.assertIn("| Travel details | Not provided |", rendered)
+        self.assertIn("| Travel supplement applies | No |", rendered)
+        self.assertIn("| Travel details | Not applicable |", rendered)
         self.assertIn("| VAT | Not provided |", rendered)
         self.assertIn("| Total fee payable | Not provided |", rendered)
         self.assertIn("| Deposit required | Not provided |", rendered)
@@ -1024,7 +1025,7 @@ class BookingAgreementDocumentTests(TestCase):
 
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("| Package total | €399.00 |", rendered)
+        self.assertIn("| Quoted services total | €399.00 |", rendered)
         self.assertIn("| VAT | €0.00 |", rendered)
         self.assertIn("| Total fee payable | €399.00 |", rendered)
         self.assertIn("| Deposit required | €119.70 |", rendered)
@@ -1118,6 +1119,8 @@ class BookingAgreementDocumentTests(TestCase):
             shoot_date="2026-06-20",
             quoted_price="399.00",
             add_ons=["floor_plan", "additional_social_cuts", "travel_supplement"],
+            travel_supplement_amount="65.00",
+            travel_details="Travel supplement agreed for 62 km beyond the included radius",
             payment_due_date="2026-06-20",
             expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.STRIPE,
             consent_to_contact=True,
@@ -1129,7 +1132,6 @@ class BookingAgreementDocumentTests(TestCase):
         enquiry.shoot_time = "10:30"
         enquiry.access_contact = "Property manager - +353 91 555 0101"
         enquiry.access_notes = "Use the courtyard entrance and call on arrival"
-        enquiry.travel_details = "Travel supplement agreed for 62 km beyond the included radius"
 
         rendered = self._render_booking_agreement_markdown(enquiry)
         pdf_bytes = generate_booking_agreement_pdf(enquiry)
@@ -1145,6 +1147,12 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("Floor plan, 2D measured - €75", rendered)
         self.assertIn("Additional social media cuts - €50", rendered)
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", rendered)
+        self.assertIn("| Travel supplement applies | Yes - included in the quoted services total |", rendered)
+        self.assertIn("| Travel supplement included | €65.00 |", rendered)
+        self.assertIn(
+            "| Travel details | Travel supplement agreed for 62 km beyond the included radius |",
+            rendered,
+        )
         self.assertNotIn("Additional Agreed Add-Ons:\n\n- None", rendered)
         information_sections = rendered.split("Included Deliverables:", 1)[0]
         self.assertNotIn("Not provided", information_sections)
@@ -1196,7 +1204,15 @@ class BookingAgreementDocumentTests(TestCase):
         issued_snapshot = enquiry.booking_agreement_snapshots.get()
 
         enquiry.add_ons = ["floor_plan", "travel_supplement"]
-        enquiry.save(update_fields=["add_ons"])
+        enquiry.travel_supplement_amount = Decimal("65.00")
+        enquiry.travel_details = "130 km return journey; 65 km chargeable"
+        enquiry.save(
+            update_fields=[
+                "add_ons",
+                "travel_supplement_amount",
+                "travel_details",
+            ]
+        )
 
         unchanged_issued_markdown = render_booking_agreement_markdown(enquiry)
         new_markdown = render_booking_agreement_markdown(
@@ -1210,7 +1226,39 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
         self.assertIn("Floor plan, 2D measured - €75", new_markdown)
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
+        self.assertIn("| Travel supplement included | €65.00 |", new_markdown)
         self.assertEqual(enquiry.booking_agreement_snapshots.count(), 2)
+
+    def test_travel_agreement_requires_exact_amount_and_details(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Petra Deely",
+            email="petra@example.com",
+            phone="0831480798",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="7A The Crescent",
+            county="Galway",
+            property_type="Apartment",
+            preferred_package=RealEstateEnquiry.PreferredPackage.STARTER,
+            quoted_price="294.00",
+            add_ons=["travel_supplement"],
+            consent_to_contact=True,
+        )
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "travel supplement amount, travel details",
+        ):
+            render_booking_agreement_markdown(enquiry)
+
+        enquiry.travel_supplement_amount = Decimal("65.00")
+        enquiry.travel_details = "130 km return journey; 65 km chargeable at €0.50 per km"
+        enquiry.save(update_fields=["travel_supplement_amount", "travel_details"])
+        rendered = render_booking_agreement_markdown(enquiry)
+
+        self.assertIn("Starter - €229", rendered)
+        self.assertIn("| Travel supplement included | €65.00 |", rendered)
+        self.assertIn("| Quoted services total | €294.00 |", rendered)
+        self.assertIn(enquiry.travel_details, rendered)
 
 
 class RealEstateTimelineEventTests(TestCase):
@@ -1516,6 +1564,14 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertNotIn("deposit_payment_link", self.model_admin.readonly_fields)
 
         form = self.model_admin.get_form(request)
+        package_fieldset = next(
+            fieldset
+            for fieldset in self.model_admin.fieldsets
+            if fieldset[0] == "Package & Add-ons"
+        )
+        self.assertIn("travel_supplement_amount", package_fieldset[1]["fields"])
+        self.assertIn("travel_details", package_fieldset[1]["fields"])
+        self.assertIn("included in the quoted price", form.base_fields["travel_supplement_amount"].help_text)
         self.assertIn(
             "Booking Agreement PDF is attached automatically",
             form.base_fields["booking_agreement_link"].help_text,
@@ -1683,6 +1739,30 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertEqual(warning_calls, [])
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=self.enquiry)
         self.assertEqual(snapshot.created_by, self.user)
+
+    @patch("realestate.admin.send_templated_email")
+    def test_booking_agreement_is_skipped_when_travel_breakdown_is_missing(
+        self,
+        mock_send_templated_email,
+    ):
+        self.enquiry.add_ons = ["travel_supplement"]
+        self.enquiry.save(update_fields=["add_ons"])
+        request = self._request()
+
+        self.model_admin.send_booking_agreement_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_send_templated_email.assert_not_called()
+        self.assertFalse(self.enquiry.booking_agreement_snapshots.exists())
+        warning_messages = [call.args[1] for call in self.model_admin.message_user.call_args_list]
+        self.assertTrue(
+            any(
+                "travel supplement amount, travel details are missing" in message
+                for message in warning_messages
+            )
+        )
 
     def test_operations_download_invoice_requires_change_permission(self):
         invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
