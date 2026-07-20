@@ -1800,7 +1800,13 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
                     invoice,
                     user=request.user,
                 )
-            except (ValidationError, PermissionDenied) as exc:
+            except ValidationError as exc:
+                self.message_user(
+                    request,
+                    f"{invoice.invoice_number}: {' '.join(exc.messages)}",
+                    level=messages.ERROR,
+                )
+            except PermissionDenied as exc:
                 self.message_user(
                     request,
                     f"{invoice.invoice_number}: {exc}",
