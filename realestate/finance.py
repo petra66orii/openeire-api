@@ -152,7 +152,17 @@ def _stripe_value(obj, key, default=None):
     return getattr(obj, key, default)
 
 
-def _verify_expired_test_deposit_session(invoice):
+def _has_matching_checkout_environment(session, session_id):
+    """Require Stripe's explicit mode to agree with the Session identifier."""
+    livemode = _stripe_value(session, "livemode")
+    if livemode is True:
+        return session_id.startswith("cs_live_")
+    if livemode is False:
+        return session_id.startswith("cs_test_")
+    return False
+
+
+def _verify_expired_deposit_session(invoice):
     enquiry = invoice.enquiry
     session_id = str(enquiry.stripe_deposit_session_id or "").strip()
     checkout_url = str(enquiry.deposit_payment_link or "").strip()
@@ -170,7 +180,7 @@ def _verify_expired_test_deposit_session(invoice):
         session = stripe.checkout.Session.retrieve(session_id)
     except Exception as exc:
         logger.exception(
-            "Could not verify saved test deposit Checkout Session before invoice void. "
+            "Could not verify saved deposit Checkout Session before invoice void. "
             "enquiry_id=%s invoice_id=%s session_id=%s",
             enquiry.pk,
             invoice.pk,
@@ -186,7 +196,7 @@ def _verify_expired_test_deposit_session(invoice):
     validation_errors = []
     if str(_stripe_value(session, "id", "") or "").strip() != session_id:
         validation_errors.append("Session ID")
-    if _stripe_value(session, "livemode") is not False:
+    if not _has_matching_checkout_environment(session, session_id):
         validation_errors.append("environment")
     if str(_stripe_value(session, "status", "") or "").lower() != "expired":
         validation_errors.append("status")
@@ -208,7 +218,7 @@ def _verify_expired_test_deposit_session(invoice):
     if validation_errors:
         raise ValidationError(
             "The saved Stripe Checkout Session is not an expired, unpaid, matching "
-            f"test deposit Session ({', '.join(validation_errors)})."
+            f"deposit Session ({', '.join(validation_errors)})."
         )
 
     try:
@@ -223,7 +233,7 @@ def _verify_expired_test_deposit_session(invoice):
         )
     except Exception as exc:
         logger.exception(
-            "Could not check for recovered test deposit Checkout Sessions before "
+            "Could not check for recovered deposit Checkout Sessions before "
             "invoice void. enquiry_id=%s invoice_id=%s session_id=%s",
             enquiry.pk,
             invoice.pk,
@@ -258,7 +268,7 @@ def void_local_realestate_invoice(invoice, *, user=None):
             or str(candidate.enquiry.deposit_payment_link or "").strip()
         )
     ):
-        verified_session_id = _verify_expired_test_deposit_session(candidate)
+        verified_session_id = _verify_expired_deposit_session(candidate)
 
     with transaction.atomic():
         invoice = (
@@ -341,7 +351,7 @@ def void_local_realestate_invoice(invoice, *, user=None):
         )
         if cleared_session_id:
             logger.info(
-                "Cleared verified expired unpaid test deposit Checkout Session before "
+                "Cleared verified expired unpaid deposit Checkout Session before "
                 "invoice void. enquiry_id=%s invoice_id=%s session_id=%s",
                 invoice.enquiry_id,
                 invoice.pk,

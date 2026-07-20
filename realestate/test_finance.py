@@ -173,6 +173,58 @@ class RealEstateFinanceTests(TestCase):
 
     @patch("realestate.finance.stripe.checkout.Session.list")
     @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_expired_unpaid_live_checkout_is_cleared_before_void(
+        self,
+        mock_retrieve,
+        mock_list,
+    ):
+        self.enquiry.stripe_deposit_session_id = "cs_live_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/live"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+        mock_retrieve.return_value = self._expired_test_deposit_session(
+            id="cs_live_existing",
+            livemode=True,
+        )
+        mock_list.return_value = self._stripe_session_list()
+
+        invoice, changed = void_local_realestate_invoice(
+            self.deposit,
+            user=self.staff,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(invoice.status, RealEstateInvoice.Status.VOID)
+
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_checkout_mode_and_session_identifier_mismatch_is_rejected(
+        self,
+        mock_retrieve,
+    ):
+        self.enquiry.stripe_deposit_session_id = "cs_live_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/live"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+        mock_retrieve.return_value = self._expired_test_deposit_session(
+            id="cs_live_existing",
+            livemode=False,
+        )
+
+        with self.assertRaisesMessage(ValidationError, "environment"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+    @patch("realestate.finance.stripe.checkout.Session.list")
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
     def test_unsafe_or_mismatched_checkout_cannot_be_cleared_or_voided(
         self,
         mock_retrieve,
@@ -276,7 +328,7 @@ class RealEstateFinanceTests(TestCase):
         with self.assertRaisesMessage(ValidationError, "recovery-created"):
             void_local_realestate_invoice(self.deposit, user=self.staff)
 
-    @patch("realestate.finance._verify_expired_test_deposit_session")
+    @patch("realestate.finance._verify_expired_deposit_session")
     def test_checkout_reference_change_during_verification_fails_closed(
         self,
         mock_verify,
