@@ -1,8 +1,10 @@
 # {{ business_display_name }} Real Estate Media Booking Agreement
 
-Booking reference: **{{ booking_reference }}**
-Issued on: **{{ issued_on }}**
-Agreement version: **{{ agreement_template_version }}**
+| Agreement details | Information |
+| --- | --- |
+| Booking reference | **{{ booking_reference }}** |
+| Issued on | **{{ issued_on }}** |
+| Agreement version | **{{ agreement_template_version }}** |
 
 This Booking Agreement forms part of the Agreement between {{ business_display_name }} (OpenEire) and the Client for the provision of real estate media services for the specific property booking set out below. It should be read together with the OpenEire Property Media Service Terms, which set out the core legal terms governing property photography, videography, drone operations, licensing, payment, liability, and cancellation.
 
@@ -14,33 +16,39 @@ Drone operations in Europe are governed under the EASA framework, including Regu
 
 This Booking Agreement is entered into between:
 
-**{{ business_display_name }}**
-{{ business_address }}
-{{ business_email }}
+| OpenEire details | Information |
+| --- | --- |
+| Business | **{{ business_display_name }}** |
+| Address | {{ business_address }} |
+| Email | {{ business_email }} |
 
 and
 
-**Client name:** {{ client_name }}
-**Agency / business name:** {{ company_name }}
-**Contact name:** {{ client_contact_name }}
-**Email:** {{ email }}
-**Telephone:** {{ phone }}
-**Registered / business address:** {{ registered_business_address }}
+| Client details | Information |
+| --- | --- |
+| Client name | {{ client_name }} |
+| Agency / business name | {{ company_name }} |
+| Contact name | {{ client_contact_name }} |
+| Email | {{ email }} |
+| Telephone | {{ phone }} |
+| Registered / business address | {{ registered_business_address }} |
 
 ---
 
 ## 2. Property and Booking Details
 
-**Property address:** {{ property_address }}
-**Property type:** {{ property_type }}
-**Listing type:** {{ listing_type }}
-**Shoot date:** {{ shoot_date }}
-**Shoot time:** {{ shoot_time }}
-**Access contact on site:** {{ access_contact }}
-**Access notes / restrictions:** {{ access_notes }}
-**Drone services included:** Subject to the selected package, agreed add-ons, legal conditions, weather, safety, and operational restrictions on the day
-**Travel supplement applies:** If agreed in writing before the shoot
-**Travel details:** {{ travel_details }}
+| Property and booking details | Information |
+| --- | --- |
+| Property address | {{ property_address }} |
+| Property type | {{ property_type }} |
+| Listing type | {{ listing_type }} |
+| Shoot date | {{ shoot_date }} |
+| Shoot time | {{ shoot_time }} |
+| Access contact on site | {{ access_contact }} |
+| Access notes / restrictions | {{ access_notes }} |
+| Drone services included | Subject to the selected package, agreed add-ons, legal conditions, weather, safety, and operational restrictions on the day |
+| Travel supplement applies | If agreed in writing before the shoot |
+| Travel details | {{ travel_details }} |
 
 ---
 
@@ -48,28 +56,24 @@ and
 
 The Client books the following package:
 
-**Package name:** {{ package_name }}
-**{% if vat_registered and not price_input_is_gross %}Package fee excluding VAT{% else %}Package total{% endif %}:** {{ quote_total }}
-
-**VAT:** {{ vat_total }}
-**Total fee payable:** {{ total_required }}
+| Package and payment details | Information |
+| --- | --- |
+| Package name | {{ package_name }} |
+| {% if vat_registered and not price_input_is_gross %}Package fee excluding VAT{% else %}Package total{% endif %} | {{ quote_total }} |
+| VAT | {{ vat_total }} |
+| Total fee payable | {{ total_required }} |
+| Payment arrangement | {{ payment_arrangement_label }} |
+| Payment due date | {{ payment_due_date }} |
+| Expected payment method | {{ expected_payment_method }} |
+{% if is_split_payment %}| Deposit required | {{ deposit_amount }} |
+| Remaining balance | {{ balance_due }} |
+{% elif is_custom_payment %}| Approved custom payment schedule | {{ custom_payment_terms }} |
+{% else %}| Full payment due | {{ total_required }} |
+{% endif %}
 
 {% if not vat_registered %}*{{ vat_notice }}*
 
 {% endif %}
-**Payment arrangement:** {{ payment_arrangement_label }}
-**Payment due date:** {{ payment_due_date }}
-**Expected payment method:** {{ expected_payment_method }}
-
-{% if is_split_payment %}
-**Deposit required:** {{ deposit_amount }}
-**Remaining balance:** {{ balance_due }}
-{% elif is_custom_payment %}
-**Approved custom payment schedule:** {{ custom_payment_terms }}
-{% else %}
-**Full payment due:** {{ total_required }}
-{% endif %}
-
 Included Deliverables:
 
 - The deliverables included in the selected package listed above.
@@ -155,15 +159,19 @@ Only the Deliverables expressly listed above are included in this Booking Agreem
 
 Signed electronically for and on behalf of {{ business_display_name }}
 
-Name: {{ business_signatory_name }}
-Title: {{ business_display_name }}
-Date: {{ issued_on }}
+| OpenEire signature details | Information |
+| --- | --- |
+| Name | {{ business_signatory_name }} |
+| Title | {{ business_display_name }} |
+| Date | {{ issued_on }} |
 
 Signed by or on behalf of the Client:
 
-Name: ______________________________
-Title: ______________________________
-Date: ______________________________
+| Client signature details | Handwritten completion |
+| --- | --- |
+| Name | ______________________________ |
+| Title | ______________________________ |
+| Date | ______________________________ |
 
 {{ acceptance_text }}
 

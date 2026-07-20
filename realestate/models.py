@@ -324,7 +324,7 @@ class RealEstateDocumentSequence(models.Model):
 
 
 class RealEstateBookingAgreementSnapshot(models.Model):
-    TEMPLATE_VERSION = "1.4"
+    TEMPLATE_VERSION = "1.5"
 
     enquiry = models.ForeignKey(
         RealEstateEnquiry,

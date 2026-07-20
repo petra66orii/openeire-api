@@ -15,13 +15,24 @@ def apply_basic_markdown(text):
     return ITALIC_RE.sub(r"<i>\1</i>", text)
 
 
-def render_markdown_to_flowables(markdown_text):
+def render_markdown_to_flowables(
+    markdown_text,
+    *,
+    table_width=None,
+    keep_headings_with_next=False,
+):
     styles = getSampleStyleSheet()
     title_style = styles["Title"]
     h2 = styles["Heading2"]
     h3 = styles["Heading3"]
     normal = styles["BodyText"]
     normal.leading = 14
+    normal.splitLongWords = True
+    normal.allowWidows = False
+    normal.allowOrphans = False
+    if keep_headings_with_next:
+        h2.keepWithNext = True
+        h3.keepWithNext = True
 
     elements = []
     lines = str(markdown_text or "").splitlines()
@@ -37,7 +48,8 @@ def render_markdown_to_flowables(markdown_text):
             content = apply_basic_markdown(line[level:].strip())
             style = title_style if level == 1 else h2 if level == 2 else h3
             elements.append(Paragraph(content, style))
-            elements.append(Spacer(1, 6))
+            if not (keep_headings_with_next and level > 1):
+                elements.append(Spacer(1, 6))
             i += 1
             continue
 
@@ -76,15 +88,31 @@ def render_markdown_to_flowables(markdown_text):
             table_data.extend(
                 [[Paragraph(apply_basic_markdown(cell), normal) for cell in row] for row in rows]
             )
-            table = Table(table_data, hAlign="LEFT")
+            col_widths = None
+            if table_width and header:
+                if len(header) == 2:
+                    col_widths = [table_width * 0.34, table_width * 0.66]
+                else:
+                    col_widths = [table_width / len(header)] * len(header)
+            table = Table(
+                table_data,
+                colWidths=col_widths,
+                hAlign="LEFT",
+                repeatRows=1,
+                splitByRow=1,
+            )
             table.setStyle(TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#262626")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EDEDED")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F8F8")]),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.HexColor("#8C8C8C")),
+                ("LINEBELOW", (0, 1), (-1, -2), 0.25, colors.HexColor("#D9D9D9")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ]))
             elements.append(table)
             elements.append(Spacer(1, 12))

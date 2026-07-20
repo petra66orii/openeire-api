@@ -410,6 +410,7 @@ else:
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
+REALESTATE_API_URL = os.getenv("REALESTATE_API_URL") or os.getenv("SITE_URL")
 
 def _frontend_origin_from_url(value):
     if not value:

@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from openeire_api.business_identity import get_business_identity, public_business_context
 from django.core.mail import EmailMessage
 from django.core.mail import EmailMultiAlternatives
@@ -42,6 +43,26 @@ def get_realestate_site_url():
         or os.getenv("SITE_URL")
         or "https://api.openeire.ie"
     ).strip()
+
+
+def get_realestate_api_url():
+    configured = str(
+        getattr(settings, "REALESTATE_API_URL", None)
+        or os.getenv("REALESTATE_API_URL")
+        or getattr(settings, "SITE_URL", None)
+        or os.getenv("SITE_URL")
+        or ""
+    ).strip()
+    if not configured and (
+        getattr(settings, "DEBUG", False) or getattr(settings, "IS_TEST_ENV", False)
+    ):
+        configured = "http://localhost:8000"
+    if not _is_public_absolute_url(configured):
+        raise ImproperlyConfigured(
+            "REALESTATE_API_URL or SITE_URL must be configured as an absolute "
+            "public API URL."
+        )
+    return configured.rstrip("/")
 
 
 def build_absolute_site_url(path):

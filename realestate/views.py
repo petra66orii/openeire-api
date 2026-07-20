@@ -1,5 +1,7 @@
 import logging
 
+from django.conf import settings
+from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -7,6 +9,7 @@ from rest_framework.response import Response
 from openeire_api.throttling import SharedScopedRateThrottle
 
 from .emails import (
+    get_realestate_reply_to_email,
     send_realestate_client_confirmation_email,
     send_realestate_internal_notification_email,
 )
@@ -16,6 +19,27 @@ from .timeline import record_timeline_event
 
 
 logger = logging.getLogger(__name__)
+
+
+class RealEstateDepositCancelledView(TemplateView):
+    template_name = "realestate/deposit_cancelled.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(
+            {
+                "frontend_url": str(
+                    getattr(settings, "FRONTEND_URL", None) or "https://openeire.ie"
+                ).rstrip("/"),
+                "contact_email": get_realestate_reply_to_email(),
+            }
+        )
+        return context
+
+    def render_to_response(self, context, **response_kwargs):
+        response = super().render_to_response(context, **response_kwargs)
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class RealEstateEnquiryCreateView(generics.CreateAPIView):
