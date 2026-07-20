@@ -9,11 +9,12 @@ import stripe
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.urls import reverse
 from django.utils import timezone
 
 from openeire_api.business_identity import get_business_identity
 
-from .emails import get_realestate_site_url
+from .emails import get_realestate_api_url, get_realestate_site_url
 
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,13 @@ def _configured_stripe_payment_method_types():
 
 def _checkout_return_url(path):
     return urljoin(get_realestate_site_url().rstrip("/") + "/", path.lstrip("/"))
+
+
+def _deposit_cancellation_url():
+    return urljoin(
+        get_realestate_api_url().rstrip("/") + "/",
+        reverse("real-estate-deposit-cancelled").lstrip("/"),
+    )
 
 
 def _stripe_metadata(enquiry, invoice=None):
@@ -416,7 +424,7 @@ def create_realestate_deposit_checkout_session(
         "success_url": _checkout_return_url(
             "real-estate/deposit/success?session_id={CHECKOUT_SESSION_ID}"
         ),
-        "cancel_url": _checkout_return_url("real-estate/deposit/cancelled"),
+        "cancel_url": _deposit_cancellation_url(),
     }
     customer_email = str(getattr(enquiry, "email", "") or "").strip()
     if customer_email:

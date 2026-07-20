@@ -217,6 +217,10 @@ class RealEstateDepositCheckoutSessionTests(TestCase):
         mock_retrieve.assert_called_once_with("cs_test_existing")
         mock_create.assert_not_called()
 
+    @override_settings(
+        REALESTATE_API_URL="https://api.openeire.test",
+        REALESTATE_SITE_URL="https://existing-success.openeire.test",
+    )
     @patch("realestate.payments.stripe.checkout.Session.create")
     @patch("realestate.payments.stripe.checkout.Session.retrieve")
     def test_expired_session_is_replaced(self, mock_retrieve, mock_create):
@@ -236,6 +240,15 @@ class RealEstateDepositCheckoutSessionTests(TestCase):
         self.enquiry.refresh_from_db()
         self.assertEqual(self.enquiry.stripe_deposit_session_id, "cs_test_replacement")
         create_kwargs = mock_create.call_args.kwargs
+        self.assertEqual(
+            create_kwargs["cancel_url"],
+            "https://api.openeire.test/api/real-estate/deposit/cancelled/",
+        )
+        self.assertEqual(
+            create_kwargs["success_url"],
+            "https://existing-success.openeire.test/real-estate/deposit/success"
+            "?session_id={CHECKOUT_SESSION_ID}",
+        )
         self.assertEqual(create_kwargs["after_expiration"], {"recovery": {"enabled": True}})
         remaining = create_kwargs["expires_at"] - int(timezone.now().timestamp())
         self.assertGreaterEqual(remaining, (24 * 60 * 60) - 2)
@@ -913,6 +926,18 @@ class MarkdownPDFRendererTests(SimpleTestCase):
         self.assertIn("Table", class_names)
         self.assertGreaterEqual(class_names.count("Paragraph"), 7)
 
+    def test_two_column_tables_use_fixed_pdf_safe_widths_and_row_splitting(self):
+        flowables = render_markdown_to_flowables(
+            "## Details\n\n| Field | Information |\n| --- | --- |\n| Email | long@example.com |\n",
+            table_width=400,
+            keep_headings_with_next=True,
+        )
+        table = next(flowable for flowable in flowables if flowable.__class__.__name__ == "Table")
+
+        self.assertEqual(table._colWidths, [136.0, 264.0])
+        self.assertEqual(table.splitByRow, 1)
+        self.assertEqual(table.repeatRows, 1)
+
 
 class BookingAgreementDocumentTests(TestCase):
     def _render_booking_agreement_markdown(self, enquiry):
@@ -948,7 +973,7 @@ class BookingAgreementDocumentTests(TestCase):
             f"openeire-booking-agreement-re-{enquiry.id}-jane-agent.pdf",
         )
 
-    def test_booking_agreement_missing_optional_fields_render_as_blank_lines(self):
+    def test_booking_agreement_missing_optional_fields_render_as_not_provided(self):
         enquiry = RealEstateEnquiry.objects.create(
             name="Jane Agent",
             email="jane@example.com",
@@ -965,17 +990,19 @@ class BookingAgreementDocumentTests(TestCase):
         pdf_bytes = generate_booking_agreement_pdf(enquiry)
 
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
-        self.assertIn("**Agency / business name:** ______________________________", rendered)
-        self.assertIn("**Registered / business address:** ______________________________", rendered)
-        self.assertIn("**Listing type:** ______________________________", rendered)
-        self.assertIn("**Shoot time:** ______________________________", rendered)
-        self.assertIn("**Access contact on site:** ______________________________", rendered)
-        self.assertIn("**Access notes / restrictions:** ______________________________", rendered)
-        self.assertIn("**Travel details:** ______________________________", rendered)
-        self.assertIn("**VAT:** ______________________________", rendered)
-        self.assertIn("**Total fee payable:** ______________________________", rendered)
-        self.assertIn("**Deposit required:** ______________________________", rendered)
-        self.assertIn("**Remaining balance:** ______________________________", rendered)
+        self.assertIn("| Agency / business name | Not provided |", rendered)
+        self.assertIn("| Registered / business address | Not provided |", rendered)
+        self.assertIn("| Listing type | Not provided |", rendered)
+        self.assertIn("| Shoot time | Not provided |", rendered)
+        self.assertIn("| Access contact on site | Not provided |", rendered)
+        self.assertIn("| Access notes / restrictions | Not provided |", rendered)
+        self.assertIn("| Travel details | Not provided |", rendered)
+        self.assertIn("| VAT | Not provided |", rendered)
+        self.assertIn("| Total fee payable | Not provided |", rendered)
+        self.assertIn("| Deposit required | Not provided |", rendered)
+        self.assertIn("| Remaining balance | Not provided |", rendered)
+        information_sections = rendered.split("## 9. Signatures and Acceptance", 1)[0]
+        self.assertNotIn("______________________________", information_sections)
         self.assertNotIn("To be confirmed", rendered)
         self.assertNotIn("To be confirmed by the Client", rendered)
 
@@ -997,19 +1024,19 @@ class BookingAgreementDocumentTests(TestCase):
 
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("**Package total:** EUR 399.00", rendered)
-        self.assertIn("**VAT:** EUR 0.00", rendered)
-        self.assertIn("**Total fee payable:** EUR 399.00", rendered)
-        self.assertIn("**Deposit required:** EUR 119.70", rendered)
-        self.assertIn("**Remaining balance:** EUR 279.30", rendered)
+        self.assertIn("| Package total | €399.00 |", rendered)
+        self.assertIn("| VAT | €0.00 |", rendered)
+        self.assertIn("| Total fee payable | €399.00 |", rendered)
+        self.assertIn("| Deposit required | €119.70 |", rendered)
+        self.assertIn("| Remaining balance | €279.30 |", rendered)
         self.assertIn("VAT not applicable", rendered)
         self.assertIn("Signed electronically for and on behalf of OpenÉire Studios", rendered)
-        self.assertIn("Name: Gerry Deely", rendered)
-        self.assertIn("Title: OpenÉire Studios", rendered)
+        self.assertIn("| Name | Gerry Deely |", rendered)
+        self.assertIn("| Title | OpenÉire Studios |", rendered)
         self.assertIn("Signed by or on behalf of the Client:", rendered)
-        self.assertIn("Name: ______________________________", rendered)
-        self.assertIn("Title: ______________________________", rendered)
-        self.assertIn("Date: ______________________________", rendered)
+        self.assertIn("| Name | ______________________________ |", rendered)
+        self.assertIn("| Title | ______________________________ |", rendered)
+        self.assertIn("| Date | ______________________________ |", rendered)
         self.assertIn(
             "By signing electronically and by paying the booking deposit after receipt of this Booking Agreement, the Client confirms",
             rendered,
@@ -1036,12 +1063,12 @@ class BookingAgreementDocumentTests(TestCase):
         )
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("**Payment arrangement:** Full payment upfront", rendered)
-        self.assertIn("**Full payment due:** EUR 399.00", rendered)
+        self.assertIn("| Payment arrangement | Full payment upfront |", rendered)
+        self.assertIn("| Full payment due | €399.00 |", rendered)
         self.assertIn("No separate deposit or balance split applies", rendered)
         self.assertIn("less any amount already paid", rendered)
-        self.assertNotIn("**Deposit required:**", rendered)
-        self.assertNotIn("**Remaining balance:**", rendered)
+        self.assertNotIn("| Deposit required |", rendered)
+        self.assertNotIn("| Remaining balance |", rendered)
 
     def test_full_on_shoot_day_cash_agreement_for_kevin(self):
         enquiry = RealEstateEnquiry.objects.create(
@@ -1061,16 +1088,66 @@ class BookingAgreementDocumentTests(TestCase):
         )
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("**Payment arrangement:** Full payment on shoot day", rendered)
-        self.assertIn("**Full payment due:** EUR 399.00", rendered)
-        self.assertIn("**Payment due date:** 21 July 2026", rendered)
-        self.assertIn("**Expected payment method:** Cash", rendered)
+        self.assertIn("| Payment arrangement | Full payment on shoot day |", rendered)
+        self.assertIn("| Full payment due | €399.00 |", rendered)
+        self.assertIn("| Payment due date | 21 July 2026 |", rendered)
+        self.assertIn("| Expected payment method | Cash |", rendered)
         self.assertIn("booking may be confirmed after the signed Booking Agreement is received, before payment is made", rendered)
         self.assertIn("Final high-resolution media and usage rights remain withheld until full payment has been received", rendered)
         self.assertIn("a receipt will be issued", rendered)
         self.assertIn("not contingent on the property being sold, let, or otherwise completed", rendered)
-        self.assertNotIn("**Deposit required:**", rendered)
-        self.assertNotIn("**Remaining balance:**", rendered)
+        self.assertNotIn("| Deposit required |", rendered)
+        self.assertNotIn("| Remaining balance |", rendered)
+
+    def test_long_populated_details_and_all_add_ons_render_in_separate_rows(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Alexandra-Marguerite Fitzwilliam-Smythe",
+            email="alexandra.fitzwilliam-smythe@international-property-partners.example.com",
+            phone="+353 87 123 4567",
+            company_name="International Property Partners and Residential Advisory Services Limited",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address=(
+                "Apartment 42, The Courtyard Residences, 123 Extremely Long Promenade Road, "
+                "Salthill"
+            ),
+            county="Galway",
+            eircode="H91 LONG",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_date="2026-06-20",
+            shoot_date="2026-06-20",
+            quoted_price="399.00",
+            add_ons=["floor_plan", "additional_social_cuts", "travel_supplement"],
+            payment_due_date="2026-06-20",
+            expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.STRIPE,
+            consent_to_contact=True,
+        )
+        enquiry.registered_business_address = (
+            "Suite 12, International Property Centre, Galway"
+        )
+        enquiry.listing_type = "Residential sale"
+        enquiry.shoot_time = "10:30"
+        enquiry.access_contact = "Property manager - +353 91 555 0101"
+        enquiry.access_notes = "Use the courtyard entrance and call on arrival"
+        enquiry.travel_details = "Travel supplement agreed for 62 km beyond the included radius"
+
+        rendered = self._render_booking_agreement_markdown(enquiry)
+        pdf_bytes = generate_booking_agreement_pdf(enquiry)
+
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertIn(f"| Client name | {enquiry.name} |", rendered)
+        self.assertIn(f"| Agency / business name | {enquiry.company_name} |", rendered)
+        self.assertIn(
+            "Apartment 42, The Courtyard Residences, 123 Extremely Long Promenade Road, "
+            "Salthill, Galway, H91 LONG",
+            rendered,
+        )
+        self.assertIn("Floor plan, 2D measured - €75", rendered)
+        self.assertIn("Additional social media cuts - €50", rendered)
+        self.assertIn("Travel supplement beyond 40 km - €0.50 per km", rendered)
+        self.assertNotIn("Additional Agreed Add-Ons:\n\n- None", rendered)
+        information_sections = rendered.split("Included Deliverables:", 1)[0]
+        self.assertNotIn("Not provided", information_sections)
 
     def test_booking_agreement_snapshot_remains_unchanged_after_enquiry_edits(self):
         enquiry = RealEstateEnquiry.objects.create(
@@ -1100,6 +1177,40 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertEqual(snapshot.total_required, Decimal("399.00"))
         self.assertEqual(snapshot.payment_due_date.isoformat(), "2026-07-21")
         self.assertEqual(snapshot.expected_payment_method, RealEstateEnquiry.ExpectedPaymentMethod.CASH)
+
+    def test_new_agreement_version_captures_changed_add_ons_without_mutating_existing_snapshot(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane Agent",
+            email="jane@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example House",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price="399.00",
+            add_ons=["floor_plan"],
+            consent_to_contact=True,
+        )
+        issued_markdown = render_booking_agreement_markdown(enquiry)
+        issued_snapshot = enquiry.booking_agreement_snapshots.get()
+
+        enquiry.add_ons = ["floor_plan", "travel_supplement"]
+        enquiry.save(update_fields=["add_ons"])
+
+        unchanged_issued_markdown = render_booking_agreement_markdown(enquiry)
+        new_markdown = render_booking_agreement_markdown(
+            enquiry,
+            create_new_version=True,
+        )
+
+        issued_snapshot.refresh_from_db()
+        self.assertEqual(unchanged_issued_markdown, issued_markdown)
+        self.assertEqual(issued_snapshot.rendered_markdown, issued_markdown)
+        self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
+        self.assertIn("Floor plan, 2D measured - €75", new_markdown)
+        self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
+        self.assertEqual(enquiry.booking_agreement_snapshots.count(), 2)
 
 
 class RealEstateTimelineEventTests(TestCase):
@@ -1132,6 +1243,24 @@ class RealEstateTimelineEventTests(TestCase):
 
         self.assertEqual(event.enquiry, enquiry)
         self.assertEqual(str(event), f"Note - {enquiry}")
+
+
+@override_settings(
+    FRONTEND_URL="https://openeire.test",
+    REALESTATE_REPLY_TO_EMAIL="studio@openeire.test",
+)
+class RealEstateDepositCancelledViewTests(TestCase):
+    def test_cancellation_destination_returns_professional_confirmation(self):
+        response = self.client.get(reverse("real-estate-deposit-cancelled"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertContains(response, "Deposit payment cancelled")
+        self.assertContains(response, "No payment was taken")
+        self.assertContains(response, "Pay Secure Deposit")
+        self.assertContains(response, 'href="mailto:studio@openeire.test"')
+        self.assertContains(response, 'href="https://openeire.test"')
+        self.assertContains(response, 'name="robots" content="noindex,nofollow"')
 
 
 @override_settings(

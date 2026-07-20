@@ -1382,7 +1382,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             attachment_builder=lambda enquiry, context: [
                 (
                     build_booking_agreement_filename(enquiry),
-                    generate_booking_agreement_pdf(enquiry, created_by=request.user),
+                    generate_booking_agreement_pdf(
+                        enquiry,
+                        create_new_version=True,
+                        created_by=request.user,
+                    ),
                     "application/pdf",
                 )
             ],

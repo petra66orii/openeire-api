@@ -19,13 +19,14 @@ from .models import (
 from .payments import calculate_realestate_deposit_amounts
 
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate
 
 
 BOOKING_AGREEMENT_TEMPLATE_PATH = (
     Path(__file__).resolve().parent / "docs" / "booking_agreement.md"
 )
-BOOKING_AGREEMENT_BLANK = "______________________________"
+BOOKING_AGREEMENT_BLANK = "Not provided"
 BOOKING_AGREEMENT_TEMPLATE_VERSION = RealEstateBookingAgreementSnapshot.TEMPLATE_VERSION
 MONEY = Decimal("0.01")
 
@@ -36,7 +37,13 @@ def blank_if_missing(value, blank=BOOKING_AGREEMENT_BLANK):
     text = str(value).strip()
     if not text:
         return blank
-    return xml_escape(text)
+    return (
+        xml_escape(text)
+        .replace("|", "&#124;")
+        .replace("\r\n", "<br/>")
+        .replace("\r", "<br/>")
+        .replace("\n", "<br/>")
+    )
 
 
 def _decimal_or_none(value):
@@ -57,7 +64,11 @@ def _format_agreement_money(value):
     value = _decimal_or_none(value)
     if value is None:
         return BOOKING_AGREEMENT_BLANK
-    return f"EUR {value}"
+    return f"€{value}"
+
+
+def _agreement_currency_text(value):
+    return blank_if_missing(value).replace("EUR ", "€")
 
 
 def _booking_reference(enquiry):
@@ -258,6 +269,9 @@ def _build_booking_agreement_context(enquiry):
     county = blank_if_missing(getattr(enquiry, "county", ""), blank="")
     if county:
         property_address = f"{property_address}, {county}"
+    eircode = blank_if_missing(getattr(enquiry, "eircode", ""), blank="")
+    if eircode:
+        property_address = f"{property_address}, {eircode}"
 
     terms = _payment_terms(enquiry)
     arrangement = terms["arrangement"]
@@ -276,25 +290,27 @@ def _build_booking_agreement_context(enquiry):
         "client_contact_name": blank_if_missing(getattr(enquiry, "name", "")),
         "email": blank_if_missing(getattr(enquiry, "email", "")),
         "phone": blank_if_missing(getattr(enquiry, "phone", "")),
-        "registered_business_address": BOOKING_AGREEMENT_BLANK,
+        "registered_business_address": blank_if_missing(
+            getattr(enquiry, "registered_business_address", "")
+        ),
         "property_address": property_address,
         "property_type": blank_if_missing(getattr(enquiry, "property_type", "")),
-        "listing_type": BOOKING_AGREEMENT_BLANK,
+        "listing_type": blank_if_missing(getattr(enquiry, "listing_type", "")),
         "shoot_date": _format_agreement_date(
             getattr(enquiry, "shoot_date", None)
             or getattr(enquiry, "preferred_date", None)
             or getattr(enquiry, "proposed_shoot_date", None)
         ),
-        "shoot_time": BOOKING_AGREEMENT_BLANK,
-        "access_contact": BOOKING_AGREEMENT_BLANK,
-        "access_notes": BOOKING_AGREEMENT_BLANK,
-        "travel_details": BOOKING_AGREEMENT_BLANK,
-        "package_name": blank_if_missing(
+        "shoot_time": blank_if_missing(getattr(enquiry, "shoot_time", "")),
+        "access_contact": blank_if_missing(getattr(enquiry, "access_contact", "")),
+        "access_notes": blank_if_missing(getattr(enquiry, "access_notes", "")),
+        "travel_details": blank_if_missing(getattr(enquiry, "travel_details", "")),
+        "package_name": _agreement_currency_text(
             enquiry.get_preferred_package_summary()
             if hasattr(enquiry, "get_preferred_package_summary")
             else getattr(enquiry, "preferred_package", "")
         ),
-        "add_ons_summary": blank_if_missing(
+        "add_ons_summary": _agreement_currency_text(
             enquiry.get_add_ons_summary()
             if hasattr(enquiry, "get_add_ons_summary")
             else ""
@@ -344,8 +360,14 @@ def _snapshot_values(enquiry):
     }
 
 
-def render_booking_agreement_markdown(enquiry, *, use_snapshot=True, created_by=None):
-    if use_snapshot and getattr(enquiry, "pk", None):
+def render_booking_agreement_markdown(
+    enquiry,
+    *,
+    use_snapshot=True,
+    create_new_version=False,
+    created_by=None,
+):
+    if use_snapshot and not create_new_version and getattr(enquiry, "pk", None):
         existing = enquiry.booking_agreement_snapshots.first()
         if existing:
             return existing.rendered_markdown
@@ -366,18 +388,35 @@ def render_booking_agreement_markdown(enquiry, *, use_snapshot=True, created_by=
     return rendered_markdown
 
 
-def generate_booking_agreement_pdf(enquiry, *, use_snapshot=True, created_by=None):
+def generate_booking_agreement_pdf(
+    enquiry,
+    *,
+    use_snapshot=True,
+    create_new_version=False,
+    created_by=None,
+):
     rendered_markdown = render_booking_agreement_markdown(
         enquiry,
         use_snapshot=use_snapshot,
+        create_new_version=create_new_version,
         created_by=created_by,
     )
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
         pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=28 * mm,
+        bottomMargin=20 * mm,
         title=f"{get_business_identity().display_name} Real Estate Booking Agreement",
         author=get_business_identity().display_name,
     )
-    document.build(render_markdown_to_flowables(rendered_markdown))
+    document.build(
+        render_markdown_to_flowables(
+            rendered_markdown,
+            table_width=document.width,
+            keep_headings_with_next=True,
+        )
+    )
     return buffer.getvalue()
