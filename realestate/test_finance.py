@@ -24,9 +24,10 @@ from .finance import (
     grant_delivery_override,
     record_realestate_payment,
     revoke_delivery_override,
+    void_local_realestate_invoice,
 )
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band
-from .admin import RealEstateEnquiryAdmin
+from .admin import RealEstateEnquiryAdmin, RealEstateInvoiceAdmin
 from openeire_api.admin import custom_admin_site
 from .financial_documents import (
     build_invoice_filename,
@@ -67,6 +68,93 @@ class RealEstateFinanceTests(TestCase):
         self.deposit.total = Decimal("1.00")
         with self.assertRaises(ValidationError):
             self.deposit.save()
+
+    def test_unpaid_local_invoice_can_be_voided_with_audit_event(self):
+        invoice, changed = void_local_realestate_invoice(
+            self.deposit,
+            user=self.staff,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(invoice.status, RealEstateInvoice.Status.VOID)
+        event = self.enquiry.timeline_events.get(title="Invoice voided")
+        self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.ADMIN)
+        self.assertEqual(event.created_by, self.staff)
+        self.assertIn(self.deposit.invoice_number, event.notes)
+
+        _invoice, changed_again = void_local_realestate_invoice(
+            invoice,
+            user=self.staff,
+        )
+        self.assertFalse(changed_again)
+        self.assertEqual(self.enquiry.timeline_events.filter(title="Invoice voided").count(), 1)
+
+    def test_invoice_with_any_payment_record_cannot_be_voided(self):
+        record_realestate_payment(
+            invoice=self.deposit,
+            amount="10.00",
+            method=RealEstatePayment.Method.OTHER,
+            paid_at=timezone.now(),
+            status=RealEstatePayment.Status.FAILED,
+            notes="Test failure record",
+        )
+
+        with self.assertRaisesMessage(ValidationError, "payment records"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+    def test_invoice_with_stripe_reference_cannot_be_voided(self):
+        self.deposit.stripe_invoice_id = "in_test_existing"
+        self.deposit.save(update_fields=("stripe_invoice_id", "updated_at"))
+
+        with self.assertRaisesMessage(ValidationError, "Stripe references"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+    def test_deposit_invoice_with_saved_checkout_cannot_be_voided(self):
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+
+        with self.assertRaisesMessage(ValidationError, "saved Stripe Checkout Session"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+    def test_invoice_admin_void_action_requires_confirmation_and_voids(self):
+        model_admin = RealEstateInvoiceAdmin(RealEstateInvoice, custom_admin_site)
+        request = RequestFactory().post("/admin/realestate/invoices/")
+        request.user = self.staff
+
+        confirmation = model_admin.void_local_invoices_action(
+            request,
+            RealEstateInvoice.objects.filter(pk=self.deposit.pk),
+        )
+
+        self.assertEqual(
+            confirmation.template_name,
+            "admin/realestate/void_local_invoices.html",
+        )
+        self.deposit.refresh_from_db()
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.ISSUED)
+
+        confirmed_request = RequestFactory().post(
+            "/admin/realestate/invoices/",
+            {"confirm_void_local_invoices": "1"},
+        )
+        confirmed_request.user = self.staff
+        model_admin.message_user = Mock()
+
+        model_admin.void_local_invoices_action(
+            confirmed_request,
+            RealEstateInvoice.objects.filter(pk=self.deposit.pk),
+        )
+
+        self.deposit.refresh_from_db()
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.VOID)
+        model_admin.message_user.assert_called_once()
 
     def test_partial_cash_and_bank_balance_and_overpayment(self):
         cash, _ = record_realestate_payment(
