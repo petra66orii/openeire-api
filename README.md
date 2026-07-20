@@ -149,7 +149,7 @@ Prodigi:
 - `PRODIGI_READ_TIMEOUT_SECONDS`
 - `PRODIGI_CALLBACK_BASE_URL` (required for tracking callbacks)
 - `SITE_URL` (fallback only; used if storage returns a relative asset path instead of an absolute signed URL)
-- `REALESTATE_API_URL` (public API origin used for the real-estate deposit cancellation page; falls back to `SITE_URL`)
+- `REALESTATE_API_URL` (public API origin used for the real-estate deposit success and cancellation pages; falls back to `SITE_URL`)
 
 Licensing/AI worker:
 - `LICENCE_DOWNLOAD_BASE_URL`

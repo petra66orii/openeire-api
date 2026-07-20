@@ -1,6 +1,10 @@
 from django.urls import path
 
-from .views import RealEstateDepositCancelledView, RealEstateEnquiryCreateView
+from .views import (
+    RealEstateDepositCancelledView,
+    RealEstateDepositSuccessView,
+    RealEstateEnquiryCreateView,
+)
 
 
 urlpatterns = [
@@ -9,6 +13,11 @@ urlpatterns = [
         "deposit/cancelled/",
         RealEstateDepositCancelledView.as_view(),
         name="real-estate-deposit-cancelled",
+    ),
+    path(
+        "deposit/success/",
+        RealEstateDepositSuccessView.as_view(),
+        name="real-estate-deposit-success",
     ),
 ]
 

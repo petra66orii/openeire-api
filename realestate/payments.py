@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from openeire_api.business_identity import get_business_identity
 
-from .emails import get_realestate_api_url, get_realestate_site_url
+from .emails import get_realestate_api_url
 
 
 logger = logging.getLogger(__name__)
@@ -154,15 +154,19 @@ def _configured_stripe_payment_method_types():
     return ["card"]
 
 
-def _checkout_return_url(path):
-    return urljoin(get_realestate_site_url().rstrip("/") + "/", path.lstrip("/"))
-
-
 def _deposit_cancellation_url():
     return urljoin(
         get_realestate_api_url().rstrip("/") + "/",
         reverse("real-estate-deposit-cancelled").lstrip("/"),
     )
+
+
+def _deposit_success_url():
+    success_url = urljoin(
+        get_realestate_api_url().rstrip("/") + "/",
+        reverse("real-estate-deposit-success").lstrip("/"),
+    )
+    return f"{success_url}?session_id={{CHECKOUT_SESSION_ID}}"
 
 
 def _stripe_metadata(enquiry, invoice=None):
@@ -421,9 +425,7 @@ def create_realestate_deposit_checkout_session(
         "payment_intent_data": {"metadata": metadata},
         "expires_at": expires_at,
         "after_expiration": {"recovery": {"enabled": True}},
-        "success_url": _checkout_return_url(
-            "real-estate/deposit/success?session_id={CHECKOUT_SESSION_ID}"
-        ),
+        "success_url": _deposit_success_url(),
         "cancel_url": _deposit_cancellation_url(),
     }
     customer_email = str(getattr(enquiry, "email", "") or "").strip()

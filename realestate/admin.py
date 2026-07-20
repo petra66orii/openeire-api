@@ -317,6 +317,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "county",
                     "eircode",
                     "property_type",
+                    "access_contact",
+                    "access_notes",
                 )
             },
         ),
@@ -340,6 +342,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "status",
                     "quoted_price",
                     "shoot_date",
+                    "shoot_time",
                 )
             },
         ),

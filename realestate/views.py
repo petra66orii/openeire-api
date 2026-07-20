@@ -42,6 +42,10 @@ class RealEstateDepositCancelledView(TemplateView):
         return response
 
 
+class RealEstateDepositSuccessView(RealEstateDepositCancelledView):
+    template_name = "realestate/deposit_success.html"
+
+
 class RealEstateEnquiryCreateView(generics.CreateAPIView):
     queryset = RealEstateEnquiry.objects.all()
     serializer_class = RealEstateEnquirySerializer
