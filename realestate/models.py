@@ -156,6 +156,20 @@ class RealEstateEnquiry(models.Model):
         blank=True,
     )
     shoot_date = models.DateField(null=True, blank=True)
+    shoot_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Agreed local start time for the property shoot.",
+    )
+    access_contact = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Name and contact details for the person providing access on site.",
+    )
+    access_notes = models.TextField(
+        blank=True,
+        help_text="Agreed access instructions, restrictions or arrival notes.",
+    )
     internal_notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -342,7 +356,7 @@ class RealEstateDocumentSequence(models.Model):
 
 
 class RealEstateBookingAgreementSnapshot(models.Model):
-    TEMPLATE_VERSION = "1.5"
+    TEMPLATE_VERSION = "1.6"
 
     enquiry = models.ForeignKey(
         RealEstateEnquiry,

@@ -2,6 +2,10 @@ Hi {{ first_name|default:"there" }},
 
 Thanks again for confirming you would like to proceed. Your booking agreement is ready for review and signature using the details below.
 
+{% if booking_agreement_link %}Please review and sign the agreement using the secure link below.
+{% else %}The Booking Agreement PDF is attached. Please review it, sign the client section, and reply to this email with the completed copy.
+{% endif %}
+
 Booking details
 Reference: {{ booking_reference|default:"To be confirmed" }}
 Property: {{ property_address|default:"Not specified" }}
@@ -18,7 +22,7 @@ Balance: {{ balance_due|default:"To be confirmed" }}
 {{ booking_confirmation_rule|default:"Your booking is confirmed according to the selected payment arrangement." }}
 
 {% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
-{% else %}Booking Agreement: attached or to follow
+{% else %}Booking Agreement: attached
 {% endif %}
 
 OpenÉire Studios

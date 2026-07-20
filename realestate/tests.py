@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import time as datetime_time
 from html.parser import HTMLParser
 from unittest.mock import Mock, call, patch
 
@@ -219,7 +220,6 @@ class RealEstateDepositCheckoutSessionTests(TestCase):
 
     @override_settings(
         REALESTATE_API_URL="https://api.openeire.test",
-        REALESTATE_SITE_URL="https://existing-success.openeire.test",
     )
     @patch("realestate.payments.stripe.checkout.Session.create")
     @patch("realestate.payments.stripe.checkout.Session.retrieve")
@@ -246,7 +246,7 @@ class RealEstateDepositCheckoutSessionTests(TestCase):
         )
         self.assertEqual(
             create_kwargs["success_url"],
-            "https://existing-success.openeire.test/real-estate/deposit/success"
+            "https://api.openeire.test/api/real-estate/deposit/success/"
             "?session_id={CHECKOUT_SESSION_ID}",
         )
         self.assertEqual(create_kwargs["after_expiration"], {"recovery": {"enabled": True}})
@@ -595,6 +595,10 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             quote_text,
         )
         self.assertIn("Review Booking Agreement:", booking_text)
+        self.assertIn(
+            "Please review and sign the agreement using the secure link below.",
+            booking_text,
+        )
         self.assertIn("Pay Secure Deposit:", deposit_text)
         self.assertIn(
             "Your booking is confirmed according to the selected payment arrangement.",
@@ -610,6 +614,24 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             delivery_text,
         )
         self.assertIn("Leave a Google Review:", follow_up_text)
+
+    def test_booking_agreement_email_explains_how_to_return_attached_pdf(self):
+        context = {
+            **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+            "booking_agreement_link": "",
+        }
+
+        html = render_to_string("emails/real_estate/booking_agreement.html", context)
+        text = render_to_string("emails/real_estate/booking_agreement.txt", context)
+        instruction = (
+            "The Booking Agreement PDF is attached. Please review it, sign the "
+            "client section, and reply to this email with the completed copy."
+        )
+
+        self.assertIn(instruction, html)
+        self.assertIn(instruction, text)
+        self.assertIn("Booking Agreement: attached", text)
+        self.assertNotIn("attached or to follow", text)
 
     @override_settings(
         EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
@@ -875,6 +897,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             preferred_package="pro",
             consent_to_contact=True,
             quoted_price=Decimal("399"),
+            shoot_time=datetime_time(10, 30),
         )
 
         context = build_realestate_email_context(
@@ -898,6 +921,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         )
         self.assertEqual(context["cta_url"], "")
         self.assertEqual(context["cta_label"], "")
+        self.assertEqual(context["shoot_time"], "10:30")
         self.assertTrue(
             context["email_logo_url"].endswith(
                 "/static/emails/openeire-studios-logo.png"
@@ -992,7 +1016,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
         self.assertIn("| Agency / business name | Not provided |", rendered)
         self.assertIn("| Registered / business address | Not provided |", rendered)
-        self.assertIn("| Listing type | Not provided |", rendered)
+        self.assertNotIn("| Listing type |", rendered)
         self.assertIn("| Shoot time | Not provided |", rendered)
         self.assertIn("| Access contact on site | Not provided |", rendered)
         self.assertIn("| Access notes / restrictions | Not provided |", rendered)
@@ -1117,6 +1141,9 @@ class BookingAgreementDocumentTests(TestCase):
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
             preferred_date="2026-06-20",
             shoot_date="2026-06-20",
+            shoot_time="10:30",
+            access_contact="Property manager - +353 91 555 0101",
+            access_notes="Use the courtyard entrance and call on arrival",
             quoted_price="399.00",
             add_ons=["floor_plan", "additional_social_cuts", "travel_supplement"],
             travel_supplement_amount="65.00",
@@ -1128,11 +1155,6 @@ class BookingAgreementDocumentTests(TestCase):
         enquiry.registered_business_address = (
             "Suite 12, International Property Centre, Galway"
         )
-        enquiry.listing_type = "Residential sale"
-        enquiry.shoot_time = "10:30"
-        enquiry.access_contact = "Property manager - +353 91 555 0101"
-        enquiry.access_notes = "Use the courtyard entrance and call on arrival"
-
         rendered = self._render_booking_agreement_markdown(enquiry)
         pdf_bytes = generate_booking_agreement_pdf(enquiry)
 
@@ -1142,6 +1164,15 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn(
             "Apartment 42, The Courtyard Residences, 123 Extremely Long Promenade Road, "
             "Salthill, Galway, H91 LONG",
+            rendered,
+        )
+        self.assertIn("| Shoot time | 10:30 |", rendered)
+        self.assertIn(
+            "| Access contact on site | Property manager - +353 91 555 0101 |",
+            rendered,
+        )
+        self.assertIn(
+            "| Access notes / restrictions | Use the courtyard entrance and call on arrival |",
             rendered,
         )
         self.assertIn("Floor plan, 2D measured - €75", rendered)
@@ -1181,6 +1212,7 @@ class BookingAgreementDocumentTests(TestCase):
 
         self.assertEqual(first, second)
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
+        self.assertEqual(snapshot.template_version, "1.6")
         self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
         self.assertEqual(snapshot.total_required, Decimal("399.00"))
         self.assertEqual(snapshot.payment_due_date.isoformat(), "2026-07-21")
@@ -1221,8 +1253,11 @@ class BookingAgreementDocumentTests(TestCase):
         )
 
         issued_snapshot.refresh_from_db()
+        new_snapshot = enquiry.booking_agreement_snapshots.latest("created_at")
         self.assertEqual(unchanged_issued_markdown, issued_markdown)
         self.assertEqual(issued_snapshot.rendered_markdown, issued_markdown)
+        self.assertEqual(issued_snapshot.template_version, "1.6")
+        self.assertEqual(new_snapshot.template_version, "1.6")
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
         self.assertIn("Floor plan, 2D measured - €75", new_markdown)
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
@@ -1309,6 +1344,22 @@ class RealEstateDepositCancelledViewTests(TestCase):
         self.assertContains(response, 'href="mailto:studio@openeire.test"')
         self.assertContains(response, 'href="https://openeire.test"')
         self.assertContains(response, 'name="robots" content="noindex,nofollow"')
+
+    def test_success_destination_returns_pending_confirmation(self):
+        response = self.client.get(
+            reverse("real-estate-deposit-success"),
+            {"session_id": "cs_test_sensitive"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertContains(response, "Deposit payment submitted")
+        self.assertContains(response, "We are confirming the payment securely")
+        self.assertContains(response, "You do not need to pay again")
+        self.assertContains(response, 'href="mailto:studio@openeire.test"')
+        self.assertContains(response, 'href="https://openeire.test"')
+        self.assertContains(response, 'name="robots" content="noindex,nofollow"')
+        self.assertNotContains(response, "cs_test_sensitive")
 
 
 @override_settings(
@@ -1572,6 +1623,19 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertIn("travel_supplement_amount", package_fieldset[1]["fields"])
         self.assertIn("travel_details", package_fieldset[1]["fields"])
         self.assertIn("included in the quoted price", form.base_fields["travel_supplement_amount"].help_text)
+        property_fieldset = next(
+            fieldset
+            for fieldset in self.model_admin.fieldsets
+            if fieldset[0] == "Property"
+        )
+        pipeline_fieldset = next(
+            fieldset
+            for fieldset in self.model_admin.fieldsets
+            if fieldset[0] == "Pipeline"
+        )
+        self.assertIn("access_contact", property_fieldset[1]["fields"])
+        self.assertIn("access_notes", property_fieldset[1]["fields"])
+        self.assertIn("shoot_time", pipeline_fieldset[1]["fields"])
         self.assertIn(
             "Booking Agreement PDF is attached automatically",
             form.base_fields["booking_agreement_link"].help_text,

@@ -60,6 +60,17 @@ def _format_agreement_date(value):
     return value.strftime("%d %B %Y")
 
 
+def _format_agreement_time(value):
+    if not value:
+        return BOOKING_AGREEMENT_BLANK
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return BOOKING_AGREEMENT_BLANK
+        return cleaned[:5] if len(cleaned) >= 5 else blank_if_missing(cleaned)
+    return value.strftime("%H:%M")
+
+
 def _format_agreement_money(value):
     value = _decimal_or_none(value)
     if value is None:
@@ -315,13 +326,12 @@ def _build_booking_agreement_context(enquiry):
         ),
         "property_address": property_address,
         "property_type": blank_if_missing(getattr(enquiry, "property_type", "")),
-        "listing_type": blank_if_missing(getattr(enquiry, "listing_type", "")),
         "shoot_date": _format_agreement_date(
             getattr(enquiry, "shoot_date", None)
             or getattr(enquiry, "preferred_date", None)
             or getattr(enquiry, "proposed_shoot_date", None)
         ),
-        "shoot_time": blank_if_missing(getattr(enquiry, "shoot_time", "")),
+        "shoot_time": _format_agreement_time(getattr(enquiry, "shoot_time", None)),
         "access_contact": blank_if_missing(getattr(enquiry, "access_contact", "")),
         "access_notes": blank_if_missing(getattr(enquiry, "access_notes", "")),
         "travel_supplement_applies": (

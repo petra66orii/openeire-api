@@ -147,6 +147,14 @@ def _format_display_date(value):
     return value.strftime("%d %B %Y")
 
 
+def _format_display_time(value):
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    return value.strftime("%H:%M")
+
+
 def _active_invoices(enquiry):
     if not getattr(enquiry, "pk", None):
         return []
@@ -334,7 +342,7 @@ def build_realestate_email_context(enquiry, **overrides):
         "price_input_is_gross": True,
         "vat_notice": "VAT not applicable — supplier not VAT registered",
         "shoot_date": _format_date(getattr(enquiry, "shoot_date", None)),
-        "shoot_time": "",
+        "shoot_time": _format_display_time(getattr(enquiry, "shoot_time", None)),
         "booking_reference": (
             f"RE-{getattr(enquiry, 'id', '')}"
             if getattr(enquiry, "id", None)

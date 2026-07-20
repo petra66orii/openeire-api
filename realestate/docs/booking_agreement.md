@@ -41,7 +41,6 @@ and
 | --- | --- |
 | Property address | {{ property_address }} |
 | Property type | {{ property_type }} |
-| Listing type | {{ listing_type }} |
 | Shoot date | {{ shoot_date }} |
 | Shoot time | {{ shoot_time }} |
 | Access contact on site | {{ access_contact }} |

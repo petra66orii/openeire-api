@@ -5,6 +5,11 @@
 {% block body %}
   <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
   <p style="margin:0 0 16px;">Thanks again for confirming you would like to proceed. Your booking agreement is ready for review and signature using the details below.</p>
+  {% if booking_agreement_link %}
+    <p style="margin:0 0 16px;">Please review and sign the agreement using the secure link below.</p>
+  {% else %}
+    <p style="margin:0 0 16px;">The Booking Agreement PDF is attached. Please review it, sign the client section, and reply to this email with the completed copy.</p>
+  {% endif %}
 {% endblock %}
 {% block details_card %}
   <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px;">
