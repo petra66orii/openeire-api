@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, time
 
@@ -24,6 +25,7 @@ from .timeline import record_timeline_event
 
 
 MONEY = Decimal("0.01")
+logger = logging.getLogger(__name__)
 
 
 def money(value):
@@ -144,66 +146,208 @@ def ensure_invoices_for_arrangement(enquiry):
     raise ValidationError("Unsupported payment arrangement.")
 
 
-@transaction.atomic
+def _stripe_value(obj, key, default=None):
+    if hasattr(obj, "get"):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _verify_expired_test_deposit_session(invoice):
+    enquiry = invoice.enquiry
+    session_id = str(enquiry.stripe_deposit_session_id or "").strip()
+    checkout_url = str(enquiry.deposit_payment_link or "").strip()
+    if not session_id and not checkout_url:
+        return ""
+    if not session_id:
+        raise ValidationError(
+            "This enquiry has a saved deposit link without a Stripe Session ID. "
+            "It requires manual review."
+        )
+
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    stripe.max_network_retries = getattr(settings, "STRIPE_MAX_NETWORK_RETRIES", 2)
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except Exception as exc:
+        logger.exception(
+            "Could not verify saved test deposit Checkout Session before invoice void. "
+            "enquiry_id=%s invoice_id=%s session_id=%s",
+            enquiry.pk,
+            invoice.pk,
+            session_id,
+        )
+        raise ValidationError(
+            "The saved Stripe Checkout Session could not be retrieved. No local "
+            "payment references were changed."
+        ) from exc
+
+    metadata = _stripe_value(session, "metadata", {}) or {}
+    expected_invoice_number = str(metadata.get("realestate_invoice_number") or "").strip()
+    validation_errors = []
+    if str(_stripe_value(session, "id", "") or "").strip() != session_id:
+        validation_errors.append("Session ID")
+    if _stripe_value(session, "livemode") is not False:
+        validation_errors.append("environment")
+    if str(_stripe_value(session, "status", "") or "").lower() != "expired":
+        validation_errors.append("status")
+    if str(_stripe_value(session, "payment_status", "") or "").lower() != "unpaid":
+        validation_errors.append("payment status")
+    if str(_stripe_value(session, "currency", "") or "").lower() != "eur":
+        validation_errors.append("currency")
+    if str(metadata.get("purpose") or "").strip() != "realestate_deposit":
+        validation_errors.append("purpose metadata")
+    if str(metadata.get("realestate_enquiry_id") or "").strip() != str(enquiry.pk):
+        validation_errors.append("enquiry metadata")
+    if expected_invoice_number and expected_invoice_number != invoice.invoice_number:
+        validation_errors.append("invoice metadata")
+    if str(_stripe_value(session, "recovered_from", "") or "").strip():
+        validation_errors.append("recovered Session")
+    created = _stripe_value(session, "created")
+    if not created:
+        validation_errors.append("creation timestamp")
+    if validation_errors:
+        raise ValidationError(
+            "The saved Stripe Checkout Session is not an expired, unpaid, matching "
+            f"test deposit Session ({', '.join(validation_errors)})."
+        )
+
+    try:
+        later_sessions = stripe.checkout.Session.list(
+            limit=100,
+            created={"gte": int(created)},
+        )
+        has_recovery = any(
+            str(_stripe_value(candidate, "recovered_from", "") or "").strip()
+            == session_id
+            for candidate in later_sessions.auto_paging_iter()
+        )
+    except Exception as exc:
+        logger.exception(
+            "Could not check for recovered test deposit Checkout Sessions before "
+            "invoice void. enquiry_id=%s invoice_id=%s session_id=%s",
+            enquiry.pk,
+            invoice.pk,
+            session_id,
+        )
+        raise ValidationError(
+            "Stripe recovery status could not be verified. No local payment "
+            "references were changed."
+        ) from exc
+    if has_recovery:
+        raise ValidationError(
+            "A recovery-created Stripe Checkout Session exists for this deposit. "
+            "It must be reviewed before the invoice can be voided."
+        )
+
+    return session_id
+
+
 def void_local_realestate_invoice(invoice, *, user=None):
     """Void an unpaid invoice only when no external payment object can remain live."""
-    invoice = (
-        RealEstateInvoice.objects.select_for_update()
+    candidate = (
+        RealEstateInvoice.objects
         .select_related("enquiry")
         .get(pk=invoice.pk)
     )
-    if invoice.status == RealEstateInvoice.Status.VOID:
-        return invoice, False
-    if invoice.status in {
-        RealEstateInvoice.Status.PARTIALLY_PAID,
-        RealEstateInvoice.Status.PAID,
-    }:
-        raise ValidationError("Paid or partially paid invoices cannot be voided.")
-    if invoice.payments.exists():
-        raise ValidationError(
-            "Invoices with payment records cannot be voided from this admin action."
-        )
-
-    stripe_references = (
-        invoice.stripe_invoice_id,
-        invoice.stripe_invoice_number,
-        invoice.stripe_hosted_invoice_url,
-        invoice.stripe_invoice_pdf_url,
-        invoice.stripe_checkout_session_id,
-        invoice.stripe_checkout_url,
-    )
-    if any(str(value or "").strip() for value in stripe_references):
-        raise ValidationError(
-            "This invoice has Stripe references. Verify and void the Stripe object "
-            "before changing the local invoice."
-        )
+    verified_session_id = ""
     if (
-        invoice.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT
+        candidate.status != RealEstateInvoice.Status.VOID
+        and candidate.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT
         and (
-            str(invoice.enquiry.stripe_deposit_session_id or "").strip()
-            or str(invoice.enquiry.deposit_payment_link or "").strip()
+            str(candidate.enquiry.stripe_deposit_session_id or "").strip()
+            or str(candidate.enquiry.deposit_payment_link or "").strip()
         )
     ):
-        raise ValidationError(
-            "This deposit invoice belongs to an enquiry with a saved Stripe Checkout "
-            "Session. Expire or reconcile that Session before voiding the invoice."
-        )
+        verified_session_id = _verify_expired_test_deposit_session(candidate)
 
-    invoice.status = RealEstateInvoice.Status.VOID
-    invoice.save(update_fields=("status", "updated_at"))
-    record_timeline_event(
-        invoice.enquiry,
-        RealEstateTimelineEvent.EventType.NOTE,
-        actor_type=(
-            RealEstateTimelineEvent.ActorType.ADMIN
-            if user
-            else RealEstateTimelineEvent.ActorType.SYSTEM
-        ),
-        title="Invoice voided",
-        notes=f"Invoice {invoice.invoice_number} was voided without a payment record.",
-        created_by=user,
-    )
-    return invoice, True
+    with transaction.atomic():
+        invoice = (
+            RealEstateInvoice.objects.select_for_update()
+            .select_related("enquiry")
+            .get(pk=candidate.pk)
+        )
+        if invoice.status == RealEstateInvoice.Status.VOID:
+            return invoice, False
+        if invoice.status in {
+            RealEstateInvoice.Status.PARTIALLY_PAID,
+            RealEstateInvoice.Status.PAID,
+        }:
+            raise ValidationError("Paid or partially paid invoices cannot be voided.")
+        if invoice.payments.exists():
+            raise ValidationError(
+                "Invoices with payment records cannot be voided from this admin action."
+            )
+
+        stripe_references = (
+            invoice.stripe_invoice_id,
+            invoice.stripe_invoice_number,
+            invoice.stripe_hosted_invoice_url,
+            invoice.stripe_invoice_pdf_url,
+            invoice.stripe_checkout_session_id,
+            invoice.stripe_checkout_url,
+        )
+        if any(str(value or "").strip() for value in stripe_references):
+            raise ValidationError(
+                "This invoice has Stripe references. Verify and void the Stripe object "
+                "before changing the local invoice."
+            )
+
+        cleared_session_id = ""
+        if invoice.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT:
+            current_session_id = str(
+                invoice.enquiry.stripe_deposit_session_id or ""
+            ).strip()
+            current_checkout_url = str(
+                invoice.enquiry.deposit_payment_link or ""
+            ).strip()
+            if current_session_id or current_checkout_url:
+                if not verified_session_id or current_session_id != verified_session_id:
+                    raise ValidationError(
+                        "The saved deposit Checkout Session changed during Stripe "
+                        "verification. Retry after reviewing the enquiry."
+                    )
+                invoice.enquiry.deposit_payment_link = ""
+                invoice.enquiry.stripe_deposit_session_id = ""
+                invoice.enquiry.stripe_deposit_creation_key = ""
+                invoice.enquiry.save(
+                    update_fields=(
+                        "deposit_payment_link",
+                        "stripe_deposit_session_id",
+                        "stripe_deposit_creation_key",
+                        "updated_at",
+                    )
+                )
+                cleared_session_id = verified_session_id
+            elif verified_session_id:
+                raise ValidationError(
+                    "The saved deposit Checkout Session changed during Stripe "
+                    "verification. Retry after reviewing the enquiry."
+                )
+
+        invoice.status = RealEstateInvoice.Status.VOID
+        invoice.save(update_fields=("status", "updated_at"))
+        record_timeline_event(
+            invoice.enquiry,
+            RealEstateTimelineEvent.EventType.NOTE,
+            actor_type=(
+                RealEstateTimelineEvent.ActorType.ADMIN
+                if user
+                else RealEstateTimelineEvent.ActorType.SYSTEM
+            ),
+            title="Invoice voided",
+            notes=f"Invoice {invoice.invoice_number} was voided without a payment record.",
+            stripe_session_id=cleared_session_id,
+            created_by=user,
+        )
+        if cleared_session_id:
+            logger.info(
+                "Cleared verified expired unpaid test deposit Checkout Session before "
+                "invoice void. enquiry_id=%s invoice_id=%s session_id=%s",
+                invoice.enquiry_id,
+                invoice.pk,
+                cleared_session_id,
+            )
+        return invoice, True
 
 
 def _successful_total(invoice):

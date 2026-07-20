@@ -53,6 +53,29 @@ class RealEstateFinanceTests(TestCase):
         self.deposit, self.balance = ensure_standard_realestate_invoices(self.enquiry)
         self.staff = get_user_model().objects.create_user("staff", is_staff=True)
 
+    def _expired_test_deposit_session(self, **overrides):
+        values = {
+            "id": "cs_test_existing",
+            "livemode": False,
+            "status": "expired",
+            "payment_status": "unpaid",
+            "currency": "eur",
+            "created": int(timezone.now().timestamp()) - 86400,
+            "recovered_from": None,
+            "metadata": {
+                "purpose": "realestate_deposit",
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "realestate_invoice_number": self.deposit.invoice_number,
+            },
+        }
+        values.update(overrides)
+        return values
+
+    def _stripe_session_list(self, *sessions):
+        result = Mock()
+        result.auto_paging_iter.return_value = iter(sessions)
+        return result
+
     def test_snapshot_and_invoice_amounts(self):
         self.assertEqual(self.enquiry.quoted_deposit_amount, Decimal("119.70"))
         self.assertEqual(self.enquiry.quoted_balance_due, Decimal("279.30"))
@@ -109,7 +132,155 @@ class RealEstateFinanceTests(TestCase):
         with self.assertRaisesMessage(ValidationError, "Stripe references"):
             void_local_realestate_invoice(self.deposit, user=self.staff)
 
-    def test_deposit_invoice_with_saved_checkout_cannot_be_voided(self):
+    @patch("realestate.finance.stripe.checkout.Session.list")
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_verified_expired_unpaid_test_checkout_is_cleared_before_void(
+        self,
+        mock_retrieve,
+        mock_list,
+    ):
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
+        self.enquiry.stripe_deposit_creation_key = "realestate-test-attempt"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "stripe_deposit_creation_key",
+                "updated_at",
+            )
+        )
+        session = self._expired_test_deposit_session()
+        session["metadata"]["realestate_invoice_number"] = None
+        mock_retrieve.return_value = session
+        mock_list.return_value = self._stripe_session_list()
+
+        invoice, changed = void_local_realestate_invoice(
+            self.deposit,
+            user=self.staff,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(invoice.status, RealEstateInvoice.Status.VOID)
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.stripe_deposit_session_id, "")
+        self.assertEqual(self.enquiry.deposit_payment_link, "")
+        self.assertEqual(self.enquiry.stripe_deposit_creation_key, "")
+        event = self.enquiry.timeline_events.get(title="Invoice voided")
+        self.assertEqual(event.stripe_session_id, "cs_test_existing")
+        mock_retrieve.assert_called_once_with("cs_test_existing")
+        mock_list.assert_called_once_with(limit=100, created={"gte": session["created"]})
+
+    @patch("realestate.finance.stripe.checkout.Session.list")
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_unsafe_or_mismatched_checkout_cannot_be_cleared_or_voided(
+        self,
+        mock_retrieve,
+        mock_list,
+    ):
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+        mock_list.return_value = self._stripe_session_list()
+        cases = {
+            "live": {"livemode": True},
+            "paid": {"payment_status": "paid"},
+            "open": {"status": "open"},
+            "recovered": {"recovered_from": "cs_test_original"},
+            "wrong currency": {"currency": "usd"},
+            "wrong id": {"id": "cs_test_other"},
+            "missing created": {"created": None},
+            "wrong purpose": {
+                "metadata": {
+                    "purpose": "other",
+                    "realestate_enquiry_id": str(self.enquiry.pk),
+                    "realestate_invoice_number": self.deposit.invoice_number,
+                }
+            },
+            "wrong enquiry": {
+                "metadata": {
+                    "purpose": "realestate_deposit",
+                    "realestate_enquiry_id": "999",
+                    "realestate_invoice_number": self.deposit.invoice_number,
+                }
+            },
+            "wrong invoice": {
+                "metadata": {
+                    "purpose": "realestate_deposit",
+                    "realestate_enquiry_id": str(self.enquiry.pk),
+                    "realestate_invoice_number": "OE-RE-2099-9999",
+                }
+            },
+        }
+
+        for label, overrides in cases.items():
+            with self.subTest(label=label):
+                mock_retrieve.return_value = self._expired_test_deposit_session(
+                    **overrides
+                )
+                with self.assertRaisesMessage(ValidationError, "not an expired"):
+                    void_local_realestate_invoice(self.deposit, user=self.staff)
+
+        self.enquiry.refresh_from_db()
+        self.deposit.refresh_from_db()
+        self.assertEqual(self.enquiry.stripe_deposit_session_id, "cs_test_existing")
+        self.assertEqual(
+            self.enquiry.deposit_payment_link,
+            "https://checkout.stripe.com/test",
+        )
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.ISSUED)
+        mock_list.assert_not_called()
+
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_missing_checkout_session_fails_closed(self, mock_retrieve):
+        self.enquiry.stripe_deposit_session_id = "cs_test_missing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+        mock_retrieve.side_effect = RuntimeError("No such Checkout Session")
+
+        with self.assertRaisesMessage(ValidationError, "could not be retrieved"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+        self.deposit.refresh_from_db()
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.ISSUED)
+
+    @patch("realestate.finance.stripe.checkout.Session.list")
+    @patch("realestate.finance.stripe.checkout.Session.retrieve")
+    def test_recovery_created_checkout_blocks_void(self, mock_retrieve, mock_list):
+        self.enquiry.stripe_deposit_session_id = "cs_test_existing"
+        self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
+        self.enquiry.save(
+            update_fields=(
+                "stripe_deposit_session_id",
+                "deposit_payment_link",
+                "updated_at",
+            )
+        )
+        mock_retrieve.return_value = self._expired_test_deposit_session()
+        mock_list.return_value = self._stripe_session_list(
+            {"id": "cs_test_recovered", "recovered_from": "cs_test_existing"}
+        )
+
+        with self.assertRaisesMessage(ValidationError, "recovery-created"):
+            void_local_realestate_invoice(self.deposit, user=self.staff)
+
+    @patch("realestate.finance._verify_expired_test_deposit_session")
+    def test_checkout_reference_change_during_verification_fails_closed(
+        self,
+        mock_verify,
+    ):
         self.enquiry.stripe_deposit_session_id = "cs_test_existing"
         self.enquiry.deposit_payment_link = "https://checkout.stripe.com/test"
         self.enquiry.save(
@@ -120,8 +291,25 @@ class RealEstateFinanceTests(TestCase):
             )
         )
 
-        with self.assertRaisesMessage(ValidationError, "saved Stripe Checkout Session"):
+        def replace_saved_session(_invoice):
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk).update(
+                stripe_deposit_session_id="cs_test_replacement",
+                deposit_payment_link="https://checkout.stripe.com/replacement",
+            )
+            return "cs_test_existing"
+
+        mock_verify.side_effect = replace_saved_session
+
+        with self.assertRaisesMessage(ValidationError, "changed during Stripe"):
             void_local_realestate_invoice(self.deposit, user=self.staff)
+
+        self.deposit.refresh_from_db()
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.ISSUED)
+        self.assertEqual(
+            self.enquiry.stripe_deposit_session_id,
+            "cs_test_replacement",
+        )
 
     def test_invoice_admin_void_action_requires_confirmation_and_voids(self):
         model_admin = RealEstateInvoiceAdmin(RealEstateInvoice, custom_admin_site)
@@ -155,6 +343,31 @@ class RealEstateFinanceTests(TestCase):
         self.deposit.refresh_from_db()
         self.assertEqual(self.deposit.status, RealEstateInvoice.Status.VOID)
         model_admin.message_user.assert_called_once()
+
+    @patch(
+        "realestate.admin.void_local_realestate_invoice",
+        side_effect=ValidationError("Stripe verification failed."),
+    )
+    def test_invoice_admin_formats_void_validation_error_cleanly(self, _mock_void):
+        model_admin = RealEstateInvoiceAdmin(RealEstateInvoice, custom_admin_site)
+        request = RequestFactory().post(
+            "/admin/realestate/invoices/",
+            {"confirm_void_local_invoices": "1"},
+        )
+        request.user = self.staff
+        model_admin.message_user = Mock()
+
+        model_admin.void_local_invoices_action(
+            request,
+            RealEstateInvoice.objects.filter(pk=self.deposit.pk),
+        )
+
+        message = model_admin.message_user.call_args.args[1]
+        self.assertEqual(
+            message,
+            f"{self.deposit.invoice_number}: Stripe verification failed.",
+        )
+        self.assertNotIn("['", message)
 
     def test_partial_cash_and_bank_balance_and_overpayment(self):
         cash, _ = record_realestate_payment(
