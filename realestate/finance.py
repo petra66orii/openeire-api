@@ -144,6 +144,68 @@ def ensure_invoices_for_arrangement(enquiry):
     raise ValidationError("Unsupported payment arrangement.")
 
 
+@transaction.atomic
+def void_local_realestate_invoice(invoice, *, user=None):
+    """Void an unpaid invoice only when no external payment object can remain live."""
+    invoice = (
+        RealEstateInvoice.objects.select_for_update()
+        .select_related("enquiry")
+        .get(pk=invoice.pk)
+    )
+    if invoice.status == RealEstateInvoice.Status.VOID:
+        return invoice, False
+    if invoice.status in {
+        RealEstateInvoice.Status.PARTIALLY_PAID,
+        RealEstateInvoice.Status.PAID,
+    }:
+        raise ValidationError("Paid or partially paid invoices cannot be voided.")
+    if invoice.payments.exists():
+        raise ValidationError(
+            "Invoices with payment records cannot be voided from this admin action."
+        )
+
+    stripe_references = (
+        invoice.stripe_invoice_id,
+        invoice.stripe_invoice_number,
+        invoice.stripe_hosted_invoice_url,
+        invoice.stripe_invoice_pdf_url,
+        invoice.stripe_checkout_session_id,
+        invoice.stripe_checkout_url,
+    )
+    if any(str(value or "").strip() for value in stripe_references):
+        raise ValidationError(
+            "This invoice has Stripe references. Verify and void the Stripe object "
+            "before changing the local invoice."
+        )
+    if (
+        invoice.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT
+        and (
+            str(invoice.enquiry.stripe_deposit_session_id or "").strip()
+            or str(invoice.enquiry.deposit_payment_link or "").strip()
+        )
+    ):
+        raise ValidationError(
+            "This deposit invoice belongs to an enquiry with a saved Stripe Checkout "
+            "Session. Expire or reconcile that Session before voiding the invoice."
+        )
+
+    invoice.status = RealEstateInvoice.Status.VOID
+    invoice.save(update_fields=("status", "updated_at"))
+    record_timeline_event(
+        invoice.enquiry,
+        RealEstateTimelineEvent.EventType.NOTE,
+        actor_type=(
+            RealEstateTimelineEvent.ActorType.ADMIN
+            if user
+            else RealEstateTimelineEvent.ActorType.SYSTEM
+        ),
+        title="Invoice voided",
+        notes=f"Invoice {invoice.invoice_number} was voided without a payment record.",
+        created_by=user,
+    )
+    return invoice, True
+
+
 def _successful_total(invoice):
     return invoice.payments.filter(status=RealEstatePayment.Status.SUCCEEDED).aggregate(
         value=Sum("amount")

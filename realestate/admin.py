@@ -24,7 +24,7 @@ from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
 from .models import RealEstateTimelineEvent
 from .models import RealEstateDeliveryOverride, RealEstateInvoice, RealEstatePayment
-from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override
+from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override, void_local_realestate_invoice
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
 from .payments import prepare_realestate_deposit_checkout_session
@@ -1740,6 +1740,7 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
         "record_manual_payment_action", "download_invoice_pdf",
         "create_stripe_invoice_action", "create_and_send_stripe_invoice_action",
         "send_stripe_reminder_action", "mark_stripe_paid_out_of_band_action",
+        "void_local_invoices_action",
     )
 
     @admin.display(description="Amount paid")
@@ -1775,6 +1776,44 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
         actions = super().get_actions(request)
         actions.pop("delete_selected", None)
         return actions
+
+    @admin.action(
+        description="Void selected unpaid local-only invoices",
+        permissions=("change",),
+    )
+    def void_local_invoices_action(self, request, queryset):
+        if "confirm_void_local_invoices" not in request.POST:
+            return TemplateResponse(
+                request,
+                "admin/realestate/void_local_invoices.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "invoices": queryset.select_related("enquiry"),
+                    "title": "Confirm invoice void",
+                },
+            )
+
+        voided_count = 0
+        for invoice in queryset.select_related("enquiry"):
+            try:
+                _invoice, changed = void_local_realestate_invoice(
+                    invoice,
+                    user=request.user,
+                )
+            except (ValidationError, PermissionDenied) as exc:
+                self.message_user(
+                    request,
+                    f"{invoice.invoice_number}: {exc}",
+                    level=messages.ERROR,
+                )
+            else:
+                voided_count += int(changed)
+        if voided_count:
+            self.message_user(
+                request,
+                f"Voided {voided_count} local invoice(s).",
+                level=messages.SUCCESS,
+            )
 
     @admin.action(description="Create Stripe invoice")
     def create_stripe_invoice_action(self, request, queryset):

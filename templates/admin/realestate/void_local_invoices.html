@@ -1,0 +1,23 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>
+  This marks the selected invoices as void while preserving their audit history.
+  Only unpaid invoices without payment records, Stripe invoice references, or saved
+  Checkout Sessions can be voided here.
+</p>
+<p><strong>This does not delete the invoice or reuse its invoice number.</strong></p>
+<ul>
+  {% for invoice in invoices %}
+    <li>{{ invoice.invoice_number }} — {{ invoice.enquiry }} — {{ invoice.get_status_display }}</li>
+  {% endfor %}
+</ul>
+<form method="post">{% csrf_token %}
+  <input type="hidden" name="action" value="void_local_invoices_action">
+  {% for invoice in invoices %}
+    <input type="hidden" name="_selected_action" value="{{ invoice.pk }}">
+  {% endfor %}
+  <button type="submit" name="confirm_void_local_invoices" value="1">
+    Confirm void
+  </button>
+</form>
+{% endblock %}
