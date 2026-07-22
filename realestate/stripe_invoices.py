@@ -10,6 +10,10 @@ from django.utils import timezone
 from openeire_api.business_identity import get_business_identity
 
 from .models import RealEstateInvoice
+from .stripe_invoice_revisions import (
+    StripeInvoiceRevisionError,
+    reconcile_stored_invoice_revision,
+)
 
 
 def _value(obj, key, default=""):
@@ -114,10 +118,15 @@ def create_stripe_invoice(local_invoice, *, send=False):
     return local_invoice, True
 
 
+@transaction.atomic
 def send_stripe_invoice(local_invoice):
     if not local_invoice.stripe_invoice_id:
         return create_stripe_invoice(local_invoice, send=True)[0]
-    _configure_stripe()
+    local_invoice, _chain = reconcile_stored_invoice_revision(local_invoice)
+    if local_invoice.stripe_invoice_status in {"void", "paid", "uncollectible"}:
+        raise ValidationError(
+            "The current Stripe invoice cannot be sent in its present status."
+        )
     result = stripe.Invoice.send_invoice(local_invoice.stripe_invoice_id)
     local_invoice.stripe_invoice_status = str(_value(result, "status", "open"))
     local_invoice.save(update_fields=("stripe_invoice_status", "updated_at"))
@@ -131,6 +140,10 @@ def mark_stripe_invoice_paid_out_of_band(local_invoice, *, user):
     local_invoice = RealEstateInvoice.objects.select_for_update().get(pk=local_invoice.pk)
     if not local_invoice.stripe_invoice_id:
         raise ValidationError("This invoice has no Stripe invoice.")
+    try:
+        local_invoice, _chain = reconcile_stored_invoice_revision(local_invoice)
+    except StripeInvoiceRevisionError as exc:
+        raise ValidationError(str(exc)) from exc
     if local_invoice.amount_outstanding:
         raise ValidationError("Record the successful local payment before marking Stripe paid.")
     if local_invoice.stripe_marked_paid_out_of_band_at:

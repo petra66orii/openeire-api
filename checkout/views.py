@@ -682,54 +682,99 @@ class StripeWebhookView(APIView):
     def _handle_realestate_invoice_event(self, event_type, stripe_invoice):
         from realestate.finance import record_realestate_payment
         from realestate.models import RealEstateInvoice, RealEstatePayment
+        from realestate.stripe_invoice_revisions import (
+            apply_revision_snapshot,
+            resolve_invoice_event,
+            stripe_datetime,
+            stripe_reference_id,
+            stripe_value,
+            was_manually_voided,
+        )
 
         metadata = stripe_invoice.get('metadata') or {}
         number = str(metadata.get('realestate_invoice_number') or '').strip()
         stripe_id = str(stripe_invoice.get('id') or '').strip()
-        invoice = RealEstateInvoice.objects.select_for_update().filter(
-            Q(invoice_number=number) | Q(stripe_invoice_id=stripe_id)
-        ).select_related('enquiry').first()
+        locked_invoices = RealEstateInvoice.objects.select_for_update().select_related('enquiry')
+        invoice_by_number = locked_invoices.filter(invoice_number=number).first() if number else None
+        invoice_by_stripe_id = (
+            locked_invoices.filter(stripe_invoice_id=stripe_id).first()
+            if stripe_id
+            else None
+        )
+        if (
+            invoice_by_number is not None
+            and invoice_by_stripe_id is not None
+            and invoice_by_number.pk != invoice_by_stripe_id.pk
+        ):
+            raise RuntimeError(
+                'Stripe invoice metadata and external ID identified different local invoices.'
+            )
+        invoice = invoice_by_number or invoice_by_stripe_id
         if invoice is None:
             return False
-        if stripe_id and invoice.stripe_invoice_id and stripe_id != invoice.stripe_invoice_id:
-            raise RuntimeError('Stripe invoice did not match the stored local invoice.')
 
-        stripe_status = str(stripe_invoice.get('status') or event_type.split('.', 1)[1])
-        fields = ['stripe_invoice_status', 'updated_at']
-        invoice.stripe_invoice_status = stripe_status
-        for source, target in (
-            ('number', 'stripe_invoice_number'), ('hosted_invoice_url', 'stripe_hosted_invoice_url'),
-            ('invoice_pdf', 'stripe_invoice_pdf_url'),
-        ):
-            value = str(stripe_invoice.get(source) or '')
-            if value:
-                setattr(invoice, target, value)
-                fields.append(target)
+        resolution = resolve_invoice_event(invoice, stripe_invoice)
+        current = resolution.current
+        current_id = stripe_reference_id(current)
+        apply_revision_snapshot(invoice, current)
+
+        # A delayed event for a superseded ancestor must never roll the local
+        # invoice back or apply the ancestor's terminal state.
+        if stripe_id != current_id:
+            logger.info(
+                "Ignoring superseded real estate Stripe invoice event. "
+                "invoice_id=%s enquiry_id=%s event_stripe_invoice_id=%s "
+                "current_stripe_invoice_id=%s event_type=%s",
+                invoice.pk,
+                invoice.enquiry_id,
+                stripe_id,
+                current_id,
+                event_type,
+            )
+            return True
 
         if event_type == 'invoice.paid':
-            currency = str(stripe_invoice.get('currency') or '').upper()
-            amount_paid = int(stripe_invoice.get('amount_paid') or 0)
+            currency = str(stripe_value(current, 'currency', '') or '').upper()
+            amount_paid = int(stripe_value(current, 'amount_paid', 0) or 0)
             expected = int(invoice.total * Decimal('100'))
             if currency != invoice.currency or amount_paid != expected:
                 raise RuntimeError('Stripe invoice paid amount or currency did not match the local invoice.')
+            if invoice.status == RealEstateInvoice.Status.VOID:
+                if (
+                    was_manually_voided(invoice)
+                    or invoice.payments.filter(status=RealEstatePayment.Status.SUCCEEDED).exists()
+                ):
+                    raise RuntimeError(
+                        'A manually or independently voided local invoice cannot be reopened.'
+                    )
+                invoice.status = RealEstateInvoice.Status.ISSUED
+                invoice.save(update_fields=('status', 'updated_at'))
+            if invoice.amount_outstanding not in {Decimal('0.00'), invoice.total}:
+                raise RuntimeError(
+                    'Stripe reported the full invoice paid but the local invoice has a partial payment.'
+                )
             if invoice.amount_outstanding:
+                transitions = stripe_value(current, 'status_transitions', {}) or {}
                 record_realestate_payment(
                     invoice=invoice, amount=invoice.amount_outstanding,
                     method=RealEstatePayment.Method.STRIPE_INVOICE,
-                    paid_at=timezone.now(), stripe_payment_intent_id=str(stripe_invoice.get('payment_intent') or ''),
-                    stripe_charge_id=str(stripe_invoice.get('charge') or ''),
-                    external_reference=stripe_id,
+                    paid_at=(stripe_datetime(stripe_value(transitions, 'paid_at')) or timezone.now()),
+                    stripe_payment_intent_id=str(stripe_value(current, 'payment_intent', '') or ''),
+                    stripe_charge_id=str(stripe_value(current, 'charge', '') or ''),
+                    external_reference=current_id,
                     notes='Reconciled from Stripe invoice.paid webhook.',
                 )
             invoice.stripe_invoice_status = 'paid'
         elif event_type == 'invoice.voided':
             if not invoice.amount_paid:
                 invoice.status = RealEstateInvoice.Status.VOID
-                fields.append('status')
+                invoice.save(update_fields=('status', 'updated_at'))
         elif event_type == 'invoice.marked_uncollectible':
             invoice.status = RealEstateInvoice.Status.OVERDUE
-            fields.append('status')
-        invoice.save(update_fields=tuple(dict.fromkeys(fields)))
+            invoice.save(update_fields=('status', 'updated_at'))
+        if invoice.stripe_invoice_status != str(stripe_value(current, 'status', '') or ''):
+            invoice.stripe_invoice_status = str(stripe_value(current, 'status', '') or '')
+        invoice.save(update_fields=('stripe_invoice_status', 'updated_at'))
         return True
 
     def _stale_processing_seconds(self):

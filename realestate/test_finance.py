@@ -1,12 +1,12 @@
 from decimal import Decimal
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
@@ -26,7 +26,12 @@ from .finance import (
     revoke_delivery_override,
     void_local_realestate_invoice,
 )
-from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band
+from .stripe_invoices import (
+    create_stripe_invoice,
+    mark_stripe_invoice_paid_out_of_band,
+    send_stripe_invoice,
+)
+from .stripe_invoice_revisions import StripeInvoiceRevisionError
 from .admin import RealEstateEnquiryAdmin, RealEstateInvoiceAdmin
 from openeire_api.admin import custom_admin_site
 from .financial_documents import (
@@ -703,6 +708,7 @@ class RealEstateLedgerMigrationTests(TransactionTestCase):
         super().tearDown()
 
 
+@override_settings(STRIPE_SECRET_KEY="sk_test_realestate_invoices")
 class FullPaymentArrangementTests(TestCase):
     def make_enquiry(self, arrangement, **overrides):
         values = {
@@ -717,6 +723,30 @@ class FullPaymentArrangementTests(TestCase):
         enquiry = RealEstateEnquiry.objects.create(**values)
         calculate_realestate_deposit_amounts(enquiry)
         return enquiry
+
+    def stripe_invoice_payload(self, invoice, stripe_id, *, status="open", **overrides):
+        values = {
+            "id": stripe_id,
+            "number": f"STRIPE-{stripe_id}",
+            "status": status,
+            "currency": invoice.currency.lower(),
+            "total": int(invoice.total * Decimal("100")),
+            "amount_due": int(invoice.total * Decimal("100")),
+            "livemode": False,
+            "created": int(timezone.now().timestamp()),
+            "status_transitions": {"finalized_at": int(timezone.now().timestamp())},
+            "hosted_invoice_url": f"https://invoice.stripe.test/{stripe_id}",
+            "invoice_pdf": f"https://invoice.stripe.test/{stripe_id}.pdf",
+            "metadata": {
+                "realestate_invoice_number": invoice.invoice_number,
+                "realestate_enquiry_id": str(invoice.enquiry_id),
+                "payment_purpose": f"realestate_{invoice.invoice_type}",
+            },
+            "latest_revision": None,
+            "from_invoice": None,
+        }
+        values.update(overrides)
+        return values
 
     def test_full_upfront_creates_one_full_invoice(self):
         enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT)
@@ -789,7 +819,8 @@ class FullPaymentArrangementTests(TestCase):
         self.assertEqual(invoice_create.call_count, 1)
 
     @patch("realestate.stripe_invoices.stripe.Invoice.pay")
-    def test_out_of_band_cash_settlement_and_paid_webhook_do_not_duplicate(self, pay):
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_out_of_band_cash_settlement_and_paid_webhook_do_not_duplicate(self, retrieve, pay):
         enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
         invoice = ensure_invoices_for_arrangement(enquiry)[0]
         invoice.stripe_invoice_id = "in_cash"
@@ -800,12 +831,12 @@ class FullPaymentArrangementTests(TestCase):
             paid_at=timezone.now(), recorded_by=staff, external_reference="Kevin", notes="cash",
         )
         invoice.refresh_from_db()
+        retrieve.return_value = self.stripe_invoice_payload(invoice, "in_cash")
         mark_stripe_invoice_paid_out_of_band(invoice, user=staff)
         pay.assert_called_once_with("in_cash", paid_out_of_band=True)
-        payload = {
-            "id": "in_cash", "status": "paid", "currency": "eur", "amount_paid": 39900,
-            "metadata": {"realestate_invoice_number": invoice.invoice_number},
-        }
+        payload = self.stripe_invoice_payload(
+            invoice, "in_cash", status="paid", amount_paid=39900
+        )
         self.assertTrue(StripeWebhookView()._handle_realestate_invoice_event("invoice.paid", payload))
         self.assertEqual(RealEstatePayment.objects.count(), 1)
 
@@ -814,11 +845,10 @@ class FullPaymentArrangementTests(TestCase):
         invoice = ensure_invoices_for_arrangement(enquiry)[0]
         invoice.stripe_invoice_id = "in_card"
         invoice.save(update_fields=("stripe_invoice_id", "updated_at"))
-        payload = {
-            "id": "in_card", "status": "paid", "currency": "eur", "amount_paid": 39900,
-            "payment_intent": "pi_card", "charge": "ch_card",
-            "metadata": {"realestate_invoice_number": invoice.invoice_number},
-        }
+        payload = self.stripe_invoice_payload(
+            invoice, "in_card", status="paid", amount_paid=39900,
+            payment_intent="pi_card", charge="ch_card",
+        )
         self.assertTrue(StripeWebhookView()._handle_realestate_invoice_event("invoice.paid", payload))
         payment = RealEstatePayment.objects.get()
         self.assertEqual(payment.method, RealEstatePayment.Method.STRIPE_INVOICE)
@@ -831,7 +861,7 @@ class FullPaymentArrangementTests(TestCase):
         invoice.stripe_invoice_id = "in_state"
         invoice.save(update_fields=("stripe_invoice_id", "updated_at"))
         view = StripeWebhookView()
-        base = {"id": "in_state", "currency": "eur", "metadata": {"realestate_invoice_number": invoice.invoice_number}}
+        base = self.stripe_invoice_payload(invoice, "in_state")
         self.assertTrue(view._handle_realestate_invoice_event("invoice.payment_failed", {**base, "status": "open"}))
         invoice.refresh_from_db()
         self.assertEqual(invoice.stripe_invoice_status, "open")
@@ -841,6 +871,430 @@ class FullPaymentArrangementTests(TestCase):
         summary = str(RealEstateEnquiryAdmin(RealEstateEnquiry, custom_admin_site).financial_summary(enquiry))
         self.assertIn("EUR 399.00", summary)
         self.assertIn("Locked", summary)
+
+
+@override_settings(STRIPE_SECRET_KEY="sk_test_revision_tests")
+class StripeInvoiceRevisionTests(TestCase):
+    def setUp(self):
+        self.enquiry = RealEstateEnquiry.objects.create(
+            name="Revision Client",
+            email="revision@example.com",
+            phone="123",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Revision House",
+            county="Galway",
+            property_type="House",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+            quoted_price=Decimal("399.00"),
+            payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
+        )
+        calculate_realestate_deposit_amounts(self.enquiry)
+        self.invoice = ensure_invoices_for_arrangement(self.enquiry)[0]
+        self.invoice.stripe_invoice_id = "in_original"
+        self.invoice.stripe_invoice_number = "STRIPE-OLD"
+        self.invoice.stripe_invoice_status = "open"
+        self.invoice.save(update_fields=(
+            "stripe_invoice_id",
+            "stripe_invoice_number",
+            "stripe_invoice_status",
+            "updated_at",
+        ))
+        self.view = StripeWebhookView()
+
+    def payload(self, stripe_id, *, status="open", **overrides):
+        now = int(timezone.now().timestamp())
+        values = {
+            "id": stripe_id,
+            "number": f"STRIPE-{stripe_id}",
+            "status": status,
+            "currency": "eur",
+            "total": 39900,
+            "amount_due": 39900,
+            "amount_paid": 0,
+            "livemode": False,
+            "created": now,
+            "status_transitions": {"finalized_at": now},
+            "hosted_invoice_url": f"https://invoice.stripe.test/{stripe_id}",
+            "invoice_pdf": f"https://invoice.stripe.test/{stripe_id}.pdf",
+            "metadata": {
+                "realestate_invoice_number": self.invoice.invoice_number,
+                "realestate_enquiry_id": str(self.enquiry.pk),
+                "payment_purpose": "realestate_full",
+            },
+            "latest_revision": None,
+            "from_invoice": None,
+        }
+        values.update(overrides)
+        return values
+
+    def revision_pair(self, *, child_id="in_revision", child_status="open"):
+        parent = self.payload(
+            "in_original", status="void", latest_revision=child_id
+        )
+        child = self.payload(
+            child_id,
+            status=child_status,
+            from_invoice={"action": "revision", "invoice": "in_original"},
+        )
+        return parent, child
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_valid_direct_revision_updates_all_external_fields(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.return_value = parent
+
+        self.assertTrue(self.view._handle_realestate_invoice_event("invoice.finalized", child))
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+        self.assertEqual(self.invoice.stripe_invoice_number, "STRIPE-in_revision")
+        self.assertEqual(
+            self.invoice.stripe_hosted_invoice_url,
+            "https://invoice.stripe.test/in_revision",
+        )
+        self.assertEqual(
+            self.invoice.stripe_invoice_pdf_url,
+            "https://invoice.stripe.test/in_revision.pdf",
+        )
+        self.assertEqual(self.invoice.stripe_invoice_status, "open")
+        self.assertIsNotNone(self.invoice.stripe_invoice_created_at)
+        self.assertIsNotNone(self.invoice.stripe_invoice_finalized_at)
+        self.assertEqual(
+            self.enquiry.timeline_events.filter(
+                title="Stripe invoice revision reconciled"
+            ).count(),
+            1,
+        )
+
+    @override_settings(STRIPE_SECRET_KEY="sk_live_revision_tests")
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_valid_live_mode_revision_is_accepted(self, retrieve):
+        parent, child = self.revision_pair()
+        parent["livemode"] = True
+        child["livemode"] = True
+        retrieve.return_value = parent
+
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_multi_step_revision_chain_is_accepted(self, retrieve):
+        original = self.payload("in_original", status="void", latest_revision="in_revision_1")
+        revision_1 = self.payload(
+            "in_revision_1",
+            status="void",
+            latest_revision="in_revision_2",
+            from_invoice={"action": "revision", "invoice": "in_original"},
+        )
+        revision_2 = self.payload(
+            "in_revision_2",
+            from_invoice={"action": "revision", "invoice": "in_revision_1"},
+        )
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": original,
+            "in_revision_1": revision_1,
+        }[stripe_id]
+
+        self.view._handle_realestate_invoice_event("invoice.finalized", revision_2)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision_2")
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_original_void_before_revised_finalized_does_not_void_local(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.side_effect = lambda stripe_id: child if stripe_id == "in_revision" else parent
+
+        self.view._handle_realestate_invoice_event("invoice.voided", parent)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_revised_finalized_before_delayed_original_void_is_safe(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.side_effect = lambda stripe_id: parent if stripe_id == "in_original" else child
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+
+        self.view._handle_realestate_invoice_event("invoice.voided", parent)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+        self.assertEqual(self.invoice.stripe_invoice_status, "open")
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_revised_sent_event_updates_current_revision(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.return_value = parent
+
+        self.view._handle_realestate_invoice_event("invoice.sent", child)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+        self.assertEqual(self.invoice.stripe_invoice_status, "open")
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_revised_paid_event_is_idempotent(self, retrieve):
+        parent, child = self.revision_pair(child_status="paid")
+        child.update(amount_paid=39900, payment_intent="pi_revision", charge="ch_revision")
+        retrieve.return_value = parent
+
+        self.view._handle_realestate_invoice_event("invoice.paid", child)
+        self.view._handle_realestate_invoice_event("invoice.paid", child)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.PAID)
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+        self.assertEqual(self.invoice.payments.filter(status="succeeded").count(), 1)
+        payment = self.invoice.payments.get(status="succeeded")
+        self.assertEqual(payment.external_reference, "in_revision")
+
+    @patch("realestate.stripe_invoices.stripe.Invoice.send_invoice")
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_reminder_reconciles_and_sends_current_revision(self, retrieve, send):
+        parent, child = self.revision_pair()
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": parent,
+            "in_revision": child,
+        }[stripe_id]
+        send.return_value = child
+
+        result = send_stripe_invoice(self.invoice)
+
+        send.assert_called_once_with("in_revision")
+        self.assertEqual(result.stripe_invoice_id, "in_revision")
+
+    @patch("realestate.stripe_invoices.stripe.Invoice.send_invoice")
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_admin_reminder_action_sends_current_revision(self, retrieve, send):
+        parent, child = self.revision_pair()
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": parent,
+            "in_revision": child,
+        }[stripe_id]
+        send.return_value = child
+        model_admin = RealEstateInvoiceAdmin(RealEstateInvoice, custom_admin_site)
+        model_admin.message_user = Mock()
+        request = RequestFactory().post("/admin/realestate/invoice/")
+
+        model_admin.send_stripe_reminder_action(
+            request,
+            RealEstateInvoice.objects.filter(pk=self.invoice.pk),
+        )
+
+        send.assert_called_once_with("in_revision")
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_latest_revision_may_jump_to_most_recent_descendant(self, retrieve):
+        original = self.payload(
+            "in_original", status="void", latest_revision="in_revision_2"
+        )
+        revision_1 = self.payload(
+            "in_revision_1",
+            status="void",
+            from_invoice={"action": "revision", "invoice": "in_original"},
+            latest_revision="in_revision_2",
+        )
+        revision_2 = self.payload(
+            "in_revision_2",
+            from_invoice={"action": "revision", "invoice": "in_revision_1"},
+        )
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": original,
+            "in_revision_1": revision_1,
+            "in_revision_2": revision_2,
+        }[stripe_id]
+
+        self.view._handle_realestate_invoice_event("invoice.voided", original)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision_2")
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+
+    def test_ordinary_non_revision_void_still_voids_local_invoice(self):
+        original = self.payload("in_original", status="void")
+
+        self.view._handle_realestate_invoice_event("invoice.voided", original)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.VOID)
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_forged_metadata_without_revision_relationship_is_rejected(self, retrieve):
+        unrelated = self.payload("in_unrelated")
+
+        with self.assertRaisesMessage(StripeInvoiceRevisionError, "unrelated"):
+            self.view._handle_realestate_invoice_event("invoice.finalized", unrelated)
+        retrieve.assert_not_called()
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_wrong_revision_parent_is_rejected(self, retrieve):
+        unrelated_parent = self.payload(
+            "in_other_parent", latest_revision="in_revision"
+        )
+        child = self.payload(
+            "in_revision",
+            from_invoice={"action": "revision", "invoice": "in_other_parent"},
+        )
+        retrieve.return_value = unrelated_parent
+
+        with self.assertRaisesMessage(StripeInvoiceRevisionError, "unrelated"):
+            self.view._handle_realestate_invoice_event("invoice.finalized", child)
+
+    def test_revision_security_metadata_amount_currency_and_mode_must_match(self):
+        base_metadata = self.payload("in_original")["metadata"]
+        cases = {
+            "enquiry": {"metadata": {**base_metadata, "realestate_enquiry_id": "999"}},
+            "invoice number": {"metadata": {**base_metadata, "realestate_invoice_number": "OTHER"}},
+            "purpose": {"metadata": {**base_metadata, "payment_purpose": "realestate_deposit"}},
+            "amount": {"total": 39899},
+            "amount due": {"amount_due": 39899},
+            "currency": {"currency": "usd"},
+            "environment": {"livemode": True},
+        }
+        for label, overrides in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(StripeInvoiceRevisionError):
+                    self.view._handle_realestate_invoice_event(
+                        "invoice.finalized", self.payload("in_original", **overrides)
+                    )
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_manually_voided_and_paid_local_records_are_not_reopened(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.return_value = parent
+        self.invoice.status = RealEstateInvoice.Status.VOID
+        self.invoice.save(update_fields=("status", "updated_at"))
+        self.enquiry.timeline_events.create(
+            event_type=RealEstateTimelineEvent.EventType.NOTE,
+            title="Invoice voided",
+            notes=f"Invoice {self.invoice.invoice_number} was voided without a payment record.",
+        )
+
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.VOID)
+
+        self.invoice.status = RealEstateInvoice.Status.PAID
+        self.invoice.save(update_fields=("status", "updated_at"))
+        child["id"] = "in_revision_2"
+        child["from_invoice"] = {"action": "revision", "invoice": "in_revision"}
+        current_parent = self.payload("in_revision", latest_revision="in_revision_2")
+        retrieve.return_value = current_parent
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.PAID)
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_verified_open_revision_restores_only_non_manual_void(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.return_value = parent
+        self.invoice.status = RealEstateInvoice.Status.VOID
+        self.invoice.save(update_fields=("status", "updated_at"))
+
+        self.view._handle_realestate_invoice_event("invoice.finalized", child)
+
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_reconciliation_command_dry_run_and_apply_are_idempotent(self, retrieve):
+        parent, child = self.revision_pair()
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": parent,
+            "in_revision": child,
+        }[stripe_id]
+        output = StringIO()
+
+        call_command(
+            "reconcile_realestate_stripe_invoice_revisions",
+            invoice_number=self.invoice.invoice_number,
+            dry_run=True,
+            stdout=output,
+        )
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_original")
+        self.assertIn("local_invoice_status=issued", output.getvalue())
+        self.assertIn("stored_stripe_invoice_status=open", output.getvalue())
+        self.assertIn("stored_stripe_invoice_id=in_original", output.getvalue())
+        self.assertIn("current_stripe_invoice_id=in_revision", output.getvalue())
+        self.assertIn("current_stripe_invoice_status=open", output.getvalue())
+
+        call_command(
+            "reconcile_realestate_stripe_invoice_revisions",
+            invoice_number=self.invoice.invoice_number,
+            apply=True,
+            stdout=StringIO(),
+        )
+        call_command(
+            "reconcile_realestate_stripe_invoice_revisions",
+            invoice_number=self.invoice.invoice_number,
+            apply=True,
+            stdout=StringIO(),
+        )
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.status, RealEstateInvoice.Status.ISSUED)
+        self.assertEqual(self.invoice.stripe_invoice_id, "in_revision")
+        self.assertEqual(
+            self.enquiry.timeline_events.filter(
+                title="Stripe invoice revision reconciled"
+            ).count(),
+            1,
+        )
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_reconciliation_command_rejects_cycle(self, retrieve):
+        original = self.payload("in_original", latest_revision="in_revision")
+        revision = self.payload(
+            "in_revision",
+            latest_revision="in_original",
+            from_invoice={"action": "revision", "invoice": "in_original"},
+        )
+        retrieve.side_effect = lambda stripe_id: {
+            "in_original": original,
+            "in_revision": revision,
+        }[stripe_id]
+
+        with self.assertRaisesMessage(CommandError, "cycle"):
+            call_command(
+                "reconcile_realestate_stripe_invoice_revisions",
+                invoice_number=self.invoice.invoice_number,
+                dry_run=True,
+            )
+
+    @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
+    def test_reconciliation_command_rejects_excessive_depth(self, retrieve):
+        invoices = {}
+        ids = ["in_original"] + [f"in_revision_{index}" for index in range(1, 10)]
+        for index, stripe_id in enumerate(ids):
+            latest = ids[index + 1] if index + 1 < len(ids) else None
+            from_invoice = (
+                None
+                if index == 0
+                else {"action": "revision", "invoice": ids[index - 1]}
+            )
+            invoices[stripe_id] = self.payload(
+                stripe_id,
+                latest_revision=latest,
+                from_invoice=from_invoice,
+            )
+        retrieve.side_effect = lambda stripe_id: invoices[stripe_id]
+
+        with self.assertRaisesMessage(CommandError, "exceeds 8"):
+            call_command(
+                "reconcile_realestate_stripe_invoice_revisions",
+                invoice_number=self.invoice.invoice_number,
+                dry_run=True,
+            )
 
 
 class RealEstateAdminOperationsHubTests(TestCase):
