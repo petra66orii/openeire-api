@@ -816,6 +816,48 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("Download Media", html)
         self.assertIn("https://openeire.ie/delivery/example", html)
 
+    def test_delivery_formats_include_myairbridge_download_and_expiry_guidance(self):
+        delivery_url = (
+            "https://myairbridge.com/en/#!/transfer/example"
+            "?token=abc123&recipient=jane%40example.com"
+        )
+        context = {
+            **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+            "delivery_link": delivery_url,
+        }
+        html = render_to_string("emails/real_estate/delivery.html", context)
+        text = render_to_string("emails/real_estate/delivery.txt", context)
+
+        for format_name, rendered in (("html", html), ("text", text)):
+            with self.subTest(format=format_name):
+                self.assertIn("MyAirBridge", rendered)
+                self.assertIn("expires three days after this delivery email is sent", rendered)
+                self.assertIn("Save everything locally", rendered)
+                self.assertIn("ZIP archive", rendered)
+                self.assertIn("extract", rendered.lower())
+                self.assertIn("reply to this delivery email for assistance", rendered)
+
+        class DownloadLinkParser(HTMLParser):
+            href = None
+            current_href = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "a":
+                    self.current_href = dict(attrs).get("href")
+
+            def handle_endtag(self, tag):
+                if tag == "a":
+                    self.current_href = None
+
+            def handle_data(self, data):
+                if self.current_href and data.strip() == "Download Media":
+                    self.href = self.current_href
+
+        parser = DownloadLinkParser()
+        parser.feed(html)
+        self.assertEqual(parser.href, delivery_url)
+        self.assertIn(delivery_url, text)
+
     def test_delivery_cta_depends_on_link_not_provider(self):
         for provider in RealEstateEnquiry.DeliveryProvider.values:
             with self.subTest(provider=provider):
@@ -842,7 +884,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         html = render_to_string("emails/real_estate/delivery.html", context)
         text = render_to_string("emails/real_estate/delivery.txt", context)
 
-        self.assertNotIn("Download Media", html)
+        self.assertNotIn(">Download Media</a>", html)
         self.assertNotIn("href=\"\"", html)
         self.assertNotIn("Download Media:", text)
 

@@ -35,6 +35,24 @@ class PublicLeadCaptureThrottleTests(TestCase):
         self.assertEqual(response.json(), {"message": "Email sent successfully"})
         self.assertEqual(len(mail.outbox), 1)
 
+    def test_contact_form_accepts_real_estate_subject_without_changing_workflow(self):
+        response = self.client.post(
+            self.contact_url,
+            data={
+                "name": "Property Owner",
+                "email": "owner@example.com",
+                "subject": "Real Estate",
+                "message": "I have a quick property-media question.",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"message": "Email sent successfully"})
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].subject, "Contact Form: Real Estate")
+        self.assertIn("Subject: Real Estate", mail.outbox[0].body)
+        self.assertIn("I have a quick property-media question.", mail.outbox[0].body)
+
     def test_contact_form_throttles(self):
         for _ in range(5):
             response = self.client.post(
