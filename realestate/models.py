@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q, Sum
 from decimal import Decimal
@@ -33,6 +33,74 @@ class RealEstateEnquiry(models.Model):
         CUSTOM = "custom", "Custom"
         NOT_SURE = "not_sure", "Not Sure"
 
+    class PropertyType(models.TextChoices):
+        HOUSE = "house", "House"
+        APARTMENT = "apartment", "Apartment"
+        NEW_BUILD = "new_build", "New build / development"
+        SITE_LAND = "site_land", "Site / land"
+        COMMERCIAL = "commercial", "Commercial property"
+        AGRICULTURAL = "agricultural", "Agricultural property"
+        OTHER = "other", "Other"
+
+    class BedroomCount(models.TextChoices):
+        STUDIO = "studio", "Studio"
+        ONE = "1", "1"
+        TWO = "2", "2"
+        THREE = "3", "3"
+        FOUR = "4", "4"
+        FIVE = "5", "5"
+        SIX_PLUS = "6_plus", "6+"
+        NOT_APPLICABLE = "not_applicable", "Not applicable"
+
+    class FloorCount(models.TextChoices):
+        ONE = "1", "1"
+        TWO = "2", "2"
+        THREE = "3", "3"
+        FOUR_PLUS = "4_plus", "4+"
+        NOT_APPLICABLE = "not_applicable", "Not applicable"
+
+    class YesNoNotSure(models.TextChoices):
+        YES = "yes", "Yes"
+        NO = "no", "No"
+        NOT_SURE = "not_sure", "Not sure"
+
+    class GroundsSize(models.TextChoices):
+        NO_GROUNDS = "no_grounds", "No grounds"
+        NORMAL_GARDEN = "normal_garden", "Normal garden"
+        LARGE_GARDEN = "large_garden", "Large garden"
+        UNDER_ONE_ACRE = "under_1_acre", "Under 1 acre"
+        ONE_TO_FIVE_ACRES = "1_to_5_acres", "1-5 acres"
+        OVER_FIVE_ACRES = "over_5_acres", "Over 5 acres"
+        NOT_SURE = "not_sure", "Not sure"
+        NOT_APPLICABLE = "not_applicable", "Not applicable"
+
+    class FloorAreaUnit(models.TextChoices):
+        SQUARE_METRES = "sqm", "m²"
+        SQUARE_FEET = "sqft", "sq ft"
+
+    class OccupancyStatus(models.TextChoices):
+        VACANT = "vacant", "Vacant"
+        OWNER_OCCUPIED = "owner_occupied", "Owner occupied"
+        TENANT_OCCUPIED = "tenant_occupied", "Tenant occupied"
+        NEW_BUILD_SITE = "new_build_site", "New build / site"
+        OTHER = "other", "Other"
+
+    class AccessProvider(models.TextChoices):
+        ENQUIRER = "enquirer", "Enquirer"
+        OWNER = "owner", "Property owner / vendor"
+        TENANT = "tenant", "Tenant"
+        AGENT = "agent_colleague", "Agent / colleague"
+        OTHER = "other", "Other"
+
+    class SchedulingPreference(models.TextChoices):
+        REQUEST_DATE = "request_date", "Request a preferred date"
+        FLEXIBLE = "flexible", "Flexible / please contact me"
+
+    class PreferredTimeWindow(models.TextChoices):
+        MORNING = "morning", "Morning"
+        AFTERNOON = "afternoon", "Afternoon"
+        FLEXIBLE = "flexible", "Flexible"
+
     class HowHeard(models.TextChoices):
         GOOGLE = "google", "Google"
         INSTAGRAM = "instagram", "Instagram"
@@ -64,6 +132,7 @@ class RealEstateEnquiry(models.Model):
     ADD_ON_LABELS = {
         "additional_stills": "Additional edited stills - EUR 10 per image",
         "floor_plan": "Floor plan, 2D measured - EUR 75",
+        "virtual_tour_3d": "Hosted 3D virtual tour - EUR 150",
         "rush_delivery": "Rush same-day delivery, stills only - EUR 75",
         "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
         "additional_social_cuts": "Additional social media cuts - EUR 50",
@@ -73,8 +142,8 @@ class RealEstateEnquiry(models.Model):
     PACKAGE_SUMMARIES = {
         PreferredPackage.ESSENTIAL: "Essential - EUR 175 - 10 edited interior/exterior photos",
         PreferredPackage.STARTER: "Starter - EUR 229 - 20 edited interior/exterior photos + 5-8 aerial drone photos",
-        PreferredPackage.PRO: "Pro - EUR 399 - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s 4K aerial drone video + social media cuts",
-        PreferredPackage.PREMIUM: "Premium - EUR 579 - 30 edited interior/exterior photos + 5-8 aerial drone photos + aerial video + social media cuts + 3D interactive virtual tour",
+        PreferredPackage.PRO: "Pro - EUR 399 - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s ground video + 60-90s 4K aerial drone video + standard portrait and square social cuts",
+        PreferredPackage.PREMIUM: "Premium - EUR 579 - 30 edited interior/exterior photos + 5-8 aerial drone photos + ground video + aerial drone video + standard social cuts + hosted 3D virtual tour + 2D measured floor plan",
         PreferredPackage.CUSTOM: "Custom - POA",
         PreferredPackage.NOT_SURE: "Not sure yet",
     }
@@ -88,10 +157,52 @@ class RealEstateEnquiry(models.Model):
     property_type = models.CharField(max_length=100)
     preferred_package = models.CharField(max_length=32, choices=PreferredPackage.choices)
     consent_to_contact = models.BooleanField(default=False)
+    form_schema_version = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Public enquiry payload schema. Blank indicates the legacy form; "
+            "version 2 uses the structured shoot-scoping form."
+        ),
+    )
 
     company_name = models.CharField(max_length=255, blank=True)
     eircode = models.CharField(max_length=20, blank=True)
+    no_eircode = models.BooleanField(default=False)
+    location_details = models.TextField(blank=True)
+    property_type_details = models.CharField(max_length=255, blank=True)
+    bedroom_count = models.CharField(max_length=20, choices=BedroomCount.choices, blank=True)
+    floor_count = models.CharField(max_length=20, choices=FloorCount.choices, blank=True)
+    secondary_accommodation = models.CharField(
+        max_length=12, choices=YesNoNotSure.choices, blank=True
+    )
+    secondary_accommodation_details = models.CharField(max_length=500, blank=True)
+    outbuildings = models.CharField(
+        max_length=12, choices=YesNoNotSure.choices, blank=True
+    )
+    outbuildings_details = models.CharField(max_length=500, blank=True)
+    grounds_size = models.CharField(max_length=24, choices=GroundsSize.choices, blank=True)
+    internal_floor_area = models.PositiveIntegerField(null=True, blank=True)
+    internal_floor_area_unit = models.CharField(
+        max_length=4, choices=FloorAreaUnit.choices, blank=True
+    )
+    property_features = models.TextField(blank=True)
+    occupancy_status = models.CharField(
+        max_length=20, choices=OccupancyStatus.choices, blank=True
+    )
+    access_provider = models.CharField(
+        max_length=20, choices=AccessProvider.choices, blank=True
+    )
+    access_contact_name = models.CharField(max_length=255, blank=True)
+    access_contact_phone = models.CharField(max_length=50, blank=True)
+    readiness_acknowledged = models.BooleanField(default=False)
     add_ons = models.JSONField(default=list, blank=True)
+    additional_stills_quantity = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(50)],
+        help_text="Public requests are limited to 50 additional edited images.",
+    )
     travel_supplement_amount = models.DecimalField(
         max_digits=8,
         decimal_places=2,
@@ -111,6 +222,18 @@ class RealEstateEnquiry(models.Model):
         ),
     )
     preferred_date = models.DateField(null=True, blank=True)
+    scheduling_preference = models.CharField(
+        max_length=20, choices=SchedulingPreference.choices, blank=True
+    )
+    alternative_date = models.DateField(null=True, blank=True)
+    preferred_time_window = models.CharField(
+        max_length=12, choices=PreferredTimeWindow.choices, blank=True
+    )
+    on_camera = models.CharField(
+        max_length=12, choices=YesNoNotSure.choices, blank=True
+    )
+    on_camera_people = models.CharField(max_length=500, blank=True)
+    audio_requirements = models.TextField(blank=True)
     how_heard = models.CharField(max_length=32, choices=HowHeard.choices, blank=True)
     message = models.TextField(blank=True)
 
@@ -219,7 +342,13 @@ class RealEstateEnquiry(models.Model):
         return self.PACKAGE_SUMMARIES.get(self.preferred_package, self.get_preferred_package_display())
 
     def get_add_on_labels(self):
-        return [self.ADD_ON_LABELS.get(key, key) for key in (self.add_ons or [])]
+        labels = []
+        for key in self.add_ons or []:
+            label = self.ADD_ON_LABELS.get(key, key)
+            if key == "additional_stills" and self.additional_stills_quantity:
+                label = f"{label} x {self.additional_stills_quantity}"
+            labels.append(label)
+        return labels
 
     def get_add_ons_summary(self):
         labels = self.get_add_on_labels()

@@ -239,6 +239,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "preferred_package",
         "preferred_date",
         "status",
+        "form_schema_version",
         "quoted_price",
         "shoot_date",
         "booking_agreement_received",
@@ -251,6 +252,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "client_type",
         "how_heard",
         "created_at",
+        "form_schema_version",
     )
     search_fields = (
         "name",
@@ -263,6 +265,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
     readonly_fields = (
         "created_at",
         "updated_at",
+        "form_schema_version",
         "stripe_deposit_session_id",
         "deposit_paid_at",
         "deposit_paid",
@@ -306,6 +309,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "client_type",
                     "how_heard",
                     "consent_to_contact",
+                    "form_schema_version",
                 )
             },
         ),
@@ -316,9 +320,41 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "property_address",
                     "county",
                     "eircode",
-                    "property_type",
+                    "no_eircode",
+                    "location_details",
                     "access_contact",
                     "access_notes",
+                )
+            },
+        ),
+        (
+            "Property scope",
+            {
+                "fields": (
+                    "property_type",
+                    "property_type_details",
+                    "bedroom_count",
+                    "floor_count",
+                    "secondary_accommodation",
+                    "secondary_accommodation_details",
+                    "outbuildings",
+                    "outbuildings_details",
+                    "grounds_size",
+                    "internal_floor_area",
+                    "internal_floor_area_unit",
+                    "property_features",
+                )
+            },
+        ),
+        (
+            "Access & readiness",
+            {
+                "fields": (
+                    "occupancy_status",
+                    "access_provider",
+                    "access_contact_name",
+                    "access_contact_phone",
+                    "readiness_acknowledged",
                 )
             },
         ),
@@ -328,9 +364,16 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 "fields": (
                     "preferred_package",
                     "add_ons",
+                    "additional_stills_quantity",
                     "travel_supplement_amount",
                     "travel_details",
+                    "scheduling_preference",
                     "preferred_date",
+                    "alternative_date",
+                    "preferred_time_window",
+                    "on_camera",
+                    "on_camera_people",
+                    "audio_requirements",
                     "message",
                 )
             },

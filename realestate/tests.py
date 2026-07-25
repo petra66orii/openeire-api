@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import time as datetime_time
+from datetime import time as datetime_time, timedelta
 from html.parser import HTMLParser
 from unittest.mock import Mock, call, patch
 
@@ -1374,18 +1374,31 @@ class RealEstateEnquiryTests(APITestCase):
         caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")].clear()
         self.url = reverse("real-estate-enquiry-create")
         self.payload = {
+            "form_schema_version": 2,
             "name": "Jane Agent",
             "email": "jane@example.com",
             "phone": "+353 87 123 4567",
             "company_name": "Example Estate Agents",
             "client_type": "estate_agent",
             "property_address": "Example House, Salthill, Galway",
-            "eircode": "H91 XXXX",
+            "eircode": "H91 X4K8",
+            "no_eircode": False,
             "county": "Galway",
-            "property_type": "Detached house",
+            "property_type": "house",
+            "bedroom_count": "3",
+            "floor_count": "2",
+            "secondary_accommodation": "no",
+            "outbuildings": "no",
+            "grounds_size": "normal_garden",
+            "occupancy_status": "owner_occupied",
+            "access_provider": "enquirer",
+            "readiness_acknowledged": True,
             "preferred_package": "pro",
-            "add_ons": ["floor_plan", "additional_social_cuts"],
-            "preferred_date": "2026-06-20",
+            "add_ons": ["floor_plan"],
+            "scheduling_preference": "request_date",
+            "preferred_date": (timezone.localdate() + timedelta(days=14)).isoformat(),
+            "preferred_time_window": "morning",
+            "on_camera": "no",
             "how_heard": "google",
             "message": "Vendor prefers morning access. Interested in drone video if weather allows.",
             "consent_to_contact": True,
@@ -1397,6 +1410,7 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
         enquiry = RealEstateEnquiry.objects.get()
+        self.assertEqual(enquiry.form_schema_version, 2)
         self.assertEqual(response.data["id"], enquiry.id)
         self.assertEqual(response.data["status"], "new")
         self.assertEqual(response.data["message"], "Enquiry received successfully.")
@@ -1423,6 +1437,71 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(event.title, "Enquiry received")
         self.assertIn("Preferred package: Pro", event.notes)
         self.assertIn("Property address: Example House, Salthill, Galway", event.notes)
+
+    def test_deployed_legacy_payload_remains_accepted_during_rollout(self):
+        legacy_payload = {
+            "name": "Legacy Agent",
+            "email": "legacy@example.com",
+            "phone": "phone",
+            "client_type": "estate_agent",
+            "company_name": "",
+            "property_address": "Legacy House, Rural Townland",
+            "county": "County Galway",
+            "property_type": "Detached house",
+            "preferred_package": "pro",
+            "eircode": "not-an-eircode",
+            "add_ons": [
+                "additional_stills",
+                "additional_social_cuts",
+                "travel_supplement",
+            ],
+            "preferred_date": "2000-01-01",
+            "consent_to_contact": True,
+        }
+
+        for version in (None, 1):
+            with self.subTest(version=version):
+                caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")].clear()
+                payload = {**legacy_payload}
+                if version is not None:
+                    payload["form_schema_version"] = version
+                response = self.client.post(self.url, data=payload, format="json")
+                self.assertEqual(response.status_code, 201)
+                enquiry = RealEstateEnquiry.objects.get(email="legacy@example.com")
+                self.assertEqual(enquiry.form_schema_version, version)
+                enquiry.delete()
+
+    def test_legacy_payload_keeps_original_required_fields_and_consent(self):
+        legacy_payload = {
+            "name": "Legacy Client",
+            "email": "legacy-required@example.com",
+            "phone": "+353871234567",
+            "client_type": "private_seller",
+            "property_address": "Legacy address",
+            "county": "Galway",
+            "property_type": "Detached house",
+            "preferred_package": "starter",
+            "consent_to_contact": True,
+        }
+        for field, value in (("name", None), ("consent_to_contact", False)):
+            with self.subTest(field=field):
+                payload = {**legacy_payload}
+                if value is None:
+                    payload.pop(field)
+                else:
+                    payload[field] = value
+                response = self.client.post(self.url, data=payload, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data)
+
+    def test_unsupported_future_schema_version_is_rejected(self):
+        response = self.client.post(
+            self.url,
+            data={**self.payload, "form_schema_version": 3},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("form_schema_version", response.data)
 
     def test_internal_notification_email_is_sent(self):
         self.client.post(self.url, data=self.payload, format="json")
@@ -1471,6 +1550,28 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertIn("name", response.data)
         self.assertEqual(RealEstateEnquiry.objects.count(), 0)
 
+    def test_missing_new_scope_fields_and_readiness_are_rejected(self):
+        for field in (
+            "bedroom_count",
+            "floor_count",
+            "secondary_accommodation",
+            "outbuildings",
+            "grounds_size",
+            "occupancy_status",
+            "access_provider",
+            "scheduling_preference",
+            "preferred_time_window",
+            "on_camera",
+            "readiness_acknowledged",
+        ):
+            with self.subTest(field=field):
+                caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")].clear()
+                payload = {**self.payload}
+                payload.pop(field)
+                response = self.client.post(self.url, data=payload, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data)
+
     def test_whitespace_only_required_text_fields_are_rejected(self):
         payload = {
             **self.payload,
@@ -1503,9 +1604,13 @@ class RealEstateEnquiryTests(APITestCase):
     def test_optional_fields_can_be_blank(self):
         payload = {
             **self.payload,
+            "client_type": "private_seller",
             "company_name": "",
             "eircode": "",
+            "no_eircode": True,
+            "location_details": "Gate beside the old school: https://maps.google.com/example",
             "add_ons": [],
+            "scheduling_preference": "flexible",
             "preferred_date": None,
             "how_heard": "",
             "message": "",
@@ -1521,6 +1626,175 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertIsNone(enquiry.preferred_date)
         self.assertEqual(enquiry.how_heard, "")
         self.assertEqual(enquiry.message, "")
+
+    def test_conditional_company_name_is_required(self):
+        response = self.client.post(
+            self.url, data={**self.payload, "company_name": "   "}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("company_name", response.data)
+
+    def test_exact_location_requires_eircode_or_no_eircode_details(self):
+        response = self.client.post(
+            self.url,
+            data={
+                **self.payload,
+                "eircode": "",
+                "no_eircode": True,
+                "location_details": "",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("location_details", response.data)
+
+    def test_invalid_eircode_is_rejected(self):
+        response = self.client.post(
+            self.url, data={**self.payload, "eircode": "INVALID"}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("eircode", response.data)
+
+    def test_scope_descriptions_are_conditional(self):
+        for field, payload_update in (
+            (
+                "property_type_details",
+                {"property_type": "other", "property_type_details": ""},
+            ),
+            (
+                "secondary_accommodation_details",
+                {
+                    "secondary_accommodation": "yes",
+                    "secondary_accommodation_details": "",
+                },
+            ),
+            (
+                "outbuildings_details",
+                {"outbuildings": "yes", "outbuildings_details": ""},
+            ),
+        ):
+            with self.subTest(field=field):
+                response = self.client.post(
+                    self.url, data={**self.payload, **payload_update}, format="json"
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data)
+
+    def test_non_enquirer_access_requires_contact(self):
+        response = self.client.post(
+            self.url,
+            data={
+                **self.payload,
+                "access_provider": "tenant",
+                "access_contact_name": "",
+                "access_contact_phone": "",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("access_contact_name", response.data)
+        self.assertIn("access_contact_phone", response.data)
+
+    def test_past_preferred_and_alternative_dates_are_rejected(self):
+        past = (timezone.localdate() - timedelta(days=1)).isoformat()
+        response = self.client.post(
+            self.url,
+            data={**self.payload, "preferred_date": past, "alternative_date": past},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("preferred_date", response.data)
+        self.assertIn("alternative_date", response.data)
+
+    def test_on_camera_yes_requires_presenter_and_audio_details(self):
+        response = self.client.post(
+            self.url,
+            data={
+                **self.payload,
+                "on_camera": "yes",
+                "on_camera_people": "",
+                "audio_requirements": "",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("on_camera_people", response.data)
+        self.assertIn("audio_requirements", response.data)
+
+    def test_additional_stills_require_bounded_integer_quantity(self):
+        for quantity in (None, 0, 51, 1.5):
+            with self.subTest(quantity=quantity):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "add_ons": ["additional_stills"],
+                        "additional_stills_quantity": quantity,
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("additional_stills_quantity", response.data)
+
+    def test_virtual_tour_is_accepted_for_non_premium_package(self):
+        response = self.client.post(
+            self.url,
+            data={
+                **self.payload,
+                "preferred_package": "starter",
+                "add_ons": ["virtual_tour_3d"],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(RealEstateEnquiry.objects.get().add_ons, ["virtual_tour_3d"])
+
+    def test_package_inclusions_cannot_be_selected_as_add_ons(self):
+        for package, add_on in (
+            ("pro", "additional_social_cuts"),
+            ("premium", "floor_plan"),
+            ("premium", "virtual_tour_3d"),
+        ):
+            with self.subTest(package=package, add_on=add_on):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "preferred_package": package,
+                        "add_ons": [add_on],
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("add_ons", response.data)
+
+    def test_public_travel_selection_is_rejected_but_model_support_remains(self):
+        response = self.client.post(
+            self.url,
+            data={**self.payload, "add_ons": ["travel_supplement"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("add_ons", response.data)
+
+        historical = RealEstateEnquiry.objects.create(
+            name="Historical",
+            email="historical@example.com",
+            phone="+353871234567",
+            client_type="private_seller",
+            property_address="Legacy address",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package="starter",
+            consent_to_contact=True,
+            add_ons=["travel_supplement"],
+        )
+        self.assertEqual(historical.add_ons, ["travel_supplement"])
+
+    def test_current_package_summaries_include_ground_video_and_floor_plan(self):
+        self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
+        self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+        self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
 
     @patch(
         "realestate.views.send_realestate_internal_notification_email",
@@ -1540,6 +1814,17 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
         self.assertEqual(RealEstateTimelineEvent.objects.count(), 1)
+
+    @patch(
+        "realestate.views.record_timeline_event",
+        side_effect=RuntimeError("database timeout"),
+    )
+    def test_timeline_failure_does_not_return_500_or_duplicate_enquiry(
+        self, _mock_timeline
+    ):
+        response = self.client.post(self.url, data=self.payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(RealEstateEnquiry.objects.count(), 1)
 
 class RealEstateEnquiryAdminActionTests(TestCase):
     def setUp(self):
