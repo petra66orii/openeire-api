@@ -62,14 +62,20 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
             )
         if self.enquiry.property_address:
             notes.append(f"Property address: {self.enquiry.property_address}")
-        record_timeline_event(
-            self.enquiry,
-            "enquiry_received",
-            status="completed",
-            actor_type="client",
-            title="Enquiry received",
-            notes="\n".join(notes),
-        )
+        try:
+            record_timeline_event(
+                self.enquiry,
+                "enquiry_received",
+                status="completed",
+                actor_type="client",
+                title="Enquiry received",
+                notes="\n".join(notes),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to record enquiry timeline event. enquiry_id=%s",
+                self.enquiry.id,
+            )
 
     def _send_emails(self, enquiry):
         try:
