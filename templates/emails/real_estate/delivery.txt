@@ -3,8 +3,20 @@ Hi {{ first_name|default:"there" }},
 Your files for {{ property_address|default:"the property" }} are ready.
 
 {% if delivery_link %}Download Media:
-{{ delivery_link }}
+{{ delivery_link|safe }}
 {% endif %}
+The delivery link is hosted through MyAirBridge.
+
+HOW TO DOWNLOAD YOUR MEDIA
+1. Click or select "Download Media" above.
+2. On MyAirBridge, choose the download option to download the supplied files.
+3. Save everything locally. Large deliveries may download as a ZIP archive. Extract the ZIP before using or uploading the media.
+
+DOWNLOAD WITHIN THREE DAYS
+The MyAirBridge link expires three days after this delivery email is sent. Please download and safely store all supplied files before it expires.
+
+If the link has expired or a download fails, reply to this delivery email for assistance.
+
 The delivered files are ready for the agreed property listing and may be used for the approved marketing of that specific property, including property portals, estate agency websites where applicable, social media, email campaigns and brochures, in line with the agreed commercial marketing licence.
 
 OpenÉire Studios

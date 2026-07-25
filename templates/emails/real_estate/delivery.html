@@ -4,7 +4,7 @@
 {% block heading %}Your property media is ready{% endblock %}
 {% block body %}
   <p style="margin:0 0 16px;">Hi {{ first_name|default:"there" }},</p>
-  <p style="margin:0;">Your files for {{ property_address|default:"the property" }} are ready. The delivery link is below.</p>
+  <p style="margin:0;">Your files for {{ property_address|default:"the property" }} are ready. The delivery link below is hosted through MyAirBridge.</p>
 {% endblock %}
 {% block cta %}
   {% if delivery_link %}
@@ -14,6 +14,18 @@
   {% endif %}
 {% endblock %}
 {% block service_note %}
+  <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px; color:#374151; font-size:14px; line-height:1.7;">
+    <p style="margin:0 0 10px; font-weight:800; color:#111827;">How to download your media</p>
+    <ol style="margin:0; padding-left:20px;">
+      <li style="margin-bottom:6px;">Click or select <strong>Download Media</strong> above.</li>
+      <li style="margin-bottom:6px;">On MyAirBridge, choose the download option to download the supplied files.</li>
+      <li>Save everything locally. Large deliveries may download as a ZIP archive, which you should extract before using or uploading the media.</li>
+    </ol>
+    <p style="margin:14px 0 0;">If the link has expired or a download fails, reply to this delivery email for assistance.</p>
+  </div>
+  <div style="margin-top:16px; padding:16px 18px; background:#FFFBEB; border:1px solid #FCD34D; border-radius:14px; color:#78350F; font-size:14px; line-height:1.6;">
+    <strong>Download within three days:</strong> The MyAirBridge link expires three days after this delivery email is sent. Please download and safely store all supplied files before it expires.
+  </div>
   <div style="margin-top:24px; padding:18px; background:#FAFAF9; border:1px solid #E5E7EB; border-radius:14px; color:#5F6673; font-size:13px; line-height:1.6;">
     The delivered files are ready for the agreed property listing and may be used for the approved marketing of that specific property, including property portals, estate agency websites where applicable, social media, email campaigns and brochures, in line with the agreed commercial marketing licence.
   </div>
