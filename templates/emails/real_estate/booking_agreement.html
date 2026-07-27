@@ -16,7 +16,11 @@
     <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Booking details</p>
     <p style="margin:0 0 6px;"><strong>Reference:</strong> {{ booking_reference|default:"To be confirmed" }}</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
+    <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    {% if included_photographs_label %}<p style="margin:0 0 6px;"><strong>Included edited photographs:</strong> {{ included_photographs_label }}</p>{% endif %}
+    <p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ additional_photograph_copy }}</p>
     <p style="margin:0 0 6px;"><strong>Proposed shoot:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
+    {% if turnaround_label %}<p style="margin:0 0 6px;"><strong>Standard turnaround:</strong> {{ turnaround_label }}</p>{% endif %}
     <p style="margin:0 0 6px;"><strong>Package total:</strong> {{ total_required|default:"To be confirmed" }}</p>
     <p style="margin:0 0 6px;"><strong>Payment arrangement:</strong> {{ payment_arrangement_label|default:"To be confirmed" }}</p>
     {% if is_deposit_then_balance %}

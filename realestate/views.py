@@ -58,7 +58,15 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
         notes = []
         if self.enquiry.preferred_package:
             notes.append(
-                f"Preferred package: {self.enquiry.get_preferred_package_display()}"
+                f"Preferred package: {self.enquiry.get_preferred_package_summary()}"
+            )
+            notes.append(
+                "Included edited photographs: "
+                f"{self.enquiry.get_included_photographs_label()}"
+            )
+            notes.append(
+                "Standard turnaround: "
+                f"{self.enquiry.get_preferred_package_turnaround_label()}"
             )
         if self.enquiry.property_address:
             notes.append(f"Property address: {self.enquiry.property_address}")
@@ -103,6 +111,19 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
                 "id": self.enquiry.id,
                 "status": self.enquiry.status,
                 "message": "Enquiry received successfully.",
+                "package_summary": self.enquiry.get_preferred_package_summary(),
+                "included_photograph_count": (
+                    self.enquiry.get_included_photograph_count()
+                ),
+                "included_photographs_label": (
+                    self.enquiry.get_included_photographs_label()
+                ),
+                "turnaround_code": (
+                    self.enquiry.get_preferred_package_turnaround_code()
+                ),
+                "turnaround_label": (
+                    self.enquiry.get_preferred_package_turnaround_label()
+                ),
             },
             status=status.HTTP_201_CREATED,
         )

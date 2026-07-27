@@ -5,6 +5,11 @@ Thank you for sharing the details for {{ property_address|default:"the property"
 Quote details
 Property: {{ property_address|default:"Not specified" }}
 Package: {{ package_name|default:"Not specified" }}
+{% if included_photographs_label %}Included edited photographs: {{ included_photographs_label }}
+{% endif %}{{ additional_photograph_copy }}
+{% if turnaround_label %}Standard turnaround: {{ turnaround_label }}
+{% endif %}{% if turnaround_detail %}{{ turnaround_detail }}
+{% endif %}
 {% if addons %}Add-ons: {% for addon in addons %}{{ addon }}{% if not forloop.last %}; {% endif %}{% endfor %}
 {% endif %}{% if quote_total or vat_total or total_including_vat or deposit_amount or balance_due %}
 Quote summary
@@ -29,6 +34,8 @@ Ready to proceed?
 
 {% if quote_reply_email %}Proceed with this quote: {{ quote_reply_email }}
 {% else %}Reply details are being confirmed. Please contact studio@openeire.ie and quote this property address.
+{% endif %}
+{% if turnaround_context %}{{ turnaround_context }}
 {% endif %}
 This quote does not confirm a booking or reserve a shoot date.
 

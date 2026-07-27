@@ -17,6 +17,7 @@ from django.urls import reverse
 
 from openeire_api.mail_utils import get_default_from_email
 from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment
+from .turnaround import TURNAROUND_CONTEXT
 
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,27 @@ def build_realestate_email_context(enquiry, **overrides):
             if hasattr(enquiry, "get_preferred_package_summary")
             else ""
         ),
+        "included_photographs_label": (
+            enquiry.get_included_photographs_label()
+            if hasattr(enquiry, "get_included_photographs_label")
+            else ""
+        ),
+        "additional_photograph_copy": getattr(
+            enquiry,
+            "ADDITIONAL_PHOTOGRAPH_COPY",
+            "Additional edited photographs may be agreed at EUR 10 per photograph.",
+        ),
+        "turnaround_label": (
+            enquiry.get_preferred_package_turnaround_label()
+            if hasattr(enquiry, "get_preferred_package_turnaround_label")
+            else ""
+        ),
+        "turnaround_detail": (
+            enquiry.get_preferred_package_turnaround_detail()
+            if hasattr(enquiry, "get_preferred_package_turnaround_detail")
+            else ""
+        ),
+        "turnaround_context": TURNAROUND_CONTEXT,
         "addons": enquiry.get_add_on_labels()
         if hasattr(enquiry, "get_add_on_labels")
         else [],
@@ -399,6 +421,8 @@ def send_realestate_internal_notification_email(enquiry, request=None):
         f"Precise location details: {enquiry.location_details or 'Not provided'}\n\n"
         "Requested package\n"
         f"Package: {enquiry.get_preferred_package_summary()}\n"
+        f"Included photographs: {enquiry.get_included_photographs_label()}\n"
+        f"Standard turnaround: {enquiry.get_preferred_package_turnaround_label()}\n"
         f"Add-ons: {enquiry.get_add_ons_summary()}\n"
         f"Additional stills quantity: {enquiry.additional_stills_quantity or 'Not applicable'}\n\n"
         "Property size / scope\n"

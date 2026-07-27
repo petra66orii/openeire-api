@@ -7,8 +7,15 @@ Reference: {{ booking_reference|default:"To be confirmed" }}
 Property: {{ property_address|default:"Not specified" }}
 Shoot date: {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}
 Package: {{ package_name|default:"Not specified" }}
+{% if included_photographs_label %}Included edited photographs: {{ included_photographs_label }}
+{% endif %}{{ additional_photograph_copy }}
+{% if turnaround_label %}Standard turnaround: {{ turnaround_label }}
+{% endif %}{% if turnaround_detail %}{{ turnaround_detail }}
+{% endif %}
 Payment arrangement: {{ payment_arrangement_label|default:"Not specified" }}
 {% if is_full_on_shoot_day %}Payment due: {{ total_required }} on {{ payment_due_date }}{% if expected_payment_method %} by {{ expected_payment_method }}{% endif %}
+{% endif %}
+{% if turnaround_context %}{{ turnaround_context }}
 {% endif %}
 If access arrangements, keys, alarms or vendor availability change before the shoot, please reply to this email as soon as possible.
 

@@ -34,6 +34,10 @@ Use this checklist before enabling or changing any real estate email flow in pro
 
 - [ ] Quote emails describe scope and price only, and do not imply the booking is confirmed.
 - [ ] Quote emails include "Ready to proceed?" and explain that the Booking Agreement and booking deposit request are issued after the client replies.
+- [ ] Quote, booking-agreement and confirmation emails show the package-aware standard turnaround: next business day for Essential/Starter, two business days for Pro/Premium, or specifically agreed for Custom/Not sure.
+- [ ] Enquiry, quote, booking-agreement and confirmation emails show the current catalogue's included edited-photograph allowance for new work, while issued historical scope remains unchanged.
+- [ ] Customer-facing scope copy states that additional edited photographs may be agreed at EUR 10 per photograph.
+- [ ] Rush delivery is described as still-photography only and never as rush processing for video, social cuts, virtual tours, floor plans or other Premium outputs.
 - [ ] Quote emails clearly state the booking is confirmed only after both the Booking Agreement is signed and the booking deposit has cleared.
 - [ ] Quote emails include a "Proceed with this quote" mailto button when a reply email is configured.
 - [ ] Quote emails show a safe highlighted fallback message instead of a broken button when no reply email is configured.
@@ -64,6 +68,7 @@ adopting it would change deposit collection, invoice delivery, reminder, and web
 semantics and should be planned as a separate payment-flow migration.
 - [ ] Delivery emails include a "Download Media" CTA when a delivery link is present.
 - [ ] Delivery emails include the agreed commercial marketing licence wording and do not imply ownership transfer.
+- [ ] Delivery emails retain the MyAirBridge three-day link-expiry warning.
 - [ ] Follow-up emails include a "Leave a Google Review" CTA only when a review link exists.
 - [ ] Weather reschedule emails clearly state the proposed replacement date/time and next step.
 

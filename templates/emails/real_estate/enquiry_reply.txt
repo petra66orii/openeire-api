@@ -5,6 +5,10 @@ Thanks for getting in touch with OpenÉire Studios. We have received your proper
 Request summary
 Property: {{ property_address|default:"Not specified" }}
 Package: {{ package_name|default:"Not specified" }}
+{% if included_photographs_label %}Included edited photographs: {{ included_photographs_label }}
+{% endif %}{{ additional_photograph_copy }}
+{% if turnaround_label %}Standard turnaround: {{ turnaround_label }}
+{% endif %}
 Preferred date: {{ shoot_date|default:"Not specified" }}
 
 We will come back to you within 24 hours with next steps. If anything changes in the meantime, simply reply to this email.

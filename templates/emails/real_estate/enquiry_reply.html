@@ -11,6 +11,9 @@
     <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Request summary</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    {% if included_photographs_label %}<p style="margin:0 0 6px;"><strong>Included edited photographs:</strong> {{ included_photographs_label }}</p>{% endif %}
+    <p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ additional_photograph_copy }}</p>
+    {% if turnaround_label %}<p style="margin:0 0 6px;"><strong>Standard turnaround:</strong> {{ turnaround_label }}</p>{% endif %}
     <p style="margin:0;"><strong>Preferred date:</strong> {{ shoot_date|default:"Not specified" }}</p>
   </div>
 {% endblock %}

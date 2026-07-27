@@ -38,9 +38,7 @@ def build_invoice_filename(invoice):
 
 def generate_invoice_pdf(invoice):
     enquiry = invoice.enquiry
-    deliverables = {
-        "pro": "25 edited interior/exterior photographs; 5–8 aerial stills; ground/aerial video; social cuts; commercial marketing licence",
-    }.get(enquiry.preferred_package, enquiry.get_preferred_package_summary())
+    deliverables = enquiry.get_preferred_package_summary()
     payment_refs = ", ".join(
         filter(None, invoice.payments.filter(status="succeeded").values_list("external_reference", flat=True))
     ) or "—"

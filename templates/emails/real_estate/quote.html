@@ -11,6 +11,10 @@
     <p style="margin:0 0 8px; color:#5F6673; font-size:12px; letter-spacing:.12em; text-transform:uppercase;">Quote details</p>
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    {% if included_photographs_label %}<p style="margin:0 0 6px;"><strong>Included edited photographs:</strong> {{ included_photographs_label }}</p>{% endif %}
+    <p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ additional_photograph_copy }}</p>
+    {% if turnaround_label %}<p style="margin:0 0 6px;"><strong>Standard turnaround:</strong> {{ turnaround_label }}</p>{% endif %}
+    {% if turnaround_detail %}<p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ turnaround_detail }}</p>{% endif %}
     {% if addons %}<p style="margin:0 0 6px;"><strong>Add-ons:</strong> {% for addon in addons %}{{ addon }}{% if not forloop.last %}; {% endif %}{% endfor %}</p>{% endif %}
     {% if quote_total or vat_total or total_including_vat or deposit_amount or balance_due %}
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px; border-top:1px solid #E5E7EB;">
@@ -77,5 +81,6 @@
   </div>
 {% endblock %}
 {% block service_note %}
+  {% if turnaround_context %}<p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">{{ turnaround_context }}</p>{% endif %}
   <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">This quote does not confirm a booking or reserve a shoot date.</p>
 {% endblock %}

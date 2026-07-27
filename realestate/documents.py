@@ -17,6 +17,7 @@ from .models import (
     RealEstateInvoice,
 )
 from .payments import calculate_realestate_deposit_amounts
+from .turnaround import TURNAROUND_CONTEXT
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -356,6 +357,14 @@ def _build_booking_agreement_context(enquiry):
             if hasattr(enquiry, "get_preferred_package_summary")
             else getattr(enquiry, "preferred_package", "")
         ),
+        "included_photographs_label": enquiry.get_included_photographs_label(),
+        "included_photograph_count": enquiry.get_included_photograph_count(),
+        "additional_photograph_copy": _agreement_currency_text(
+            enquiry.ADDITIONAL_PHOTOGRAPH_COPY
+        ),
+        "turnaround_label": enquiry.get_preferred_package_turnaround_label(),
+        "turnaround_detail": enquiry.get_preferred_package_turnaround_detail(),
+        "turnaround_context": TURNAROUND_CONTEXT,
         "add_ons_summary": _agreement_currency_text(
             enquiry.get_add_ons_summary()
             if hasattr(enquiry, "get_add_ons_summary")
