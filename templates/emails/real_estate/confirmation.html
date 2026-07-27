@@ -13,10 +13,15 @@
     <p style="margin:0 0 6px;"><strong>Property:</strong> {{ property_address|default:"Not specified" }}</p>
     <p style="margin:0 0 6px;"><strong>Shoot date:</strong> {{ shoot_date|default:"Date TBC" }}{% if shoot_time %} at {{ shoot_time }}{% endif %}</p>
     <p style="margin:0 0 6px;"><strong>Package:</strong> {{ package_name|default:"Not specified" }}</p>
+    {% if included_photographs_label %}<p style="margin:0 0 6px;"><strong>Included edited photographs:</strong> {{ included_photographs_label }}</p>{% endif %}
+    <p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ additional_photograph_copy }}</p>
+    {% if turnaround_label %}<p style="margin:0 0 6px;"><strong>Standard turnaround:</strong> {{ turnaround_label }}</p>{% endif %}
+    {% if turnaround_detail %}<p style="margin:0 0 6px; color:#5F6673; font-size:13px;">{{ turnaround_detail }}</p>{% endif %}
     <p style="margin:0 0 6px;"><strong>Payment arrangement:</strong> {{ payment_arrangement_label|default:"Not specified" }}</p>
     {% if is_full_on_shoot_day %}<p style="margin:0;"><strong>Payment due:</strong> {{ total_required }} on {{ payment_due_date }}{% if expected_payment_method %} by {{ expected_payment_method }}{% endif %}</p>{% endif %}
   </div>
 {% endblock %}
 {% block service_note %}
+  {% if turnaround_context %}<p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">{{ turnaround_context }}</p>{% endif %}
   <p style="margin:22px 0 0; color:#5F6673; font-size:13px; line-height:1.6;">If access arrangements, keys, alarms or vendor availability change before the shoot, please reply to this email as soon as possible.</p>
 {% endblock %}

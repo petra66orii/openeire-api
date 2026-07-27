@@ -64,6 +64,27 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         allow_empty=True,
         default=list,
     )
+    package_summary = serializers.CharField(
+        source="get_preferred_package_summary",
+        read_only=True,
+    )
+    turnaround_code = serializers.CharField(
+        source="get_preferred_package_turnaround_code",
+        read_only=True,
+    )
+    turnaround_label = serializers.CharField(
+        source="get_preferred_package_turnaround_label",
+        read_only=True,
+    )
+    included_photograph_count = serializers.IntegerField(
+        source="get_included_photograph_count",
+        read_only=True,
+        allow_null=True,
+    )
+    included_photographs_label = serializers.CharField(
+        source="get_included_photographs_label",
+        read_only=True,
+    )
 
     class Meta:
         model = RealEstateEnquiry
@@ -81,7 +102,9 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             "additional_stills_quantity", "scheduling_preference",
             "preferred_date", "alternative_date", "preferred_time_window",
             "on_camera", "on_camera_people", "audio_requirements", "how_heard",
-            "message", "consent_to_contact", "status",
+            "message", "consent_to_contact", "status", "package_summary",
+            "included_photograph_count", "included_photographs_label",
+            "turnaround_code", "turnaround_label",
         )
         read_only_fields = ("id", "status")
         extra_kwargs = {
@@ -245,7 +268,7 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         quantity = attrs.get("additional_stills_quantity")
         if "additional_stills" in add_ons and quantity is None:
             errors["additional_stills_quantity"] = (
-                "Choose how many additional edited stills are required (maximum 50)."
+                "Choose how many additional edited photographs are required (maximum 50)."
             )
         elif "additional_stills" not in add_ons and quantity is not None:
             errors["additional_stills_quantity"] = (

@@ -4,6 +4,20 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q, Sum
 from decimal import Decimal
+import re
+
+from .package_catalogue import (
+    ADDITIONAL_PHOTOGRAPH_COPY,
+    PACKAGE_SUMMARIES,
+    get_included_photograph_count,
+    get_included_photographs_label,
+    get_package_summary,
+)
+from .turnaround import (
+    get_package_turnaround_code,
+    get_package_turnaround_detail,
+    get_package_turnaround_label,
+)
 
 
 class RealEstateEnquiry(models.Model):
@@ -130,23 +144,17 @@ class RealEstateEnquiry(models.Model):
         OTHER = "other", "Other"
 
     ADD_ON_LABELS = {
-        "additional_stills": "Additional edited stills - EUR 10 per image",
+        "additional_stills": "Additional edited photographs - EUR 10 per photograph",
         "floor_plan": "Floor plan, 2D measured - EUR 75",
         "virtual_tour_3d": "Hosted 3D virtual tour - EUR 150",
-        "rush_delivery": "Rush same-day delivery, stills only - EUR 75",
+        "rush_delivery": "Rush same-day delivery, still photography only - EUR 75",
         "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
         "additional_social_cuts": "Additional social media cuts - EUR 50",
         "travel_supplement": "Travel supplement beyond 40 km - EUR 0.50 per km",
     }
 
-    PACKAGE_SUMMARIES = {
-        PreferredPackage.ESSENTIAL: "Essential - EUR 175 - 10 edited interior/exterior photos",
-        PreferredPackage.STARTER: "Starter - EUR 229 - 20 edited interior/exterior photos + 5-8 aerial drone photos",
-        PreferredPackage.PRO: "Pro - EUR 399 - 25 edited interior/exterior photos + 5-8 aerial drone photos + 60-90s ground video + 60-90s 4K aerial drone video + standard portrait and square social cuts",
-        PreferredPackage.PREMIUM: "Premium - EUR 579 - 30 edited interior/exterior photos + 5-8 aerial drone photos + ground video + aerial drone video + standard social cuts + hosted 3D virtual tour + 2D measured floor plan",
-        PreferredPackage.CUSTOM: "Custom - POA",
-        PreferredPackage.NOT_SURE: "Not sure yet",
-    }
+    PACKAGE_SUMMARIES = PACKAGE_SUMMARIES
+    ADDITIONAL_PHOTOGRAPH_COPY = ADDITIONAL_PHOTOGRAPH_COPY
 
     name = models.CharField(max_length=255)
     email = models.EmailField()
@@ -339,7 +347,71 @@ class RealEstateEnquiry(models.Model):
         return f"[{self.county}] {self.get_preferred_package_display()} - {self.name}"
 
     def get_preferred_package_summary(self):
-        return self.PACKAGE_SUMMARIES.get(self.preferred_package, self.get_preferred_package_display())
+        persisted_scope = self._get_persisted_package_scope()
+        if persisted_scope:
+            return persisted_scope.get("package_name") or (
+                "Agreed package scope - refer to the issued Booking Agreement"
+            )
+        if self._requires_historical_scope_review():
+            return "Agreed package scope - verify the issued quotation or agreement"
+        return get_package_summary(
+            self.preferred_package,
+            self.get_preferred_package_display(),
+        )
+
+    def get_included_photographs_label(self):
+        persisted_scope = self._get_persisted_package_scope()
+        if persisted_scope:
+            label = persisted_scope.get("included_photographs_label")
+            if label:
+                return label
+            package_name = str(persisted_scope.get("package_name") or "")
+            match = re.search(r"(\d+)\s+(?:professionally\s+)?edited", package_name, re.I)
+            if match:
+                return (
+                    f"{match.group(1)} professionally edited interior "
+                    "and exterior photographs"
+                )
+            return "Included photographs - refer to the issued Booking Agreement"
+        if self._requires_historical_scope_review():
+            return "Included photographs - verify the issued quotation or agreement"
+        return get_included_photographs_label(self.preferred_package)
+
+    def get_included_photograph_count(self):
+        persisted_scope = self._get_persisted_package_scope()
+        if persisted_scope:
+            count = persisted_scope.get("included_photograph_count")
+            if isinstance(count, int):
+                return count
+            match = re.search(
+                r"(\d+)\s+(?:professionally\s+)?edited",
+                str(persisted_scope.get("package_name") or ""),
+                re.I,
+            )
+            return int(match.group(1)) if match else None
+        if self._requires_historical_scope_review():
+            return None
+        return get_included_photograph_count(self.preferred_package)
+
+    def _get_persisted_package_scope(self):
+        if not self.pk:
+            return None
+        snapshot = self.booking_agreement_snapshots.first()
+        if not snapshot:
+            return None
+        return snapshot.context if isinstance(snapshot.context, dict) else {}
+
+    def _requires_historical_scope_review(self):
+        return self.status in {self.Status.BOOKED, self.Status.COMPLETED}
+
+    def get_preferred_package_turnaround_code(self):
+        return get_package_turnaround_code(self.preferred_package)
+
+    def get_preferred_package_turnaround_label(self):
+        return get_package_turnaround_label(self.preferred_package)
+
+    def get_preferred_package_turnaround_detail(self):
+        return get_package_turnaround_detail(self.preferred_package)
 
     def get_add_on_labels(self):
         labels = []
@@ -485,7 +557,7 @@ class RealEstateDocumentSequence(models.Model):
 
 
 class RealEstateBookingAgreementSnapshot(models.Model):
-    TEMPLATE_VERSION = "1.6"
+    TEMPLATE_VERSION = "1.8"
 
     enquiry = models.ForeignKey(
         RealEstateEnquiry,

@@ -756,7 +756,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "booking": {
                 "status": enquiry.get_status_display(),
                 "shoot": enquiry.shoot_date or enquiry.preferred_date or "To be confirmed",
-                "package": enquiry.get_preferred_package_display(),
+                "package": enquiry.get_preferred_package_summary(),
+                "turnaround": enquiry.get_preferred_package_turnaround_label(),
                 "arrangement": enquiry.get_payment_arrangement_display(),
                 "expected_method": enquiry.get_expected_payment_method_display() or "Not set",
                 "agreement": "Received" if enquiry.booking_agreement_received else "Pending",

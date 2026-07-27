@@ -80,6 +80,7 @@ Included Deliverables:
 - Any additional agreed add-ons listed below.
 - Professionally edited property media suitable for marketing the property identified in this Booking Agreement.
 - Any drone, video, social media, floor plan, virtual tour, or additional media outputs only where expressly included in the package or agreed in writing.
+- {{ additional_photograph_copy }}
 
 Additional Agreed Add-Ons:
 
@@ -121,9 +122,9 @@ Only the Deliverables expressly listed above are included in this Booking Agreem
 
 ## 6. Delivery and Editing
 
-6.1 OpenEire shall use reasonable endeavours to deliver the Deliverables within 24 hours of the Shoot Date.
+6.1 Standard turnaround for the selected package: **{{ turnaround_label }}**. {{ turnaround_detail }}
 
-6.2 The Client acknowledges that delivery within 24 hours is conditional upon lawful and safe operating conditions, property access, weather, technical issues, and events outside OpenEire's reasonable control.
+6.2 {{ turnaround_context }}
 
 6.3 Deliverables shall be supplied in OpenEire's standard professional editing style.
 

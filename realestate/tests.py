@@ -39,6 +39,19 @@ from .models import RealEstateTimelineEvent
 from .payments import calculate_realestate_deposit_amounts
 from .payments import create_realestate_deposit_checkout_session
 from .payments import prepare_realestate_deposit_checkout_session
+from .package_catalogue import (
+    ADDITIONAL_PHOTOGRAPH_PRICE_EUR,
+    REAL_ESTATE_PACKAGE_CATALOGUE,
+)
+from .turnaround import (
+    NEXT_BUSINESS_DAY,
+    SPECIFICALLY_AGREED,
+    TURNAROUND_CONTEXT,
+    TWO_BUSINESS_DAYS,
+    get_package_turnaround_code,
+    get_package_turnaround_detail,
+    get_package_turnaround_label,
+)
 
 
 REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
@@ -47,6 +60,18 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "company_name": "Example Estate Agents",
     "property_address": "Example House, Salthill, Galway",
     "package_name": "Pro package",
+    "included_photographs_label": (
+        "30 professionally edited interior and exterior photographs"
+    ),
+    "additional_photograph_copy": (
+        "Additional edited photographs may be agreed at EUR 10 per photograph."
+    ),
+    "turnaround_label": "Delivery within 2 business days",
+    "turnaround_detail": (
+        "This package is normally delivered within two business days due to the "
+        "additional video-production workload."
+    ),
+    "turnaround_context": TURNAROUND_CONTEXT,
     "addons": ["2D measured floor plan", "Additional social media cuts"],
     "quote_total": "399",
     "vat_total": "0.00",
@@ -74,6 +99,32 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "cta_url": "",
     "cta_label": "",
 }
+
+
+class RealEstateTurnaroundPolicyTests(SimpleTestCase):
+    def test_package_turnaround_mapping_is_explicit(self):
+        expected = {
+            "essential": (NEXT_BUSINESS_DAY, "Next-business-day delivery"),
+            "starter": (NEXT_BUSINESS_DAY, "Next-business-day delivery"),
+            "pro": (TWO_BUSINESS_DAYS, "Delivery within 2 business days"),
+            "premium": (TWO_BUSINESS_DAYS, "Delivery within 2 business days"),
+            "custom": (SPECIFICALLY_AGREED, "Turnaround as specifically agreed"),
+            "not_sure": (
+                SPECIFICALLY_AGREED,
+                "Turnaround as specifically agreed",
+            ),
+        }
+
+        for package, (code, label) in expected.items():
+            with self.subTest(package=package):
+                self.assertEqual(get_package_turnaround_code(package), code)
+                self.assertEqual(get_package_turnaround_label(package), label)
+
+    def test_rush_delivery_is_still_photography_only(self):
+        label = RealEstateEnquiry.ADD_ON_LABELS["rush_delivery"]
+
+        self.assertIn("still photography only", label)
+        self.assertNotIn("video", label.lower())
 
 
 class RealEstatePricingTests(TestCase):
@@ -532,6 +583,52 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                 self.assertNotIn("{{", html)
                 self.assertNotIn("{{", text)
 
+    def test_scope_emails_match_catalogue_in_html_and_plain_text(self):
+        for template_name in (
+            "enquiry_reply",
+            "quote",
+            "booking_agreement",
+            "confirmation",
+        ):
+            with self.subTest(template_name=template_name):
+                html = render_to_string(
+                    f"emails/real_estate/{template_name}.html",
+                    REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+                )
+                text = render_to_string(
+                    f"emails/real_estate/{template_name}.txt",
+                    REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+                )
+                for rendered in (html, text):
+                    self.assertIn(
+                        "30 professionally edited interior and exterior photographs",
+                        rendered,
+                    )
+                    self.assertIn("EUR 10 per photograph", rendered)
+
+    def test_quote_email_formats_render_every_fixed_package_allowance(self):
+        for package_code, expected in {
+            "essential": 10,
+            "starter": 25,
+            "pro": 30,
+            "premium": 35,
+        }.items():
+            package = REAL_ESTATE_PACKAGE_CATALOGUE[package_code]
+            context = {
+                **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+                "package_name": package.summary,
+                "included_photographs_label": package.included_photographs_label,
+            }
+            with self.subTest(package_code=package_code):
+                html = render_to_string("emails/real_estate/quote.html", context)
+                text = render_to_string("emails/real_estate/quote.txt", context)
+                expected_copy = (
+                    f"{expected} professionally edited interior and exterior "
+                    "photographs"
+                )
+                self.assertIn(expected_copy, html)
+                self.assertIn(expected_copy, text)
+
     def test_base_template_renders_logo_when_logo_url_exists(self):
         html = render_to_string(
             "emails/base_email.html",
@@ -699,6 +796,35 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
         self.assertIn("mailto:shoots@openeire.ie", html)
         self.assertIn("Package total: €399.00", text)
         self.assertIn("Proceed with this quote: shoots@openeire.ie", text)
+
+    def test_quote_and_confirmation_formats_use_package_aware_turnaround(self):
+        expected = {
+            "essential": "Next-business-day delivery",
+            "starter": "Next-business-day delivery",
+            "pro": "Delivery within 2 business days",
+            "premium": "Delivery within 2 business days",
+            "custom": "Turnaround as specifically agreed",
+            "not_sure": "Turnaround as specifically agreed",
+        }
+
+        for package, label in expected.items():
+            context = {
+                **REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT,
+                "turnaround_label": label,
+                "turnaround_detail": get_package_turnaround_detail(package),
+            }
+            with self.subTest(package=package):
+                for template_name in ("quote", "confirmation"):
+                    html = render_to_string(
+                        f"emails/real_estate/{template_name}.html",
+                        context,
+                    )
+                    text = render_to_string(
+                        f"emails/real_estate/{template_name}.txt",
+                        context,
+                    )
+                    self.assertIn(f"Standard turnaround:</strong> {label}", html)
+                    self.assertIn(f"Standard turnaround: {label}", text)
 
     def test_full_on_shoot_day_email_templates_render_payment_rule(self):
         context = {
@@ -1073,6 +1199,73 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertNotIn("To be confirmed", rendered)
         self.assertNotIn("To be confirmed by the Client", rendered)
 
+    def test_new_booking_agreements_use_package_aware_turnaround(self):
+        expected = {
+            RealEstateEnquiry.PreferredPackage.ESSENTIAL: (
+                "Next-business-day delivery"
+            ),
+            RealEstateEnquiry.PreferredPackage.STARTER: (
+                "Next-business-day delivery"
+            ),
+            RealEstateEnquiry.PreferredPackage.PRO: (
+                "Delivery within 2 business days"
+            ),
+            RealEstateEnquiry.PreferredPackage.PREMIUM: (
+                "Delivery within 2 business days"
+            ),
+            RealEstateEnquiry.PreferredPackage.CUSTOM: (
+                "Turnaround as specifically agreed"
+            ),
+            RealEstateEnquiry.PreferredPackage.NOT_SURE: (
+                "Turnaround as specifically agreed"
+            ),
+        }
+
+        for index, (package, label) in enumerate(expected.items()):
+            enquiry = RealEstateEnquiry.objects.create(
+                name=f"Turnaround Client {index}",
+                email=f"turnaround-{index}@example.com",
+                phone="+353 87 123 4567",
+                client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+                property_address=f"Turnaround Property {index}",
+                county="Galway",
+                property_type="Detached house",
+                preferred_package=package,
+                consent_to_contact=True,
+            )
+
+            with self.subTest(package=package):
+                rendered = self._render_booking_agreement_markdown(enquiry)
+                self.assertIn(
+                    f"Standard turnaround for the selected package: **{label}**",
+                    rendered,
+                )
+                self.assertNotIn(
+                    "deliver the Deliverables within 24 hours of the Shoot Date",
+                    rendered,
+                )
+                self.assertIn(TURNAROUND_CONTEXT, rendered)
+
+    def test_delivery_defect_reporting_window_remains_24_hours(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Technical Window Client",
+            email="technical-window@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Technical Window Property",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
+            consent_to_contact=True,
+        )
+
+        rendered = self._render_booking_agreement_markdown(enquiry)
+
+        self.assertIn(
+            "must be notified within 24 hours of delivery",
+            rendered,
+        )
+
     def test_booking_agreement_quote_amounts_and_signatures_render(self):
         enquiry = RealEstateEnquiry.objects.create(
             name="Jane Agent",
@@ -1254,7 +1447,11 @@ class BookingAgreementDocumentTests(TestCase):
 
         self.assertEqual(first, second)
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
-        self.assertEqual(snapshot.template_version, "1.6")
+        self.assertEqual(snapshot.template_version, "1.8")
+        self.assertIn(
+            "30 professionally edited interior and exterior photographs",
+            first,
+        )
         self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
         self.assertEqual(snapshot.total_required, Decimal("399.00"))
         self.assertEqual(snapshot.payment_due_date.isoformat(), "2026-07-21")
@@ -1298,13 +1495,113 @@ class BookingAgreementDocumentTests(TestCase):
         new_snapshot = enquiry.booking_agreement_snapshots.latest("created_at")
         self.assertEqual(unchanged_issued_markdown, issued_markdown)
         self.assertEqual(issued_snapshot.rendered_markdown, issued_markdown)
-        self.assertEqual(issued_snapshot.template_version, "1.6")
-        self.assertEqual(new_snapshot.template_version, "1.6")
+        self.assertEqual(issued_snapshot.template_version, "1.8")
+        self.assertEqual(new_snapshot.template_version, "1.8")
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
         self.assertIn("Floor plan, 2D measured - €75", new_markdown)
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
         self.assertIn("| Travel supplement included | €65.00 |", new_markdown)
         self.assertEqual(enquiry.booking_agreement_snapshots.count(), 2)
+
+    def test_preexisting_version_1_6_snapshot_remains_unchanged(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Historical Agreement Client",
+            email="historical-agreement@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Historical Agreement Property",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+        )
+        historical_markdown = (
+            "Version 1.6 issued agreement.\n\n"
+            "OpenEire shall use reasonable endeavours to deliver the Deliverables "
+            "within 24 hours of the Shoot Date."
+        )
+        snapshot = RealEstateBookingAgreementSnapshot.objects.create(
+            enquiry=enquiry,
+            template_version="1.6",
+            payment_arrangement=enquiry.payment_arrangement,
+            context={"agreement_template_version": "1.6"},
+            rendered_markdown=historical_markdown,
+        )
+
+        rendered = render_booking_agreement_markdown(enquiry)
+
+        snapshot.refresh_from_db()
+        self.assertEqual(rendered.encode(), historical_markdown.encode())
+        self.assertEqual(
+            snapshot.rendered_markdown.encode(),
+            historical_markdown.encode(),
+        )
+        self.assertEqual(snapshot.template_version, "1.6")
+
+    def test_preexisting_version_1_7_snapshot_remains_byte_for_byte_unchanged(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Version 1.7 Client",
+            email="version-17@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Version 1.7 Property",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.STARTER,
+            consent_to_contact=True,
+        )
+        historical_markdown = (
+            "Version 1.7 issued agreement.\r\n"
+            "Starter - EUR 229 - 20 edited interior/exterior photos\r\n"
+            "Next-business-day delivery.\r\n"
+        )
+        snapshot = RealEstateBookingAgreementSnapshot.objects.create(
+            enquiry=enquiry,
+            template_version="1.7",
+            payment_arrangement=enquiry.payment_arrangement,
+            context={
+                "agreement_template_version": "1.7",
+                "package_name": (
+                    "Starter - EUR 229 - 20 edited interior/exterior photos"
+                ),
+            },
+            rendered_markdown=historical_markdown,
+        )
+
+        rendered = render_booking_agreement_markdown(enquiry)
+
+        snapshot.refresh_from_db()
+        self.assertEqual(rendered.encode(), historical_markdown.encode())
+        self.assertEqual(
+            snapshot.rendered_markdown.encode(),
+            historical_markdown.encode(),
+        )
+        self.assertEqual(enquiry.get_included_photograph_count(), 20)
+        self.assertIn("20 edited", enquiry.get_preferred_package_summary())
+        email_context = build_realestate_email_context(enquiry)
+        self.assertIn("20 edited", email_context["package_name"])
+        self.assertEqual(
+            email_context["included_photographs_label"],
+            "20 professionally edited interior and exterior photographs",
+        )
+
+    def test_completed_booking_without_persisted_scope_fails_closed(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Historical Pro Client",
+            email="historical-pro@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Historical Pro Property",
+            county="Galway",
+            property_type="Detached house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            status=RealEstateEnquiry.Status.COMPLETED,
+            consent_to_contact=True,
+        )
+
+        self.assertIsNone(enquiry.get_included_photograph_count())
+        self.assertIn("verify", enquiry.get_preferred_package_summary())
+        self.assertNotIn("30 professionally", enquiry.get_preferred_package_summary())
 
     def test_travel_agreement_requires_exact_amount_and_details(self):
         enquiry = RealEstateEnquiry.objects.create(
@@ -1456,6 +1753,22 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.data["id"], enquiry.id)
         self.assertEqual(response.data["status"], "new")
         self.assertEqual(response.data["message"], "Enquiry received successfully.")
+        self.assertEqual(
+            response.data["package_summary"],
+            RealEstateEnquiry.PACKAGE_SUMMARIES[
+                RealEstateEnquiry.PreferredPackage.PRO
+            ],
+        )
+        self.assertEqual(response.data["turnaround_code"], TWO_BUSINESS_DAYS)
+        self.assertEqual(
+            response.data["turnaround_label"],
+            "Delivery within 2 business days",
+        )
+        self.assertEqual(response.data["included_photograph_count"], 30)
+        self.assertEqual(
+            response.data["included_photographs_label"],
+            "30 professionally edited interior and exterior photographs",
+        )
         self.assertNotIn("internal_notes", response.data)
         for private_pricing_field in (
             "quoted_price",
@@ -1478,6 +1791,10 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(event.actor_type, RealEstateTimelineEvent.ActorType.CLIENT)
         self.assertEqual(event.title, "Enquiry received")
         self.assertIn("Preferred package: Pro", event.notes)
+        self.assertIn(
+            "Standard turnaround: Delivery within 2 business days",
+            event.notes,
+        )
         self.assertIn("Property address: Example House, Salthill, Galway", event.notes)
 
     def test_deployed_legacy_payload_remains_accepted_during_rollout(self):
@@ -1556,6 +1873,10 @@ class RealEstateEnquiryTests(APITestCase):
             internal_email.subject,
         )
         self.assertIn("Jane Agent", internal_email.body)
+        self.assertIn(
+            "Standard turnaround: Delivery within 2 business days",
+            internal_email.body,
+        )
         self.assertIn("View in admin:", internal_email.body)
 
     def test_client_confirmation_email_is_sent(self):
@@ -1570,8 +1891,16 @@ class RealEstateEnquiryTests(APITestCase):
             client_email.subject,
         )
         self.assertIn("Example House, Salthill, Galway", client_email.body)
+        self.assertIn(
+            "Standard turnaround: Delivery within 2 business days",
+            client_email.body,
+        )
         self.assertEqual(len(client_email.alternatives), 1)
         self.assertEqual(client_email.alternatives[0][1], "text/html")
+        self.assertIn(
+            "Standard turnaround:</strong> Delivery within 2 business days",
+            client_email.alternatives[0][0],
+        )
 
     def test_consent_to_contact_false_is_rejected(self):
         payload = {**self.payload, "consent_to_contact": False}
@@ -1837,6 +2166,33 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
         self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
         self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+
+    def test_authoritative_package_catalogue_preserves_prices_and_new_allowances(self):
+        self.assertEqual(
+            {
+                code: (package.price_eur, package.included_photographs)
+                for code, package in REAL_ESTATE_PACKAGE_CATALOGUE.items()
+            },
+            {
+                "essential": (175, 10),
+                "starter": (229, 25),
+                "pro": (399, 30),
+                "premium": (579, 35),
+                "custom": (None, None),
+                "not_sure": (None, None),
+            },
+        )
+        self.assertEqual(ADDITIONAL_PHOTOGRAPH_PRICE_EUR, 10)
+        for code, expected in {
+            "essential": 10,
+            "starter": 25,
+            "pro": 30,
+            "premium": 35,
+        }.items():
+            self.assertIn(
+                f"{expected} professionally edited interior and exterior photographs",
+                RealEstateEnquiry.PACKAGE_SUMMARIES[code],
+            )
 
     @patch(
         "realestate.views.send_realestate_internal_notification_email",
