@@ -113,8 +113,12 @@ backup strategy.
 4. Review the existing finance panel. Resolve missing final/full invoices,
    partial payments, refunds/disputes or use the existing reasoned override.
 5. Open **Upload media**. Choose a client-safe display name and category. The
-   browser uploads parts directly to private R2. Completion creates an active
-   deliverable only after object size/type verification.
+   browser uploads parts directly to private R2, with no more than the
+   server-provided number of concurrent part requests. Keep the page open
+   through final verification. Uploads do not resume across a refresh or
+   browser restart; cancel or restart a failed upload and let the scheduled
+   maintenance command clear stale multipart sessions. Completion creates an
+   active deliverable only after object size/type verification.
 6. To replace a file through the API, start a new upload with `replaces_id`.
    The new UUID object/version becomes active only after verification and the
    previous version becomes inactive; it is not overwritten.

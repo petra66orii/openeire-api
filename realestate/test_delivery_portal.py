@@ -590,6 +590,7 @@ class DeliveryPortalTestCase(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["max_concurrency"], 4)
         self.assertNotIn("object_key", response.data)
         session = RealEstateDeliveryUploadSession.objects.get(
             upload_id="fictional-upload-id"
