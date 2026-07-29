@@ -266,7 +266,7 @@ class DeliveryPortalTestCase(TestCase):
         RealEstateInvoice.objects.create(
             enquiry=self.enquiry,
             invoice_type=RealEstateInvoice.InvoiceType.BALANCE,
-            invoice_number="TEST-DELIVERY-BALANCE",
+            invoice_number="TEST-BALANCE-1",
             status=RealEstateInvoice.Status.ISSUED,
             currency="EUR",
             subtotal=Decimal("200.00"),
