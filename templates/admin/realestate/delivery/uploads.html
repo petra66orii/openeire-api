@@ -1,0 +1,143 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block content %}
+  <h1>Upload media — {{ delivery.public_title }}</h1>
+  <p>
+    Files upload directly from this browser to private R2. Keep this page open
+    until verification finishes. Uploads do not resume after a refresh; a
+    cancelled or failed upload can be restarted cleanly, and stale multipart
+    uploads are handled by the cleanup command.
+  </p>
+  <form id="delivery-upload-form" class="module aligned">
+    {% csrf_token %}
+    <div class="form-row">
+      <label for="delivery-file">File</label>
+      <input id="delivery-file" type="file" required>
+    </div>
+    <div class="form-row">
+      <label for="delivery-display-name">Client-safe display name</label>
+      <input id="delivery-display-name" type="text" maxlength="255" required>
+    </div>
+    <div class="form-row">
+      <label for="delivery-category">Category</label>
+      <select id="delivery-category">
+        {% for value, label in categories %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="default" type="submit">Start upload</button>
+    <button id="delivery-abort" type="button" disabled>Cancel upload</button>
+  </form>
+  <p id="delivery-upload-status" role="status" aria-live="polite"></p>
+  <progress id="delivery-upload-progress" value="0" max="100" style="width:min(40rem, 100%);"></progress>
+  <p id="delivery-upload-details" aria-live="polite"></p>
+  <p><a href="{% url 'customadmin:realestate_realestatedelivery_change' delivery.pk %}">Return to delivery</a></p>
+
+  <script type="module">
+    import {
+      createDeliveryMultipartUpload,
+      createDeliveryUploadApi,
+      DeliveryUploadCancelledError,
+      formatUploadBytes,
+      getDeliveryUploadErrorMessage,
+    } from "{% static 'realestate/js/delivery_multipart_uploader.mjs' %}";
+
+    const form = document.getElementById("delivery-upload-form");
+    const fileInput = document.getElementById("delivery-file");
+    const nameInput = document.getElementById("delivery-display-name");
+    const categoryInput = document.getElementById("delivery-category");
+    const statusNode = document.getElementById("delivery-upload-status");
+    const progressNode = document.getElementById("delivery-upload-progress");
+    const detailsNode = document.getElementById("delivery-upload-details");
+    const abortButton = document.getElementById("delivery-abort");
+    const submitButton = form.querySelector("[type=submit]");
+    const csrfToken = form.querySelector("[name=csrfmiddlewaretoken]").value;
+    const api = createDeliveryUploadApi({ csrfToken });
+    let activeTask = null;
+    let finalising = false;
+
+    const setControlsDisabled = (disabled) => {
+      fileInput.disabled = disabled;
+      nameInput.disabled = disabled;
+      categoryInput.disabled = disabled;
+      submitButton.disabled = disabled;
+    };
+
+    window.addEventListener("beforeunload", (event) => {
+      if (!activeTask) return;
+      if (!finalising) void activeTask.cancel();
+      event.preventDefault();
+      event.returnValue = "";
+    });
+
+    abortButton.addEventListener("click", () => {
+      if (!activeTask || finalising) return;
+      abortButton.disabled = true;
+      statusNode.textContent = "Cancelling upload…";
+      void activeTask.cancel();
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (activeTask) return;
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+
+      finalising = false;
+      setControlsDisabled(true);
+      abortButton.disabled = false;
+      progressNode.value = 0;
+      detailsNode.textContent = "";
+
+      const task = createDeliveryMultipartUpload({
+        api,
+        file,
+        startPayload: {
+          delivery_id: {{ delivery.pk }},
+          filename: file.name,
+          display_name: nameInput.value,
+          category: categoryInput.value,
+          content_type: file.type || "application/octet-stream",
+          file_size: file.size,
+          sort_order: 0,
+        },
+        onProgress: ({
+          bytesUploaded,
+          totalBytes,
+          percentage,
+          completedParts,
+          totalParts,
+        }) => {
+          progressNode.value = percentage;
+          detailsNode.textContent =
+            `${percentage.toFixed(1)}% — ${formatUploadBytes(bytesUploaded)} of ` +
+            `${formatUploadBytes(totalBytes)} — ${completedParts} of ${totalParts} parts`;
+        },
+        onStatusChange: ({ phase, message }) => {
+          statusNode.textContent = message;
+          if (phase === "finalising") {
+            finalising = true;
+            abortButton.disabled = true;
+          }
+        },
+      });
+      activeTask = task;
+
+      try {
+        await task.promise;
+        progressNode.value = 100;
+        form.reset();
+      } catch (error) {
+        statusNode.textContent =
+          error instanceof DeliveryUploadCancelledError
+            ? "Upload cancelled. No deliverable was activated."
+            : getDeliveryUploadErrorMessage(error);
+      } finally {
+        activeTask = null;
+        finalising = false;
+        abortButton.disabled = true;
+        setControlsDisabled(false);
+      }
+    });
+  </script>
+{% endblock %}

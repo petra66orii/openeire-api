@@ -1,0 +1,20 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+  {% if original %}
+    {% if not original.revoked_at %}
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_send' original.pk 'initial' %}">Send initial email</a></li>
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_send' original.pk 'resend' %}">Resend link</a></li>
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_send' original.pk 'expiry_reminder' %}">Send expiry reminder</a></li>
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_send' original.pk 'extension' %}">Send extension confirmation</a></li>
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_send' original.pk 'replacement' %}">Send replacement notice</a></li>
+    {% endif %}
+    {% if perms.realestate.rotate_realestatedeliveryrecipient and not original.revoked_at %}
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_rotate' original.pk %}">Rotate link</a></li>
+    {% endif %}
+    {% if perms.realestate.revoke_realestatedeliveryrecipient and not original.revoked_at %}
+      <li><a href="{% url 'customadmin:realestate_realestatedeliveryrecipient_revoke' original.pk %}">Revoke access</a></li>
+    {% endif %}
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

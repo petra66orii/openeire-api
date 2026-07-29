@@ -1,0 +1,22 @@
+Hi {{ first_name }},
+
+Your private OpenÉire Studios media delivery is ready:
+
+{{ delivery_title }}
+
+Open your private delivery:
+{{ delivery_url }}
+
+Access is currently available for {{ access_days }} day{{ access_days|pluralize }}.
+{% if download_instructions %}
+Download instructions:
+{{ download_instructions }}
+{% endif %}
+{% if licence_summary %}
+Licence / use summary:
+{{ licence_summary }}
+{% endif %}
+
+Please do not forward this link. It contains your personal access credential.
+
+OpenÉire Studios
