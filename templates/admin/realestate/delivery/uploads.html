@@ -1,0 +1,127 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>Upload media — {{ delivery.public_title }}</h1>
+  <p>Files upload directly from this browser to private R2. Closing this page cancels only the browser task; stale multipart uploads are handled by the cleanup command.</p>
+  <form id="delivery-upload-form" class="module aligned">
+    {% csrf_token %}
+    <div class="form-row">
+      <label for="delivery-file">File</label>
+      <input id="delivery-file" type="file" required>
+    </div>
+    <div class="form-row">
+      <label for="delivery-display-name">Client-safe display name</label>
+      <input id="delivery-display-name" type="text" maxlength="255" required>
+    </div>
+    <div class="form-row">
+      <label for="delivery-category">Category</label>
+      <select id="delivery-category">
+        {% for value, label in categories %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="default" type="submit">Start upload</button>
+    <button id="delivery-abort" type="button" disabled>Cancel upload</button>
+  </form>
+  <p id="delivery-upload-status" role="status" aria-live="polite"></p>
+  <progress id="delivery-upload-progress" value="0" max="100" style="width:min(40rem, 100%);"></progress>
+  <p><a href="{% url 'customadmin:realestate_realestatedelivery_change' delivery.pk %}">Return to delivery</a></p>
+
+  <script>
+    (() => {
+      const form = document.getElementById("delivery-upload-form");
+      const fileInput = document.getElementById("delivery-file");
+      const nameInput = document.getElementById("delivery-display-name");
+      const categoryInput = document.getElementById("delivery-category");
+      const statusNode = document.getElementById("delivery-upload-status");
+      const progressNode = document.getElementById("delivery-upload-progress");
+      const abortButton = document.getElementById("delivery-abort");
+      const csrf = form.querySelector("[name=csrfmiddlewaretoken]").value;
+      let activeUploadId = "";
+      let cancelled = false;
+
+      const api = async (path, payload) => {
+        const response = await fetch(`/api/real-estate/delivery/uploads/${path}/`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": csrf },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Upload request failed.");
+        return result;
+      };
+
+      const putPart = async (url, blob) => {
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          if (cancelled) throw new Error("Upload cancelled.");
+          try {
+            const response = await fetch(url, { method: "PUT", body: blob });
+            if (!response.ok) throw new Error("Part upload failed.");
+            const etag = response.headers.get("ETag");
+            if (!etag) throw new Error("R2 did not expose ETag; check CORS.");
+            return etag;
+          } catch (error) {
+            if (attempt === 3) throw error;
+          }
+        }
+      };
+
+      abortButton.addEventListener("click", async () => {
+        cancelled = true;
+        if (activeUploadId) {
+          try { await api("abort", { upload_id: activeUploadId }); } catch {}
+        }
+        statusNode.textContent = "Upload cancelled.";
+        abortButton.disabled = true;
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        cancelled = false;
+        activeUploadId = "";
+        abortButton.disabled = false;
+        progressNode.value = 0;
+        statusNode.textContent = "Preparing secure multipart upload…";
+        try {
+          const started = await api("start", {
+            delivery_id: {{ delivery.pk }},
+            filename: file.name,
+            display_name: nameInput.value,
+            category: categoryInput.value,
+            content_type: file.type || "application/octet-stream",
+            file_size: file.size,
+            sort_order: 0,
+          });
+          activeUploadId = started.upload_id;
+          const parts = [];
+          const partCount = Math.ceil(file.size / started.part_size);
+          for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+            if (cancelled) throw new Error("Upload cancelled.");
+            statusNode.textContent = `Uploading part ${partNumber} of ${partCount}…`;
+            const signed = await api("part-url", {
+              upload_id: activeUploadId,
+              part_number: partNumber,
+            });
+            const start = (partNumber - 1) * started.part_size;
+            const end = Math.min(start + started.part_size, file.size);
+            const etag = await putPart(signed.url, file.slice(start, end));
+            parts.push({ part_number: partNumber, etag });
+            progressNode.value = Math.round((partNumber / partCount) * 95);
+          }
+          statusNode.textContent = "Verifying uploaded object…";
+          await api("complete", { upload_id: activeUploadId, parts });
+          progressNode.value = 100;
+          statusNode.textContent = "Upload verified and added to this delivery.";
+          activeUploadId = "";
+          abortButton.disabled = true;
+          form.reset();
+        } catch (error) {
+          statusNode.textContent = error instanceof Error ? error.message : "Upload failed.";
+          abortButton.disabled = !activeUploadId;
+        }
+      });
+    })();
+  </script>
+{% endblock %}

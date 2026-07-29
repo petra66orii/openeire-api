@@ -1,0 +1,18 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+  {% if original %}
+    <li><a href="{% url 'customadmin:realestate_realestatedelivery_uploads' original.pk %}">Upload media</a></li>
+    <li><a href="{% url 'customadmin:realestate_realestatedelivery_preview' original.pk %}" target="_blank" rel="noopener noreferrer">Preview client page</a></li>
+    {% if perms.realestate.activate_realestatedelivery and original.status != "active" and original.status != "revoked" %}
+      <li><a href="{% url 'customadmin:realestate_realestatedelivery_activate' original.pk %}">Activate delivery</a></li>
+    {% endif %}
+    {% if perms.realestate.revoke_realestatedelivery and original.status != "revoked" %}
+      <li><a href="{% url 'customadmin:realestate_realestatedelivery_revoke' original.pk %}">Revoke delivery</a></li>
+    {% endif %}
+    {% if perms.realestate.archive_realestatedelivery and original.status != "archived" %}
+      <li><a href="{% url 'customadmin:realestate_realestatedelivery_archive' original.pk %}">Archive delivery</a></li>
+    {% endif %}
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

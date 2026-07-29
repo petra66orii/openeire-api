@@ -1,0 +1,14 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <p><strong>{{ recipient.display_name }}</strong> — {{ recipient.email }}</p>
+  <form method="post">
+    {% csrf_token %}
+    {% if idempotency_key %}<input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">{% endif %}
+    {% if form %}{{ form.as_p }}{% endif %}
+    <button type="submit" class="{% if danger %}deletelink{% else %}default{% endif %}">Confirm</button>
+    <a class="button cancel-link" href="{% url 'customadmin:realestate_realestatedeliveryrecipient_change' recipient.pk %}">Cancel</a>
+  </form>
+{% endblock %}

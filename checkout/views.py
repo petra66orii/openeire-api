@@ -677,7 +677,91 @@ class StripeWebhookView(APIView):
         'payment_intent.succeeded', 'checkout.session.completed',
         'invoice.finalized', 'invoice.sent', 'invoice.paid',
         'invoice.payment_failed', 'invoice.voided', 'invoice.marked_uncollectible',
+        'charge.refunded', 'charge.dispute.created', 'charge.dispute.closed',
+        'charge.dispute.funds_reinstated',
     }
+
+    def _handle_realestate_reversal_event(self, event_type, stripe_object):
+        from realestate.models import RealEstatePayment
+
+        charge_id = str(stripe_object.get('charge') or '').strip()
+        payment_intent_id = str(
+            stripe_object.get('payment_intent') or ''
+        ).strip()
+        if event_type == 'charge.refunded':
+            charge_id = str(stripe_object.get('id') or '').strip()
+        payment = None
+        if charge_id:
+            payment = RealEstatePayment.objects.select_for_update().filter(
+                stripe_charge_id=charge_id,
+                status=RealEstatePayment.Status.SUCCEEDED,
+            ).first()
+        if payment is None and payment_intent_id:
+            payment = RealEstatePayment.objects.select_for_update().filter(
+                stripe_payment_intent_id=payment_intent_id,
+                status=RealEstatePayment.Status.SUCCEEDED,
+            ).first()
+        if payment is None:
+            logger.warning(
+                "Stripe reversal did not match a local real-estate payment; "
+                "manual reconciliation may be required. event_type=%s",
+                event_type,
+            )
+            return False
+
+        now = timezone.now()
+        if event_type == 'charge.refunded':
+            amount_refunded = Decimal(
+                int(stripe_object.get('amount_refunded') or 0)
+            ) / Decimal('100')
+            payment.reversed_amount = min(amount_refunded, payment.amount)
+            payment.reversal_status = (
+                RealEstatePayment.ReversalStatus.REFUNDED
+                if payment.reversed_amount >= payment.amount
+                else RealEstatePayment.ReversalStatus.PARTIALLY_REFUNDED
+            )
+            payment.reversal_reference = charge_id
+        elif event_type in {
+            'charge.dispute.closed',
+            'charge.dispute.funds_reinstated',
+        } and str(stripe_object.get('status') or '').lower() == 'won':
+            payment.reversal_status = (
+                RealEstatePayment.ReversalStatus.NONE
+                if payment.reversed_amount == 0
+                else (
+                    RealEstatePayment.ReversalStatus.REFUNDED
+                    if payment.reversed_amount >= payment.amount
+                    else RealEstatePayment.ReversalStatus.PARTIALLY_REFUNDED
+                )
+            )
+            payment.reversal_reference = str(stripe_object.get('id') or '')
+        else:
+            dispute_status = str(stripe_object.get('status') or '').lower()
+            payment.reversal_status = (
+                RealEstatePayment.ReversalStatus.CHARGEBACK
+                if dispute_status in {'lost', 'warning_closed'}
+                else RealEstatePayment.ReversalStatus.DISPUTED
+            )
+            # Disputes fail closed through their status. Keep any independently
+            # recorded refund amount so a later won dispute cannot erase it.
+            payment.reversal_reference = str(stripe_object.get('id') or '')
+        payment.reversed_at = now
+        payment.save(
+            update_fields=(
+                'reversal_status',
+                'reversed_amount',
+                'reversed_at',
+                'reversal_reference',
+                'updated_at',
+            )
+        )
+        logger.warning(
+            "Real-estate payment settlement changed; portal access will be "
+            "re-evaluated. payment_id=%s reversal_status=%s",
+            payment.pk,
+            payment.reversal_status,
+        )
+        return True
 
     def _handle_realestate_invoice_event(self, event_type, stripe_invoice):
         from realestate.finance import record_realestate_payment
@@ -1620,6 +1704,12 @@ class StripeWebhookView(APIView):
                 stripe_invoice = event['data']['object']
                 with transaction.atomic():
                     self._handle_realestate_invoice_event(event_type, stripe_invoice)
+            elif event_type.startswith('charge.'):
+                stripe_object = event['data']['object']
+                with transaction.atomic():
+                    self._handle_realestate_reversal_event(
+                        event_type, stripe_object
+                    )
         except DRFValidationError as e:
             processing_error = str(e.detail if hasattr(e, "detail") else e)
             # A signed, successful PaymentIntent backed by a checkout snapshot

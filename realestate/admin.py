@@ -11,6 +11,7 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.urls import path, reverse
 from decimal import Decimal
+import uuid
 
 from openeire_api.admin import custom_admin_site
 from openeire_api.business_identity import get_business_identity
@@ -23,7 +24,19 @@ from .documents import booking_agreement_missing_requirements
 from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
 from .models import RealEstateTimelineEvent
-from .models import RealEstateDeliveryOverride, RealEstateInvoice, RealEstatePayment
+from .models import (
+    RealEstateDeliverable,
+    RealEstateDelivery,
+    RealEstateDeliveryAccessEvent,
+    RealEstateDeliveryEmailAttempt,
+    RealEstateDeliveryOverride,
+    RealEstateDeliveryRecipient,
+    RealEstateDeliveryUploadSession,
+    RealEstateInvoice,
+    RealEstatePayment,
+)
+from .delivery import activate_delivery, build_staff_preview_url, rotate_recipient_secret
+from .delivery_emails import send_delivery_recipient_email
 from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override, void_local_realestate_invoice
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
@@ -705,7 +718,21 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             enabled=can_change and bool(stripe_invoice and stripe_invoice.stripe_invoice_id and stripe_invoice.amount_outstanding == 0 and not stripe_invoice.stripe_marked_paid_out_of_band_at),
         )
         add_button("Send payment reminder", "send-stripe-reminder", invoice=stripe_invoice, enabled=can_change and bool(stripe_invoice and stripe_invoice.stripe_invoice_id and stripe_invoice.amount_outstanding > 0))
-        add_button("Add/edit delivery link", href="#id_delivery_link", style="primary" if recommended_action == "edit-delivery-link" else "secondary", enabled=can_change)
+        portal_delivery = getattr(enquiry, "portal_delivery", None)
+        add_button(
+            "Open portal delivery" if portal_delivery else "Create portal delivery",
+            href=(
+                reverse(
+                    "customadmin:realestate_realestatedelivery_change",
+                    args=(portal_delivery.pk,),
+                )
+                if portal_delivery
+                else reverse("customadmin:realestate_realestatedelivery_add")
+                + f"?enquiry={enquiry.pk}"
+            ),
+            enabled=can_change,
+        )
+        add_button("Add/edit MyAirBridge link", href="#id_delivery_link", style="primary" if recommended_action == "edit-delivery-link" else "secondary", enabled=can_change)
         add_button("Send confirmation email", "send-confirmation-email", enabled=can_change)
         add_button("Send delivery email", "send-delivery-email", style="primary" if recommended_action == "send-delivery-email" else "secondary", enabled=can_change and ready and bool(enquiry.delivery_link))
         add_button("Grant delivery override", "grant-delivery-override", style="danger", enabled=can_change and not ready and not active_override)
@@ -1602,14 +1629,14 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         eligible = []
         blocked = 0
         for enquiry in queryset:
-            if can_release_realestate_delivery(enquiry):
+            if can_release_realestate_delivery(enquiry) and enquiry.delivery_link:
                 eligible.append(enquiry.pk)
             else:
                 blocked += 1
         if blocked:
             self.message_user(
                 request,
-                f"Blocked delivery for {blocked} enquiry(s): payment is not complete and no active override exists.",
+                f"Blocked delivery for {blocked} enquiry(s): payment is locked or no MyAirBridge/fallback link is stored.",
                 level=messages.ERROR,
             )
         queryset = queryset.filter(pk__in=eligible)
@@ -1621,14 +1648,6 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             subject=f"Your property media is ready - {get_business_identity().display_name}",
             template_base="delivery",
             description="Delivery email",
-            warning_messages=lambda enquiry, context: [
-                (
-                    "Delivery email sent, but no delivery CTA was included "
-                    "because no delivery link is stored."
-                )
-                if not context.get("delivery_link")
-                else ""
-            ],
         )
 
     @admin.action(description="Create balance payment Checkout")
@@ -1699,6 +1718,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         if change and obj.pk:
             previous = RealEstateEnquiry.objects.filter(pk=obj.pk).first()
 
+        if (
+            previous
+            and previous.status != RealEstateEnquiry.Status.COMPLETED
+            and obj.status == RealEstateEnquiry.Status.COMPLETED
+        ):
+            obj._completion_actor = request.user
         super().save_model(request, obj, form, change)
 
         if previous is None:
@@ -1944,8 +1969,8 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
 
 @admin.register(RealEstatePayment, site=custom_admin_site)
 class RealEstatePaymentAdmin(admin.ModelAdmin):
-    list_display = ("enquiry_display", "invoice", "amount", "currency", "method", "status", "paid_at", "remaining_balance", "out_of_band_display", "cash_receipt_number", "recorded_by")
-    list_filter = ("method", "status", "currency", "invoice__enquiry")
+    list_display = ("enquiry_display", "invoice", "amount", "currency", "method", "status", "reversal_status", "reversed_amount", "paid_at", "remaining_balance", "out_of_band_display", "cash_receipt_number", "recorded_by")
+    list_filter = ("method", "status", "reversal_status", "currency", "invoice__enquiry")
     search_fields = ("invoice__invoice_number", "external_reference", "cash_receipt_number", "stripe_checkout_session_id")
     actions = ("download_cash_receipt",)
 
@@ -1976,7 +2001,17 @@ class RealEstatePaymentAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         if obj and obj.status == RealEstatePayment.Status.SUCCEEDED:
-            return tuple(field.name for field in obj._meta.fields)
+            reversal_fields = {
+                "reversal_status",
+                "reversed_amount",
+                "reversed_at",
+                "reversal_reference",
+            }
+            return tuple(
+                field.name
+                for field in obj._meta.fields
+                if field.name not in reversal_fields
+            )
         return ("created_at", "updated_at", "cash_receipt_number")
 
     def has_delete_permission(self, request, obj=None):
@@ -2027,3 +2062,520 @@ class RealEstateDeliveryOverrideAdmin(admin.ModelAdmin):
             **self.admin_site.each_context(request), "form": form, "overrides": queryset,
             "title": "Revoke delivery override",
         })
+
+
+class RealEstateDeliveryRecipientInline(admin.TabularInline):
+    model = RealEstateDeliveryRecipient
+    extra = 0
+    show_change_link = True
+    fields = (
+        "display_name",
+        "email",
+        "role",
+        "public_id",
+        "revoked_at",
+        "first_accessed_at",
+        "last_accessed_at",
+    )
+    readonly_fields = (
+        "public_id",
+        "revoked_at",
+        "first_accessed_at",
+        "last_accessed_at",
+    )
+
+
+class RealEstateDeliverableInline(admin.TabularInline):
+    model = RealEstateDeliverable
+    extra = 0
+    show_change_link = True
+    fields = (
+        "display_name",
+        "category",
+        "version",
+        "file_size",
+        "mime_type",
+        "is_active",
+        "available_at",
+        "sort_order",
+    )
+    readonly_fields = (
+        "display_name",
+        "category",
+        "version",
+        "file_size",
+        "mime_type",
+        "is_active",
+        "available_at",
+        "sort_order",
+    )
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class RequiredReasonForm(forms.Form):
+    reason = forms.CharField(widget=forms.Textarea, min_length=3)
+
+
+@admin.register(RealEstateDelivery, site=custom_admin_site)
+class RealEstateDeliveryAdmin(admin.ModelAdmin):
+    change_form_template = "admin/realestate/delivery/change_form.html"
+    list_display = (
+        "public_title",
+        "enquiry",
+        "status",
+        "portal_enabled",
+        "available_from",
+        "expires_at",
+    )
+    list_filter = ("status", "portal_enabled")
+    search_fields = ("public_title", "enquiry__name", "enquiry__company_name")
+    autocomplete_fields = ("enquiry",)
+    inlines = (RealEstateDeliveryRecipientInline, RealEstateDeliverableInline)
+    readonly_fields = (
+        "status",
+        "portal_enabled",
+        "published_at",
+        "revoked_at",
+        "revoked_by",
+        "revocation_reason",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def get_urls(self):
+        return [
+            path(
+                "<path:object_id>/uploads/",
+                self.admin_site.admin_view(self.upload_view),
+                name="realestate_realestatedelivery_uploads",
+            ),
+            path(
+                "<path:object_id>/preview/",
+                self.admin_site.admin_view(self.preview_view),
+                name="realestate_realestatedelivery_preview",
+            ),
+            path(
+                "<path:object_id>/activate/",
+                self.admin_site.admin_view(self.activate_view),
+                name="realestate_realestatedelivery_activate",
+            ),
+            path(
+                "<path:object_id>/revoke/",
+                self.admin_site.admin_view(self.revoke_view),
+                name="realestate_realestatedelivery_revoke",
+            ),
+            path(
+                "<path:object_id>/archive/",
+                self.admin_site.admin_view(self.archive_view),
+                name="realestate_realestatedelivery_archive",
+            ),
+        ] + super().get_urls()
+
+    def upload_view(self, request, object_id):
+        delivery = self.get_object(request, object_id)
+        if not delivery or not self.has_change_permission(request, delivery):
+            raise PermissionDenied
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery/uploads.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Upload delivery media",
+                "delivery": delivery,
+                "categories": RealEstateDeliverable.Category.choices,
+            },
+        )
+
+    def preview_view(self, request, object_id):
+        delivery = self.get_object(request, object_id)
+        if not delivery or not self.has_view_permission(request, delivery):
+            raise PermissionDenied
+        response = HttpResponseRedirect(build_staff_preview_url(delivery, request.user))
+        response["Cache-Control"] = "private, no-store"
+        response["Referrer-Policy"] = "no-referrer"
+        return response
+
+    def archive_view(self, request, object_id):
+        delivery = self.get_object(request, object_id)
+        if not delivery or not request.user.has_perm(
+            "realestate.archive_realestatedelivery"
+        ):
+            raise PermissionDenied
+        if request.method == "POST":
+            delivery.status = RealEstateDelivery.Status.ARCHIVED
+            delivery.portal_enabled = False
+            delivery.save(update_fields=("status", "portal_enabled", "updated_at"))
+            record_timeline_event(
+                delivery.enquiry,
+                RealEstateTimelineEvent.EventType.NOTE,
+                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+                title="Portal delivery archived",
+                notes=f"Delivery ID: {delivery.pk}",
+                created_by=request.user,
+            )
+            self.message_user(request, "Portal delivery archived.", messages.SUCCESS)
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedelivery_change",
+                    args=(delivery.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Archive portal delivery",
+                "message": "Recipient access will stop. Media is not deleted.",
+                "delivery": delivery,
+                "danger": True,
+            },
+        )
+
+    def activate_view(self, request, object_id):
+        delivery = self.get_object(request, object_id)
+        if not delivery or not request.user.has_perm(
+            "realestate.activate_realestatedelivery"
+        ):
+            raise PermissionDenied
+        if request.method == "POST":
+            try:
+                activate_delivery(delivery, actor=request.user)
+            except Exception as exc:
+                self.message_user(request, str(exc), level=messages.ERROR)
+            else:
+                self.message_user(request, "Portal delivery activated.", messages.SUCCESS)
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedelivery_change",
+                    args=(delivery.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Activate portal delivery",
+                "message": (
+                    "This grants access to active recipients if all authoritative "
+                    "release checks continue to pass."
+                ),
+                "delivery": delivery,
+                "danger": False,
+            },
+        )
+
+    def revoke_view(self, request, object_id):
+        delivery = self.get_object(request, object_id)
+        if not delivery or not request.user.has_perm(
+            "realestate.revoke_realestatedelivery"
+        ):
+            raise PermissionDenied
+        form = RequiredReasonForm(request.POST or None)
+        if request.method == "POST" and form.is_valid():
+            delivery.status = RealEstateDelivery.Status.REVOKED
+            delivery.portal_enabled = False
+            delivery.revoked_at = timezone.now()
+            delivery.revoked_by = request.user
+            delivery.revocation_reason = form.cleaned_data["reason"]
+            delivery.save(
+                update_fields=(
+                    "status",
+                    "portal_enabled",
+                    "revoked_at",
+                    "revoked_by",
+                    "revocation_reason",
+                    "updated_at",
+                )
+            )
+            record_timeline_event(
+                delivery.enquiry,
+                RealEstateTimelineEvent.EventType.NOTE,
+                actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+                title="Portal delivery revoked",
+                notes=form.cleaned_data["reason"],
+                created_by=request.user,
+            )
+            self.message_user(request, "Portal delivery revoked.", messages.SUCCESS)
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedelivery_change",
+                    args=(delivery.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Revoke portal delivery",
+                "message": "All recipient sessions will stop working immediately.",
+                "delivery": delivery,
+                "danger": True,
+                "form": form,
+            },
+        )
+
+
+@admin.register(RealEstateDeliveryRecipient, site=custom_admin_site)
+class RealEstateDeliveryRecipientAdmin(admin.ModelAdmin):
+    change_form_template = "admin/realestate/delivery_recipient/change_form.html"
+    list_display = ("display_name", "email", "role", "delivery", "revoked_at")
+    list_filter = ("role", "revoked_at")
+    search_fields = ("display_name", "email", "public_id")
+    autocomplete_fields = ("delivery",)
+    readonly_fields = (
+        "public_id",
+        "token_salt",
+        "token_version",
+        "token_created_at",
+        "token_rotated_at",
+        "revoked_at",
+        "revoked_by",
+        "revocation_reason",
+        "first_accessed_at",
+        "last_accessed_at",
+        "first_download_url_issued_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def get_urls(self):
+        return [
+            path(
+                "<path:object_id>/send/<slug:kind>/",
+                self.admin_site.admin_view(self.send_view),
+                name="realestate_realestatedeliveryrecipient_send",
+            ),
+            path(
+                "<path:object_id>/rotate/",
+                self.admin_site.admin_view(self.rotate_view),
+                name="realestate_realestatedeliveryrecipient_rotate",
+            ),
+            path(
+                "<path:object_id>/revoke/",
+                self.admin_site.admin_view(self.revoke_view),
+                name="realestate_realestatedeliveryrecipient_revoke",
+            ),
+        ] + super().get_urls()
+
+    def send_view(self, request, object_id, kind):
+        recipient = self.get_object(request, object_id)
+        valid_kinds = {
+            value for value, _label in RealEstateDeliveryEmailAttempt.Kind.choices
+        }
+        if (
+            not recipient
+            or not self.has_change_permission(request, recipient)
+            or kind not in valid_kinds
+        ):
+            raise PermissionDenied
+        idempotency_key = request.POST.get("idempotency_key") or uuid.uuid4().hex
+        if request.method == "POST":
+            attempt = send_delivery_recipient_email(
+                recipient,
+                kind=kind,
+                idempotency_key=idempotency_key,
+                actor=request.user,
+            )
+            level = (
+                messages.SUCCESS
+                if attempt.status == RealEstateDeliveryEmailAttempt.Status.SENT
+                else messages.ERROR
+            )
+            self.message_user(
+                request,
+                (
+                    "Portal delivery email sent."
+                    if level == messages.SUCCESS
+                    else "Portal delivery email was not sent; review the email attempt."
+                ),
+                level,
+            )
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedeliveryrecipient_change",
+                    args=(recipient.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery_recipient/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": f"Send {kind.replace('_', ' ')} email",
+                "message": (
+                    "One private email will be sent to this recipient. The stable "
+                    "fragment link is regenerated and is not stored in the audit trail."
+                ),
+                "recipient": recipient,
+                "danger": False,
+                "idempotency_key": idempotency_key,
+            },
+        )
+
+    def rotate_view(self, request, object_id):
+        recipient = self.get_object(request, object_id)
+        if not recipient or not request.user.has_perm(
+            "realestate.rotate_realestatedeliveryrecipient"
+        ):
+            raise PermissionDenied
+        if request.method == "POST":
+            rotate_recipient_secret(recipient, actor=request.user)
+            self.message_user(
+                request,
+                "Recipient link rotated. Existing sessions and links are invalid.",
+                messages.SUCCESS,
+            )
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedeliveryrecipient_change",
+                    args=(recipient.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery_recipient/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Rotate recipient link",
+                "message": "The previous link and all current sessions will stop working.",
+                "recipient": recipient,
+                "danger": True,
+            },
+        )
+
+    def revoke_view(self, request, object_id):
+        recipient = self.get_object(request, object_id)
+        if not recipient or not request.user.has_perm(
+            "realestate.revoke_realestatedeliveryrecipient"
+        ):
+            raise PermissionDenied
+        form = RequiredReasonForm(request.POST or None)
+        if request.method == "POST" and form.is_valid():
+            recipient.revoked_at = timezone.now()
+            recipient.revoked_by = request.user
+            recipient.revocation_reason = form.cleaned_data["reason"]
+            recipient.save(
+                update_fields=(
+                    "revoked_at",
+                    "revoked_by",
+                    "revocation_reason",
+                    "updated_at",
+                )
+            )
+            self.message_user(request, "Recipient access revoked.", messages.SUCCESS)
+            return HttpResponseRedirect(
+                reverse(
+                    "customadmin:realestate_realestatedeliveryrecipient_change",
+                    args=(recipient.pk,),
+                )
+            )
+        return TemplateResponse(
+            request,
+            "admin/realestate/delivery_recipient/confirm.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Revoke recipient access",
+                "message": "This recipient's link and sessions will stop working.",
+                "recipient": recipient,
+                "danger": True,
+                "form": form,
+            },
+        )
+
+
+@admin.register(RealEstateDeliverable, site=custom_admin_site)
+class RealEstateDeliverableAdmin(admin.ModelAdmin):
+    list_display = (
+        "display_name",
+        "delivery",
+        "category",
+        "version",
+        "is_active",
+        "file_size",
+    )
+    list_filter = ("category", "is_active")
+    search_fields = ("display_name", "original_filename", "public_id")
+    readonly_fields = (
+        "public_id",
+        "object_key",
+        "file_size",
+        "mime_type",
+        "checksum_algorithm",
+        "checksum_value",
+        "version",
+        "uploaded_by",
+        "replaces",
+        "replaced_at",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RealEstateDeliveryEmailAttempt, site=custom_admin_site)
+class RealEstateDeliveryEmailAttemptAdmin(admin.ModelAdmin):
+    list_display = ("recipient", "kind", "status", "attempted_at", "sent_at")
+    list_filter = ("kind", "status")
+    search_fields = ("recipient__email", "idempotency_key")
+    readonly_fields = tuple(
+        field.name for field in RealEstateDeliveryEmailAttempt._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RealEstateDeliveryAccessEvent, site=custom_admin_site)
+class RealEstateDeliveryAccessEventAdmin(admin.ModelAdmin):
+    list_display = ("event_type", "delivery", "recipient", "deliverable", "created_at")
+    list_filter = ("event_type",)
+    readonly_fields = tuple(
+        field.name for field in RealEstateDeliveryAccessEvent._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RealEstateDeliveryUploadSession, site=custom_admin_site)
+class RealEstateDeliveryUploadSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        "original_filename",
+        "delivery",
+        "created_by",
+        "status",
+        "created_at",
+    )
+    list_filter = ("status", "category")
+    readonly_fields = tuple(
+        field.name for field in RealEstateDeliveryUploadSession._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q, Sum
 from decimal import Decimal
 import re
+import uuid
 
 from .package_catalogue import (
     ADDITIONAL_PHOTOGRAPH_COPY,
@@ -313,9 +314,8 @@ class RealEstateEnquiry(models.Model):
     deposit_paid = models.BooleanField(default=False)
     deposit_paid_at = models.DateTimeField(null=True, blank=True)
     booking_agreement_link = models.URLField(blank=True)
-    # Delivery provider is metadata only. When the Client Portal ships, use
-    # provider="portal" and delivery_link="https://app.openeire.ie/projects/<token>";
-    # the Delivery email can keep using the same delivery_link CTA.
+    # Legacy/fallback delivery metadata. Portal fragment links are generated
+    # per recipient and must never be stored in this field.
     delivery_provider = models.CharField(
         max_length=20,
         choices=DeliveryProvider.choices,
@@ -667,10 +667,16 @@ class RealEstateInvoice(models.Model):
 
     @property
     def amount_paid(self):
-        value = self.payments.filter(status=RealEstatePayment.Status.SUCCEEDED).aggregate(
-            total=Sum("amount")
-        )["total"]
-        return value or Decimal("0.00")
+        total = Decimal("0.00")
+        for payment in self.payments.filter(status=RealEstatePayment.Status.SUCCEEDED):
+            if payment.reversal_status in {
+                RealEstatePayment.ReversalStatus.REFUNDED,
+                RealEstatePayment.ReversalStatus.DISPUTED,
+                RealEstatePayment.ReversalStatus.CHARGEBACK,
+            }:
+                continue
+            total += max(payment.amount - payment.reversed_amount, Decimal("0.00"))
+        return total
 
     @property
     def amount_outstanding(self):
@@ -712,6 +718,13 @@ class RealEstatePayment(models.Model):
         PARTIALLY_REFUNDED = "partially_refunded", "Partially refunded"
         VOID = "void", "Void"
 
+    class ReversalStatus(models.TextChoices):
+        NONE = "none", "None"
+        PARTIALLY_REFUNDED = "partially_refunded", "Partially refunded"
+        REFUNDED = "refunded", "Refunded"
+        DISPUTED = "disputed", "Disputed"
+        CHARGEBACK = "chargeback", "Chargeback"
+
     invoice = models.ForeignKey(
         RealEstateInvoice, on_delete=models.PROTECT, related_name="payments"
     )
@@ -721,6 +734,19 @@ class RealEstatePayment(models.Model):
     currency = models.CharField(max_length=3, default="EUR")
     method = models.CharField(max_length=32, choices=Method.choices)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    reversal_status = models.CharField(
+        max_length=24,
+        choices=ReversalStatus.choices,
+        default=ReversalStatus.NONE,
+    )
+    reversed_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversal_reference = models.CharField(max_length=255, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     stripe_checkout_session_id = models.CharField(max_length=255, blank=True)
     stripe_payment_intent_id = models.CharField(max_length=255, blank=True)
@@ -739,6 +765,10 @@ class RealEstatePayment(models.Model):
         ordering = ("-created_at",)
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="re_payment_amount_positive"),
+            models.CheckConstraint(
+                check=Q(reversed_amount__gte=0),
+                name="re_payment_reversed_amount_nonnegative",
+            ),
             models.UniqueConstraint(fields=("stripe_checkout_session_id",), condition=~Q(stripe_checkout_session_id=""), name="uniq_re_payment_checkout_session"),
             models.UniqueConstraint(fields=("stripe_payment_intent_id",), condition=~Q(stripe_payment_intent_id=""), name="uniq_re_payment_intent"),
             models.UniqueConstraint(fields=("cash_receipt_number",), condition=~Q(cash_receipt_number=""), name="uniq_re_cash_receipt"),
@@ -752,6 +782,10 @@ class RealEstatePayment(models.Model):
                 if any(getattr(previous, field) != getattr(self, field) for field in protected):
                     raise ValidationError("Successful payments cannot be edited; record a refund or void transaction.")
         self.currency = str(self.currency or "EUR").upper()
+        if self.reversed_amount > self.amount:
+            raise ValidationError("A payment reversal cannot exceed the payment amount.")
+        if self.reversal_status == self.ReversalStatus.NONE and self.reversed_amount:
+            raise ValidationError("A reversed amount requires a reversal status.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -787,4 +821,330 @@ class RealEstateDeliveryOverride(models.Model):
     @property
     def is_active(self):
         return self.revoked_at is None
+
+
+class RealEstateDelivery(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        READY = "ready", "Ready"
+        ACTIVE = "active", "Active"
+        EXPIRED = "expired", "Expired"
+        REVOKED = "revoked", "Revoked"
+        ARCHIVED = "archived", "Archived"
+
+    enquiry = models.OneToOneField(
+        RealEstateEnquiry,
+        on_delete=models.PROTECT,
+        related_name="portal_delivery",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    public_title = models.CharField(
+        max_length=160,
+        help_text="Use a privacy-safe title; do not include an exact address or Eircode.",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    portal_enabled = models.BooleanField(
+        default=False,
+        help_text="Selectively enables portal delivery when the global feature flag is on.",
+    )
+    available_from = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_deliveries_revoked",
+    )
+    revocation_reason = models.TextField(blank=True)
+    licence_summary = models.TextField(blank=True)
+    download_instructions = models.TextField(blank=True)
+    feature_version = models.PositiveSmallIntegerField(default=1)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_deliveries_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        permissions = [
+            ("activate_realestatedelivery", "Can activate real estate delivery"),
+            ("revoke_realestatedelivery", "Can revoke real estate delivery"),
+            ("archive_realestatedelivery", "Can archive real estate delivery"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.status == self.Status.ACTIVE:
+            if not self.available_from or not self.expires_at:
+                raise ValidationError("Active deliveries require availability and expiry times.")
+            if self.expires_at <= self.available_from:
+                raise ValidationError("Delivery expiry must be after availability.")
+        if self.status == self.Status.REVOKED and (
+            not self.revoked_at or not str(self.revocation_reason or "").strip()
+        ):
+            raise ValidationError("Revoked deliveries require a timestamp and reason.")
+
+    def __str__(self):
+        return self.public_title
+
+
+class RealEstateDeliveryRecipient(models.Model):
+    class Role(models.TextChoices):
+        COMMISSIONING_CLIENT = "commissioning_client", "Commissioning client"
+        AGENT = "agent", "Agent"
+        VENDOR = "vendor", "Vendor"
+        PAYER = "payer", "Payer"
+        OTHER = "other", "Other"
+
+    delivery = models.ForeignKey(
+        RealEstateDelivery,
+        on_delete=models.CASCADE,
+        related_name="recipients",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    email = models.EmailField()
+    display_name = models.CharField(max_length=160)
+    role = models.CharField(max_length=24, choices=Role.choices)
+    token_salt = models.UUIDField(default=uuid.uuid4, editable=False)
+    token_version = models.PositiveIntegerField(default=1)
+    token_created_at = models.DateTimeField(auto_now_add=True)
+    token_rotated_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_delivery_recipients_revoked",
+    )
+    revocation_reason = models.TextField(blank=True)
+    first_accessed_at = models.DateTimeField(null=True, blank=True)
+    last_accessed_at = models.DateTimeField(null=True, blank=True)
+    first_download_url_issued_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("display_name", "email")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("delivery", "email"),
+                condition=Q(revoked_at__isnull=True),
+                name="uniq_active_re_delivery_recipient_email",
+            ),
+            models.CheckConstraint(
+                check=Q(token_version__gt=0),
+                name="re_delivery_recipient_token_version_positive",
+            ),
+        ]
+        permissions = [
+            ("rotate_realestatedeliveryrecipient", "Can rotate recipient delivery link"),
+            ("revoke_realestatedeliveryrecipient", "Can revoke delivery recipient"),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.email = str(self.email or "").strip().lower()
+        if self.revoked_at and not str(self.revocation_reason or "").strip():
+            raise ValidationError("Revoked recipients require a reason.")
+
+    def save(self, *args, **kwargs):
+        self.email = str(self.email or "").strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.display_name} ({self.get_role_display()})"
+
+
+class RealEstateDeliverable(models.Model):
+    class Category(models.TextChoices):
+        PHOTOGRAPHS = "photographs", "Photographs"
+        MAIN_VIDEO = "main_video", "Main video"
+        SOCIAL_VIDEO = "social_video", "Social video"
+        FLOOR_PLAN = "floor_plan", "Floor plan"
+        ARCHIVE = "archive", "ZIP / archive"
+        OTHER = "other", "Other"
+
+    delivery = models.ForeignKey(
+        RealEstateDelivery,
+        on_delete=models.CASCADE,
+        related_name="deliverables",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    category = models.CharField(max_length=24, choices=Category.choices)
+    display_name = models.CharField(max_length=255)
+    original_filename = models.CharField(max_length=255)
+    object_key = models.CharField(max_length=500, unique=True)
+    file_size = models.PositiveBigIntegerField()
+    mime_type = models.CharField(max_length=100)
+    checksum_algorithm = models.CharField(max_length=32, blank=True)
+    checksum_value = models.CharField(max_length=255, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=False)
+    available_at = models.DateTimeField(null=True, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_deliverables_uploaded",
+    )
+    replaces = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="replacements",
+    )
+    replaced_at = models.DateTimeField(null=True, blank=True)
+    deletion_eligible_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("sort_order", "created_at")
+        constraints = [
+            models.CheckConstraint(check=Q(file_size__gt=0), name="re_deliverable_size_positive"),
+            models.CheckConstraint(check=Q(version__gt=0), name="re_deliverable_version_positive"),
+        ]
+
+    def __str__(self):
+        return self.display_name
+
+
+class RealEstateDeliveryUploadSession(models.Model):
+    class Status(models.TextChoices):
+        INITIATED = "initiated", "Initiated"
+        COMPLETING = "completing", "Completing"
+        COMPLETED = "completed", "Completed"
+        ABORTING = "aborting", "Aborting"
+        ABORTED = "aborted", "Aborted"
+        FAILED = "failed", "Failed"
+
+    delivery = models.ForeignKey(
+        RealEstateDelivery,
+        on_delete=models.CASCADE,
+        related_name="upload_sessions",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="realestate_delivery_upload_sessions",
+    )
+    original_filename = models.CharField(max_length=255)
+    display_name = models.CharField(max_length=255)
+    category = models.CharField(max_length=24, choices=RealEstateDeliverable.Category.choices)
+    replaces = models.ForeignKey(
+        RealEstateDeliverable,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="replacement_upload_sessions",
+    )
+    object_key = models.CharField(max_length=500, unique=True)
+    upload_id = models.CharField(max_length=1024, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.INITIATED)
+    expected_size = models.PositiveBigIntegerField()
+    expected_mime_type = models.CharField(max_length=100)
+    part_size = models.PositiveBigIntegerField()
+    sort_order = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    aborted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(
+                fields=("created_by", "status"),
+                name="redelupl_creator_status_idx",
+            ),
+            models.Index(
+                fields=("delivery", "status"),
+                name="redelupl_delivery_status_idx",
+            ),
+        ]
+
+
+class RealEstateDeliveryEmailAttempt(models.Model):
+    class Kind(models.TextChoices):
+        INITIAL = "initial", "Initial"
+        RESEND = "resend", "Resend"
+        EXPIRY_REMINDER = "expiry_reminder", "Expiry reminder"
+        EXTENSION = "extension", "Extension"
+        REPLACEMENT = "replacement", "Replacement"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    recipient = models.ForeignKey(
+        RealEstateDeliveryRecipient,
+        on_delete=models.PROTECT,
+        related_name="email_attempts",
+    )
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    idempotency_key = models.CharField(max_length=128, unique=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    provider_message_id = models.CharField(max_length=255, blank=True)
+    attempted_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    failure_code = models.CharField(max_length=64, blank=True)
+    failure_message = models.CharField(max_length=255, blank=True)
+    content_version = models.CharField(max_length=32, default="1")
+
+    class Meta:
+        ordering = ("-attempted_at",)
+
+
+class RealEstateDeliveryAccessEvent(models.Model):
+    class EventType(models.TextChoices):
+        SESSION_ACCESSED = "session_accessed", "Page/session accessed"
+        DOWNLOAD_URL_ISSUED = "download_url_issued", "Download URL issued"
+        ACCESS_DENIED = "access_denied", "Access denied"
+        EXPIRED = "expired", "Expired"
+        REVOKED = "revoked", "Revoked"
+        UPLOAD_COMPLETED = "upload_completed", "Upload completed"
+        FILE_REPLACED = "file_replaced", "File replaced"
+        CLEANUP_SUCCEEDED = "cleanup_succeeded", "Cleanup succeeded"
+        CLEANUP_FAILED = "cleanup_failed", "Cleanup failed"
+
+    delivery = models.ForeignKey(
+        RealEstateDelivery,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+    )
+    recipient = models.ForeignKey(
+        RealEstateDeliveryRecipient,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+    )
+    deliverable = models.ForeignKey(
+        RealEstateDeliverable,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+    )
+    event_type = models.CharField(max_length=32, choices=EventType.choices)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
 

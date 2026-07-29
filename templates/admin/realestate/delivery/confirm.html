@@ -1,0 +1,13 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <p><strong>{{ delivery.public_title }}</strong></p>
+  <form method="post">
+    {% csrf_token %}
+    {% if form %}{{ form.as_p }}{% endif %}
+    <button type="submit" class="{% if danger %}deletelink{% else %}default{% endif %}">Confirm</button>
+    <a class="button cancel-link" href="{% url 'customadmin:realestate_realestatedelivery_change' delivery.pk %}">Cancel</a>
+  </form>
+{% endblock %}
