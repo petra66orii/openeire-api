@@ -34,14 +34,35 @@ DEFAULT_GRACE_DAYS = 60
 DEFAULT_SESSION_SECONDS = 12 * 60 * 60
 DOWNLOAD_URL_SECONDS = 5 * 60
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+DELIVERY_SECRET_SETTINGS = (
+    "REAL_ESTATE_DELIVERY_TOKEN_KEY",
+    "REAL_ESTATE_DELIVERY_SESSION_KEY",
+    "REAL_ESTATE_DELIVERY_INTERNAL_SECRET",
+)
 
 
 def portal_feature_enabled():
     return bool(getattr(settings, "REAL_ESTATE_DELIVERY_PORTAL_ENABLED", False))
 
 
+def validate_delivery_secret_independence():
+    values = {
+        setting_name: str(getattr(settings, setting_name, "") or "")
+        for setting_name in DELIVERY_SECRET_SETTINGS
+    }
+    configured = [value for value in values.values() if value]
+    if len(configured) != len(set(configured)):
+        raise ImproperlyConfigured(
+            "Delivery token, session and internal-service secrets must all be different."
+        )
+    return values
+
+
 def _strong_delivery_key(setting_name):
-    value = str(getattr(settings, setting_name, "") or "")
+    value = validate_delivery_secret_independence().get(
+        setting_name,
+        str(getattr(settings, setting_name, "") or ""),
+    )
     if len(value) < 32 or len(set(value)) < 8:
         raise ImproperlyConfigured(
             f"{setting_name} must be a dedicated high-entropy secret of at least 32 characters."
@@ -405,10 +426,46 @@ def rotate_recipient_secret(recipient, *, actor):
 
 
 @transaction.atomic
+def revoke_recipient_access(recipient, *, actor, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValidationError("A revocation reason is required.")
+    recipient = RealEstateDeliveryRecipient.objects.select_for_update().get(
+        pk=recipient.pk
+    )
+    if recipient.revoked_at:
+        return recipient, False
+    recipient.revoked_at = timezone.now()
+    recipient.revoked_by = actor
+    recipient.revocation_reason = reason
+    recipient.save(
+        update_fields=(
+            "revoked_at",
+            "revoked_by",
+            "revocation_reason",
+            "updated_at",
+        )
+    )
+    record_timeline_event(
+        recipient.delivery.enquiry,
+        RealEstateTimelineEvent.EventType.NOTE,
+        actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+        title="Portal recipient access revoked",
+        notes=f"Recipient public ID: {recipient.public_id}",
+        created_by=actor,
+    )
+    return recipient, True
+
+
+@transaction.atomic
 def activate_delivery(delivery, *, actor):
     delivery = RealEstateDelivery.objects.select_for_update().select_related("enquiry").get(
         pk=delivery.pk
     )
+    if delivery.status == RealEstateDelivery.Status.ACTIVE:
+        return delivery
+    if delivery.status == RealEstateDelivery.Status.REVOKED:
+        raise ValidationError("A revoked delivery cannot be activated.")
     decision_recipient = delivery.recipients.filter(revoked_at__isnull=True).first()
     if not decision_recipient:
         raise ValidationError("At least one active recipient is required.")

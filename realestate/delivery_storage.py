@@ -1,4 +1,5 @@
 import math
+import re
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,7 @@ ALLOWED_TYPES = {
     "image/webp",
     "video/mp4",
 }
+GENERATED_OBJECT_NAME_RE = re.compile(r"^[0-9a-f]{32}(?:\.[A-Za-z0-9]{1,10})?$")
 
 
 def get_allowed_types():
@@ -36,6 +38,30 @@ def get_max_size():
     )
 
 
+def get_max_files():
+    value = int(getattr(settings, "REAL_ESTATE_DELIVERY_MAX_FILES", 100))
+    if value <= 0:
+        raise ImproperlyConfigured(
+            "REAL_ESTATE_DELIVERY_MAX_FILES must be greater than zero."
+        )
+    return value
+
+
+def _validated_prefix():
+    prefix = str(
+        getattr(settings, "REAL_ESTATE_DELIVERY_R2_PREFIX", DELIVERY_PREFIX)
+    ).strip("/")
+    segments = prefix.split("/")
+    if (
+        not prefix
+        or "\\" in prefix
+        or any(segment in {"", ".", ".."} for segment in segments)
+        or any(not re.fullmatch(r"[A-Za-z0-9_-]+", segment) for segment in segments)
+    ):
+        raise ImproperlyConfigured("REAL_ESTATE_DELIVERY_R2_PREFIX is invalid.")
+    return prefix
+
+
 def validate_upload(filename, content_type, file_size):
     normalized_type = str(content_type or "").strip().lower()
     if normalized_type not in get_allowed_types():
@@ -47,11 +73,7 @@ def validate_upload(filename, content_type, file_size):
 
 def delivery_object_key(delivery, filename):
     suffix = Path(safe_download_filename(filename)).suffix.lower()
-    prefix = str(
-        getattr(settings, "REAL_ESTATE_DELIVERY_R2_PREFIX", DELIVERY_PREFIX)
-    ).strip("/")
-    if not prefix or ".." in prefix:
-        raise ImproperlyConfigured("REAL_ESTATE_DELIVERY_R2_PREFIX is invalid.")
+    prefix = _validated_prefix()
     return f"{prefix}/{delivery.pk}/{uuid.uuid4().hex}{suffix}"
 
 
@@ -110,6 +132,16 @@ def part_url(session, part_number):
 
 
 def complete_upload(session, parts):
+    if session.part_size <= 0:
+        raise ValidationError("Multipart upload part size is invalid.")
+    expected_part_count = math.ceil(session.expected_size / session.part_size)
+    if expected_part_count <= 0 or expected_part_count > 10_000:
+        raise ValidationError("Multipart upload part count is invalid.")
+    submitted_part_numbers = sorted(item["part_number"] for item in parts)
+    if submitted_part_numbers != list(range(1, expected_part_count + 1)):
+        raise ValidationError(
+            "Multipart completion must include every expected part exactly once."
+        )
     normalized = [
         {"ETag": item["etag"], "PartNumber": item["part_number"]}
         for item in sorted(parts, key=lambda item: item["part_number"])
@@ -154,10 +186,19 @@ def download_url(deliverable):
 
 
 def delete_validated_object(object_key):
-    prefix = str(
-        getattr(settings, "REAL_ESTATE_DELIVERY_R2_PREFIX", DELIVERY_PREFIX)
-    ).strip("/")
+    prefix = _validated_prefix()
     expected = f"{prefix}/"
-    if not object_key.startswith(expected) or ".." in object_key:
+    supplied = str(object_key or "")
+    relative = supplied.removeprefix(expected)
+    relative_parts = relative.split("/")
+    if (
+        not supplied.startswith(expected)
+        or "\\" in supplied
+        or ".." in supplied
+        or len(relative_parts) != 2
+        or not relative_parts[0].isdigit()
+        or int(relative_parts[0]) <= 0
+        or not GENERATED_OBJECT_NAME_RE.fullmatch(relative_parts[1])
+    ):
         raise ValidationError("Refusing to delete an object outside the delivery prefix.")
-    _client().delete_object(Bucket=_bucket(), Key=object_key)
+    _client().delete_object(Bucket=_bucket(), Key=supplied)

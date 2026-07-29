@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import secrets
 from types import SimpleNamespace
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -13,6 +15,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from products.permissions import IsStaffUser
+from openeire_api.throttling import SharedScopedRateThrottle
 
 from .delivery import (
     delivery_dto,
@@ -24,6 +27,7 @@ from .delivery import (
     load_staff_preview_session,
     recipient_secret_matches,
     record_access_event,
+    validate_delivery_secret_independence,
 )
 from .delivery_serializers import (
     DeliveryDownloadSerializer,
@@ -38,11 +42,13 @@ from .delivery_storage import (
     abort_upload,
     complete_upload,
     download_url,
+    get_max_files,
     part_url,
     start_upload,
 )
 from .models import (
     RealEstateDeliverable,
+    RealEstateDelivery,
     RealEstateDeliveryAccessEvent,
     RealEstateDeliveryRecipient,
     RealEstateDeliveryUploadSession,
@@ -66,13 +72,35 @@ def _record_denied_decision(recipient, decision):
     )
 
 
+class DeliveryScopedRateThrottle(SharedScopedRateThrottle):
+    def get_cache_key(self, request, view):
+        raw_identifier = (
+            request.data.get("public_id")
+            if getattr(view, "throttle_scope", "") == "real_estate_delivery_exchange"
+            else request.data.get("session")
+        )
+        if raw_identifier:
+            identifier = hashlib.sha256(
+                str(raw_identifier).encode("utf-8")
+            ).hexdigest()
+        else:
+            identifier = self.get_ident(request)
+        return self.cache_format % {
+            "scope": self.scope,
+            "ident": identifier,
+        }
+
+
 class IsDeliveryInternalRequest(BasePermission):
     message = "Delivery is unavailable."
 
     def has_permission(self, request, view):
-        expected = str(
-            getattr(settings, "REAL_ESTATE_DELIVERY_INTERNAL_SECRET", "") or ""
-        )
+        try:
+            expected = validate_delivery_secret_independence()[
+                "REAL_ESTATE_DELIVERY_INTERNAL_SECRET"
+            ]
+        except ImproperlyConfigured:
+            return False
         supplied = str(request.headers.get("X-OpenEire-Delivery-Internal", "") or "")
         if len(expected) < 32 or not supplied or not secrets.compare_digest(expected, supplied):
             return False
@@ -87,6 +115,9 @@ class DeliveryInternalView(APIView):
 
 
 class DeliveryExchangeView(DeliveryInternalView):
+    throttle_classes = [DeliveryScopedRateThrottle]
+    throttle_scope = "real_estate_delivery_exchange"
+
     def post(self, request):
         serializer = DeliveryExchangeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -153,6 +184,9 @@ class DeliveryExchangeView(DeliveryInternalView):
 
 
 class DeliverySessionView(DeliveryInternalView):
+    throttle_classes = [DeliveryScopedRateThrottle]
+    throttle_scope = "real_estate_delivery_session"
+
     def post(self, request):
         serializer = DeliverySessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -181,6 +215,9 @@ class DeliverySessionView(DeliveryInternalView):
 
 
 class DeliveryDownloadView(DeliveryInternalView):
+    throttle_classes = [DeliveryScopedRateThrottle]
+    throttle_scope = "real_estate_delivery_download"
+
     def post(self, request):
         serializer = DeliveryDownloadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -231,7 +268,12 @@ class StaffDeliveryUploadView(APIView):
     authentication_classes = [SessionAuthentication, JWTAuthentication]
     permission_classes = [IsStaffUser]
 
+    def require_delivery_change_permission(self, request):
+        if not request.user.has_perm("realestate.change_realestatedelivery"):
+            raise PermissionDenied("Delivery change permission is required.")
+
     def get_session(self, request, serializer):
+        self.require_delivery_change_permission(request)
         return RealEstateDeliveryUploadSession.objects.filter(
             created_by=request.user,
             upload_id=serializer.validated_data["upload_id"],
@@ -240,6 +282,7 @@ class StaffDeliveryUploadView(APIView):
 
 class StaffDeliveryUploadStartView(StaffDeliveryUploadView):
     def post(self, request):
+        self.require_delivery_change_permission(request)
         serializer = DeliveryUploadStartSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -340,10 +383,45 @@ class StaffDeliveryUploadCompleteView(StaffDeliveryUploadView):
                 return Response(
                     {"success": True, "deliverable_id": str(existing.public_id)}
                 )
-            replacement = session.replaces
+            delivery = RealEstateDelivery.objects.select_for_update().get(
+                pk=session.delivery_id
+            )
+            replacement = None
+            if session.replaces_id:
+                replacement = (
+                    RealEstateDeliverable.objects.select_for_update()
+                    .filter(
+                        pk=session.replaces_id,
+                        delivery=delivery,
+                        is_active=True,
+                        deleted_at__isnull=True,
+                    )
+                    .first()
+                )
+                if not replacement:
+                    session.status = session.Status.FAILED
+                    session.error_code = "replacement_unavailable"
+                    session.save(
+                        update_fields=("status", "error_code", "updated_at")
+                    )
+                    return Response(
+                        {"detail": "Replacement target is no longer available."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            elif delivery.deliverables.filter(
+                is_active=True,
+                deleted_at__isnull=True,
+            ).count() >= get_max_files():
+                session.status = session.Status.FAILED
+                session.error_code = "file_limit_reached"
+                session.save(update_fields=("status", "error_code", "updated_at"))
+                return Response(
+                    {"detail": "This delivery has reached its configured file limit."},
+                    status=status.HTTP_409_CONFLICT,
+                )
             version = (replacement.version + 1) if replacement else 1
             deliverable = RealEstateDeliverable.objects.create(
-                delivery=session.delivery,
+                delivery=delivery,
                 category=session.category,
                 display_name=session.display_name,
                 original_filename=session.original_filename,
@@ -386,12 +464,16 @@ class StaffDeliveryUploadAbortView(StaffDeliveryUploadView):
         session = self.get_session(request, serializer)
         if not session:
             return Response({"detail": "Upload is unavailable."}, status=404)
-        if session.status == session.Status.ABORTED:
-            return Response({"success": True})
-        if session.status != session.Status.INITIATED:
-            return Response({"detail": "Upload is unavailable."}, status=400)
-        session.status = session.Status.ABORTING
-        session.save(update_fields=("status", "updated_at"))
+        with transaction.atomic():
+            session = RealEstateDeliveryUploadSession.objects.select_for_update().get(
+                pk=session.pk
+            )
+            if session.status == session.Status.ABORTED:
+                return Response({"success": True})
+            if session.status != session.Status.INITIATED:
+                return Response({"detail": "Upload is unavailable."}, status=400)
+            session.status = session.Status.ABORTING
+            session.save(update_fields=("status", "updated_at"))
         try:
             abort_upload(session)
         except Exception:

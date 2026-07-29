@@ -3,7 +3,10 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ImproperlyConfigured
+from django.contrib.auth.models import Permission
+from django.core.cache import caches
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -20,13 +23,20 @@ from .delivery import (
     load_delivery_session,
     recipient_secret,
     recipient_secret_matches,
+    revoke_recipient_access,
     rotate_recipient_secret,
 )
 from .delivery_emails import send_delivery_recipient_email
-from .delivery_storage import complete_upload, download_url
+from .delivery_storage import (
+    complete_upload,
+    delete_validated_object,
+    delivery_object_key,
+    download_url,
+)
 from .models import (
     RealEstateDeliverable,
     RealEstateDelivery,
+    RealEstateDeliveryAccessEvent,
     RealEstateDeliveryEmailAttempt,
     RealEstateDeliveryRecipient,
     RealEstateDeliveryUploadSession,
@@ -35,6 +45,7 @@ from .models import (
     RealEstatePayment,
     RealEstateTimelineEvent,
 )
+from .delivery_views import DeliveryScopedRateThrottle
 
 TOKEN_KEY = "token-key-with-high-entropy-1234567890-ABCDEFGHI"
 SESSION_KEY = "session-key-with-high-entropy-0987654321-ZYXWV"
@@ -56,6 +67,9 @@ class DeliveryPortalTestCase(TestCase):
             email="operator@example.test",
             password="not-a-real-password",
             is_staff=True,
+        )
+        self.user.user_permissions.add(
+            Permission.objects.get(codename="change_realestatedelivery")
         )
         self.enquiry = RealEstateEnquiry.objects.create(
             name="Fictional Client",
@@ -158,6 +172,22 @@ class DeliveryPortalTestCase(TestCase):
         with self.assertRaises(ImproperlyConfigured):
             recipient_secret(self.recipient)
 
+    @override_settings(REAL_ESTATE_DELIVERY_INTERNAL_SECRET=TOKEN_KEY)
+    def test_delivery_secrets_must_be_cryptographically_independent(self):
+        with self.assertRaises(ImproperlyConfigured):
+            recipient_secret(self.recipient)
+        denied = APIClient().post(
+            reverse("delivery-exchange"),
+            {
+                "public_id": str(self.recipient.public_id),
+                "secret": "fictional-secret",
+            },
+            format="json",
+            HTTP_X_OPENEIRE_DELIVERY_INTERNAL=TOKEN_KEY,
+            HTTP_ORIGIN="https://openeire.test",
+        )
+        self.assertEqual(denied.status_code, 403)
+
     def test_session_round_trip_and_dto_never_expose_object_key(self):
         token, lifetime = issue_delivery_session(self.recipient)
         self.assertLessEqual(lifetime, 43_200)
@@ -222,6 +252,73 @@ class DeliveryPortalTestCase(TestCase):
             "temporarily_unavailable",
         )
 
+    def test_paid_deposit_with_outstanding_balance_relocks_existing_session(self):
+        session_token, _ = issue_delivery_session(self.recipient)
+        RealEstateInvoice.objects.filter(pk=self.invoice.pk).update(
+            invoice_type=RealEstateInvoice.InvoiceType.DEPOSIT
+        )
+        RealEstateEnquiry.objects.filter(pk=self.enquiry.pk).update(
+            payment_arrangement=(
+                RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE
+            )
+        )
+        self.enquiry.refresh_from_db()
+        RealEstateInvoice.objects.create(
+            enquiry=self.enquiry,
+            invoice_type=RealEstateInvoice.InvoiceType.BALANCE,
+            invoice_number="TEST-DELIVERY-BALANCE",
+            status=RealEstateInvoice.Status.ISSUED,
+            currency="EUR",
+            subtotal=Decimal("200.00"),
+            vat_rate=Decimal("0"),
+            vat_amount=Decimal("0"),
+            total=Decimal("200.00"),
+            customer_name_snapshot="Fictional Client",
+            customer_email_snapshot="client@example.test",
+            property_reference_snapshot="Fictional project",
+            job_reference_snapshot="TEST-JOB-1",
+            issued_at=timezone.now(),
+        )
+        response = APIClient().post(
+            reverse("delivery-session"),
+            {"session": session_token},
+            format="json",
+            **self.internal_headers(),
+        )
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.data["state"], "payment_locked")
+
+    def test_payment_reversal_during_active_session_relocks_immediately(self):
+        session_token, _ = issue_delivery_session(self.recipient)
+        StripeWebhookView()._handle_realestate_reversal_event(
+            "charge.refunded",
+            {
+                "id": "ch_fictional_delivery",
+                "amount_refunded": 10000,
+            },
+        )
+        response = APIClient().post(
+            reverse("delivery-session"),
+            {"session": session_token},
+            format="json",
+            **self.internal_headers(),
+        )
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.data["state"], "payment_locked")
+
+    def test_delivery_expiry_during_active_session_relocks_immediately(self):
+        session_token, _ = issue_delivery_session(self.recipient)
+        self.delivery.expires_at = timezone.now() - timedelta(seconds=1)
+        self.delivery.save(update_fields=("expires_at", "updated_at"))
+        response = APIClient().post(
+            reverse("delivery-session"),
+            {"session": session_token},
+            format="json",
+            **self.internal_headers(),
+        )
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.data["state"], "unavailable")
+
     def test_independent_multiple_recipient_revocation(self):
         other = RealEstateDeliveryRecipient.objects.create(
             delivery=self.delivery,
@@ -236,6 +333,27 @@ class DeliveryPortalTestCase(TestCase):
         )
         self.assertFalse(evaluate_delivery_access(self.recipient).allowed)
         self.assertTrue(evaluate_delivery_access(other).allowed)
+
+    def test_recipient_revocation_is_idempotent_and_audited_once(self):
+        recipient, changed = revoke_recipient_access(
+            self.recipient,
+            actor=self.user,
+            reason="No longer authorised",
+        )
+        duplicate, changed_again = revoke_recipient_access(
+            recipient,
+            actor=self.user,
+            reason="Duplicate retry",
+        )
+        self.assertTrue(changed)
+        self.assertFalse(changed_again)
+        self.assertEqual(recipient.revoked_at, duplicate.revoked_at)
+        events = RealEstateTimelineEvent.objects.filter(
+            enquiry=self.enquiry,
+            title="Portal recipient access revoked",
+        )
+        self.assertEqual(events.count(), 1)
+        self.assertNotIn("No longer authorised", events.get().notes)
 
     def test_completed_shoot_event_is_recorded_exactly_once(self):
         events = RealEstateTimelineEvent.objects.filter(
@@ -383,6 +501,26 @@ class DeliveryPortalTestCase(TestCase):
         self.assertEqual(wrong_secret.status_code, 404)
         self.assertEqual(wrong_secret.data["state"], "unavailable")
 
+    def test_exchange_attempts_are_rate_limited(self):
+        throttle_cache = caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")]
+        throttle_cache.clear()
+        rates = {"real_estate_delivery_exchange": "2/minute"}
+        with patch.object(DeliveryScopedRateThrottle, "THROTTLE_RATES", rates):
+            responses = [
+                APIClient().post(
+                    reverse("delivery-exchange"),
+                    {
+                        "public_id": str(self.recipient.public_id),
+                        "secret": "wrong",
+                    },
+                    format="json",
+                    **self.internal_headers(),
+                )
+                for _attempt in range(3)
+            ]
+        self.assertEqual([response.status_code for response in responses], [404, 404, 429])
+        throttle_cache.clear()
+
     @patch("realestate.delivery_views.download_url")
     def test_download_rechecks_access_and_returns_only_short_lived_redirect(self, mocked):
         mocked.return_value = "https://r2.example.test/signed"
@@ -399,6 +537,34 @@ class DeliveryPortalTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["redirect_url"], mocked.return_value)
         mocked.assert_called_once_with(self.file)
+
+    @patch("realestate.delivery_views.download_url")
+    def test_repeated_download_requests_remain_policy_checked_and_audited(self, mocked):
+        mocked.return_value = "https://r2.example.test/signed"
+        session_token, _ = issue_delivery_session(self.recipient)
+        client = APIClient()
+        for _attempt in range(2):
+            response = client.post(
+                reverse("delivery-download"),
+                {
+                    "session": session_token,
+                    "deliverable_id": str(self.file.public_id),
+                },
+                format="json",
+                **self.internal_headers(),
+            )
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked.call_count, 2)
+        self.assertEqual(
+            RealEstateDeliveryAccessEvent.objects.filter(
+                event_type=(
+                    RealEstateDeliveryAccessEvent.EventType.DOWNLOAD_URL_ISSUED
+                ),
+                recipient=self.recipient,
+                deliverable=self.file,
+            ).count(),
+            2,
+        )
 
     @patch("realestate.delivery_views.start_upload")
     def test_staff_upload_session_is_scoped_and_hides_object_key(self, start):
@@ -430,6 +596,53 @@ class DeliveryPortalTestCase(TestCase):
         )
         self.assertEqual(session.created_by, self.user)
         self.assertEqual(session.delivery, self.delivery)
+
+    @patch("realestate.delivery_views.start_upload")
+    def test_staff_upload_start_requires_delivery_change_permission(self, start):
+        staff_without_permission = get_user_model().objects.create_user(
+            username="restricted-operator",
+            email="restricted@example.test",
+            password="not-a-real-password",
+            is_staff=True,
+        )
+        client = APIClient()
+        client.force_authenticate(staff_without_permission)
+        response = client.post(
+            reverse("delivery-upload-start"),
+            {
+                "delivery_id": self.delivery.pk,
+                "filename": "fictional.zip",
+                "display_name": "Download all",
+                "category": RealEstateDeliverable.Category.ARCHIVE,
+                "content_type": "application/zip",
+                "file_size": 1024,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        start.assert_not_called()
+
+    @override_settings(REAL_ESTATE_DELIVERY_MAX_FILES=1)
+    @patch("realestate.delivery_views.start_upload")
+    def test_file_limit_is_enforced_before_upload_credentials_are_issued(
+        self, start
+    ):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post(
+            reverse("delivery-upload-start"),
+            {
+                "delivery_id": self.delivery.pk,
+                "filename": "fictional.zip",
+                "display_name": "Download all",
+                "category": RealEstateDeliverable.Category.ARCHIVE,
+                "content_type": "application/zip",
+                "file_size": 1024,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        start.assert_not_called()
 
     @patch("realestate.delivery_storage._client")
     def test_upload_completion_verifies_head_and_download_uses_five_minutes(
@@ -466,6 +679,99 @@ class DeliveryPortalTestCase(TestCase):
         self.assertEqual(
             storage_client.generate_presigned_url.call_args.kwargs["ExpiresIn"],
             DOWNLOAD_URL_SECONDS,
+        )
+
+    @patch("realestate.delivery_storage._client")
+    def test_multipart_completion_rejects_missing_or_duplicate_parts(
+        self, client_factory
+    ):
+        upload = RealEstateDeliveryUploadSession.objects.create(
+            delivery=self.delivery,
+            created_by=self.user,
+            original_filename="fictional.zip",
+            display_name="Download all",
+            category=RealEstateDeliverable.Category.ARCHIVE,
+            object_key="real-estate-deliveries/1/upload-parts.zip",
+            upload_id="upload-parts-test",
+            expected_size=20 * 1024 * 1024,
+            expected_mime_type="application/zip",
+            part_size=10 * 1024 * 1024,
+        )
+        for parts in (
+            [{"part_number": 1, "etag": '"part-1"'}],
+            [
+                {"part_number": 1, "etag": '"part-1"'},
+                {"part_number": 1, "etag": '"part-1-duplicate"'},
+            ],
+        ):
+            with self.assertRaises(ValidationError):
+                complete_upload(upload, parts)
+        client_factory.return_value.complete_multipart_upload.assert_not_called()
+
+    @patch("realestate.delivery_storage._client")
+    def test_cleanup_rejects_prefix_and_object_name_escape_attempts(
+        self, client_factory
+    ):
+        valid_key = delivery_object_key(self.delivery, "fictional.zip")
+        delete_validated_object(valid_key)
+        client_factory.return_value.delete_object.assert_called_once_with(
+            Bucket=settings.R2_PRIVATE_BUCKET_NAME,
+            Key=valid_key,
+        )
+        for unsafe_key in (
+            "../outside.zip",
+            "real-estate-deliveries/1/../outside.zip",
+            "real-estate-deliveries/1/not-a-generated-object.zip",
+            "real-estate-deliveries/1/nested/object.zip",
+            "real-estate-deliveries\\1\\object.zip",
+        ):
+            with self.assertRaises(ValidationError):
+                delete_validated_object(unsafe_key)
+        self.assertEqual(client_factory.return_value.delete_object.call_count, 1)
+
+    @patch("realestate.delivery_views.complete_upload")
+    def test_stale_replacement_cannot_expose_two_active_versions(self, complete):
+        complete.return_value = {
+            "ContentLength": 1024,
+            "ContentType": "application/zip",
+        }
+        sessions = [
+            RealEstateDeliveryUploadSession.objects.create(
+                delivery=self.delivery,
+                created_by=self.user,
+                original_filename=f"replacement-{index}.zip",
+                display_name=f"Replacement {index}",
+                category=RealEstateDeliverable.Category.ARCHIVE,
+                replaces=self.file,
+                object_key=f"real-estate-deliveries/1/replacement-{index}.zip",
+                upload_id=f"replacement-upload-{index}",
+                expected_size=1024,
+                expected_mime_type="application/zip",
+                part_size=10 * 1024 * 1024,
+            )
+            for index in (1, 2)
+        ]
+        client = APIClient()
+        client.force_authenticate(self.user)
+        responses = [
+            client.post(
+                reverse("delivery-upload-complete"),
+                {
+                    "upload_id": session.upload_id,
+                    "parts": [{"part_number": 1, "etag": '"part-etag"'}],
+                },
+                format="json",
+            )
+            for session in sessions
+        ]
+        self.assertEqual([response.status_code for response in responses], [200, 409])
+        self.assertEqual(
+            self.delivery.deliverables.filter(
+                replaces=self.file,
+                is_active=True,
+                deleted_at__isnull=True,
+            ).count(),
+            1,
         )
 
     @patch("realestate.delivery_emails.send_templated_email", return_value=1)

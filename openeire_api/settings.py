@@ -118,6 +118,9 @@ REAL_ESTATE_DELIVERY_R2_PREFIX = os.getenv(
 REAL_ESTATE_DELIVERY_MAX_FILE_SIZE = _safe_int_env(
     "REAL_ESTATE_DELIVERY_MAX_FILE_SIZE", 50 * 1024 * 1024 * 1024
 )
+REAL_ESTATE_DELIVERY_MAX_FILES = _safe_int_env(
+    "REAL_ESTATE_DELIVERY_MAX_FILES", 100
+)
 REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES = os.getenv(
     "REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES",
     "application/zip,image/jpeg,image/webp,video/mp4,application/pdf",
@@ -139,6 +142,16 @@ if REAL_ESTATE_DELIVERY_PORTAL_ENABLED and not IS_TEST_ENV:
         raise ImproperlyConfigured(
             "REAL_ESTATE_DELIVERY_TOKEN_KEY and "
             "REAL_ESTATE_DELIVERY_SESSION_KEY must be different."
+        )
+    if len(set(delivery_secrets.values())) != len(delivery_secrets):
+        raise ImproperlyConfigured(
+            "REAL_ESTATE_DELIVERY_TOKEN_KEY, "
+            "REAL_ESTATE_DELIVERY_SESSION_KEY and "
+            "REAL_ESTATE_DELIVERY_INTERNAL_SECRET must all be different."
+        )
+    if REAL_ESTATE_DELIVERY_MAX_FILES <= 0:
+        raise ImproperlyConfigured(
+            "REAL_ESTATE_DELIVERY_MAX_FILES must be greater than zero."
         )
 
 ALLOWED_HOSTS = [
@@ -255,6 +268,9 @@ REST_FRAMEWORK = {
         'gallery_access_request': '5/hour',
         'gallery_access_verify': '20/hour',
         'real_estate_enquiry': '5/hour',
+        'real_estate_delivery_exchange': '60/minute',
+        'real_estate_delivery_session': '300/minute',
+        'real_estate_delivery_download': '300/minute',
         'checkout_payment_intent': '60/hour',
         'discount_validation': '30/hour',
         'blog_comment': '20/hour',

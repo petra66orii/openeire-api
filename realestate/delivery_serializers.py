@@ -5,7 +5,7 @@ from .models import (
     RealEstateDelivery,
     RealEstateDeliveryUploadSession,
 )
-from .delivery_storage import get_max_size, validate_upload
+from .delivery_storage import get_max_files, get_max_size, validate_upload
 
 
 class DeliveryExchangeSerializer(serializers.Serializer):
@@ -49,6 +49,21 @@ class DeliveryUploadStartSerializer(serializers.Serializer):
             attrs["replacement"] = replacement
         else:
             attrs["replacement"] = None
+            active_files = delivery.deliverables.filter(
+                is_active=True,
+                deleted_at__isnull=True,
+            ).count()
+            reserved_uploads = delivery.upload_sessions.filter(
+                replaces__isnull=True,
+                status__in=(
+                    RealEstateDeliveryUploadSession.Status.INITIATED,
+                    RealEstateDeliveryUploadSession.Status.COMPLETING,
+                ),
+            ).count()
+            if active_files + reserved_uploads >= get_max_files():
+                raise serializers.ValidationError(
+                    "This delivery has reached its configured file limit."
+                )
         return attrs
 
 
@@ -56,6 +71,8 @@ class DeliveryUploadSessionSerializer(serializers.Serializer):
     upload_id = serializers.CharField(
         max_length=RealEstateDeliveryUploadSession._meta.get_field("upload_id").max_length
     )
+
+
 class DeliveryUploadPartSerializer(DeliveryUploadSessionSerializer):
     part_number = serializers.IntegerField(min_value=1, max_value=10_000)
 

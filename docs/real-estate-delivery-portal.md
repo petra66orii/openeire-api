@@ -26,7 +26,8 @@ session reuse; public-bucket mistakes; and unsafe cleanup prefixes. Controls
 include fragment credentials, dedicated HMAC keys, constant-time comparison,
 12-hour bounded sessions, no-store/no-referrer/no-index headers, a private
 bucket and UUID object keys, staff/upload ownership checks, `HeadObject`
-verification, five-minute downloads, and validated cleanup prefixes.
+verification, bounded file/part counts, endpoint rate limits, five-minute
+downloads, and validated cleanup prefixes.
 
 Never put recipient secrets, delivery sessions, signed URLs, complete
 credential links, object keys, exact addresses, Eircodes, raw IPs or complete
@@ -47,6 +48,7 @@ Backend:
 - `REAL_ESTATE_DELIVERY_SESSION_SECONDS=43200`
 - `REAL_ESTATE_DELIVERY_R2_PREFIX=real-estate-deliveries`
 - `REAL_ESTATE_DELIVERY_MAX_FILE_SIZE=53687091200`
+- `REAL_ESTATE_DELIVERY_MAX_FILES=100`
 - `REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES=application/zip,image/jpeg,image/webp,video/mp4,application/pdf`
 - Existing private R2 variables: `R2_ENDPOINT_URL`,
   `R2_PRIVATE_BUCKET_NAME`, `R2_PRIVATE_ACCESS_KEY_ID` and
@@ -60,7 +62,8 @@ Frontend server environment:
   value. Do not prefix it with `NEXT_PUBLIC_`.
 
 When the feature flag is enabled outside tests, Django refuses to boot with a
-missing/weak delivery secret or with identical token and session keys.
+missing/weak delivery secret, non-independent secrets, or an invalid file
+limit.
 
 ## Key management and rotation
 

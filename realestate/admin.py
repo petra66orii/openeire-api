@@ -35,7 +35,12 @@ from .models import (
     RealEstateInvoice,
     RealEstatePayment,
 )
-from .delivery import activate_delivery, build_staff_preview_url, rotate_recipient_secret
+from .delivery import (
+    activate_delivery,
+    build_staff_preview_url,
+    revoke_recipient_access,
+    rotate_recipient_secret,
+)
 from .delivery_emails import send_delivery_recipient_email
 from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override, void_local_realestate_invoice
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
@@ -2210,6 +2215,18 @@ class RealEstateDeliveryAdmin(admin.ModelAdmin):
         ):
             raise PermissionDenied
         if request.method == "POST":
+            if delivery.status == RealEstateDelivery.Status.ARCHIVED:
+                self.message_user(
+                    request,
+                    "Portal delivery was already archived.",
+                    messages.INFO,
+                )
+                return HttpResponseRedirect(
+                    reverse(
+                        "customadmin:realestate_realestatedelivery_change",
+                        args=(delivery.pk,),
+                    )
+                )
             delivery.status = RealEstateDelivery.Status.ARCHIVED
             delivery.portal_enabled = False
             delivery.save(update_fields=("status", "portal_enabled", "updated_at"))
@@ -2282,6 +2299,18 @@ class RealEstateDeliveryAdmin(admin.ModelAdmin):
             raise PermissionDenied
         form = RequiredReasonForm(request.POST or None)
         if request.method == "POST" and form.is_valid():
+            if delivery.status == RealEstateDelivery.Status.REVOKED:
+                self.message_user(
+                    request,
+                    "Portal delivery was already revoked.",
+                    messages.INFO,
+                )
+                return HttpResponseRedirect(
+                    reverse(
+                        "customadmin:realestate_realestatedelivery_change",
+                        args=(delivery.pk,),
+                    )
+                )
             delivery.status = RealEstateDelivery.Status.REVOKED
             delivery.portal_enabled = False
             delivery.revoked_at = timezone.now()
@@ -2462,18 +2491,20 @@ class RealEstateDeliveryRecipientAdmin(admin.ModelAdmin):
             raise PermissionDenied
         form = RequiredReasonForm(request.POST or None)
         if request.method == "POST" and form.is_valid():
-            recipient.revoked_at = timezone.now()
-            recipient.revoked_by = request.user
-            recipient.revocation_reason = form.cleaned_data["reason"]
-            recipient.save(
-                update_fields=(
-                    "revoked_at",
-                    "revoked_by",
-                    "revocation_reason",
-                    "updated_at",
-                )
+            _recipient, changed = revoke_recipient_access(
+                recipient,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
             )
-            self.message_user(request, "Recipient access revoked.", messages.SUCCESS)
+            self.message_user(
+                request,
+                (
+                    "Recipient access revoked."
+                    if changed
+                    else "Recipient access was already revoked."
+                ),
+                messages.SUCCESS if changed else messages.INFO,
+            )
             return HttpResponseRedirect(
                 reverse(
                     "customadmin:realestate_realestatedeliveryrecipient_change",
