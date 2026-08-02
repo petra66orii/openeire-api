@@ -462,16 +462,16 @@ def activate_delivery(delivery, *, actor):
     delivery = RealEstateDelivery.objects.select_for_update().select_related("enquiry").get(
         pk=delivery.pk
     )
+    if not portal_feature_enabled():
+        raise ValidationError("The delivery portal feature is disabled.")
     if delivery.status == RealEstateDelivery.Status.ACTIVE:
         return delivery
     if delivery.status == RealEstateDelivery.Status.REVOKED:
         raise ValidationError("A revoked delivery cannot be activated.")
-    decision_recipient = delivery.recipients.filter(revoked_at__isnull=True).first()
-    if not decision_recipient:
+    if delivery.status == RealEstateDelivery.Status.ARCHIVED:
+        raise ValidationError("An archived delivery cannot be activated.")
+    if not delivery.recipients.filter(revoked_at__isnull=True).exists():
         raise ValidationError("At least one active recipient is required.")
-    decision = evaluate_delivery_access(decision_recipient)
-    if not decision.allowed and decision.reason != "not_active":
-        raise ValidationError(f"Delivery cannot activate: {decision.reason}.")
     now = timezone.now()
     if delivery.enquiry.status != RealEstateEnquiry.Status.COMPLETED:
         raise ValidationError("The shoot must be completed before activation.")
@@ -492,11 +492,24 @@ def activate_delivery(delivery, *, actor):
                 getattr(settings, "REAL_ESTATE_DELIVERY_ACCESS_DAYS", DEFAULT_ACCESS_DAYS)
             )
         )
+    if delivery.expires_at <= now:
+        raise ValidationError("Delivery expiry must be in the future.")
+    if delivery.expires_at <= delivery.available_from:
+        raise ValidationError("Delivery expiry must be after availability.")
     delivery.status = RealEstateDelivery.Status.ACTIVE
     delivery.portal_enabled = True
     delivery.published_at = delivery.published_at or now
     delivery.full_clean()
-    delivery.save()
+    delivery.save(
+        update_fields=(
+            "status",
+            "portal_enabled",
+            "available_from",
+            "expires_at",
+            "published_at",
+            "updated_at",
+        )
+    )
     record_timeline_event(
         delivery.enquiry,
         RealEstateTimelineEvent.EventType.DELIVERY_RELEASED,
