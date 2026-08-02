@@ -9,7 +9,7 @@ import {
   DeliveryUploadCancelledError,
   DeliveryUploadError,
   uploadPartWithXhr,
-} from "../../static/realestate/js/delivery_multipart_uploader.mjs";
+} from "../static/realestate/js/delivery_multipart_uploader.mjs";
 
 const makeFile = (size, type = "video/mp4") => ({
   name: "property-video.mp4",
