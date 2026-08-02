@@ -16,6 +16,7 @@ from checkout.views import StripeWebhookView
 
 from .delivery import (
     DOWNLOAD_URL_SECONDS,
+    activate_delivery,
     build_staff_preview_url,
     delivery_dto,
     evaluate_delivery_access,
@@ -38,6 +39,7 @@ from .models import (
     RealEstateDelivery,
     RealEstateDeliveryAccessEvent,
     RealEstateDeliveryEmailAttempt,
+    RealEstateDeliveryOverride,
     RealEstateDeliveryRecipient,
     RealEstateDeliveryUploadSession,
     RealEstateEnquiry,
@@ -146,6 +148,191 @@ class DeliveryPortalTestCase(TestCase):
             "HTTP_X_OPENEIRE_DELIVERY_INTERNAL": INTERNAL_KEY,
             "HTTP_ORIGIN": "https://openeire.test",
         }
+
+    def prepare_draft_delivery(self):
+        self.delivery.status = RealEstateDelivery.Status.DRAFT
+        self.delivery.portal_enabled = False
+        self.delivery.published_at = None
+        self.delivery.save(
+            update_fields=(
+                "status",
+                "portal_enabled",
+                "published_at",
+                "updated_at",
+            )
+        )
+
+    def mark_payment_refunded(self):
+        self.payment.reversal_status = RealEstatePayment.ReversalStatus.REFUNDED
+        self.payment.reversed_amount = self.payment.amount
+        self.payment.reversed_at = timezone.now()
+        self.payment.save(
+            update_fields=(
+                "reversal_status",
+                "reversed_amount",
+                "reversed_at",
+                "updated_at",
+            )
+        )
+
+    def test_activation_enables_a_valid_draft_delivery(self):
+        self.prepare_draft_delivery()
+
+        activated = activate_delivery(self.delivery, actor=self.user)
+
+        activated.refresh_from_db()
+        self.assertEqual(activated.status, RealEstateDelivery.Status.ACTIVE)
+        self.assertTrue(activated.portal_enabled)
+        self.assertIsNotNone(activated.published_at)
+
+    @override_settings(REAL_ESTATE_DELIVERY_PORTAL_ENABLED=False)
+    def test_activation_rejects_when_global_feature_flag_is_disabled(self):
+        self.prepare_draft_delivery()
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "The delivery portal feature is disabled.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+        self.delivery.refresh_from_db()
+        self.assertEqual(self.delivery.status, RealEstateDelivery.Status.DRAFT)
+        self.assertFalse(self.delivery.portal_enabled)
+        self.assertIsNone(self.delivery.published_at)
+
+    def test_activation_requires_a_non_revoked_recipient(self):
+        self.prepare_draft_delivery()
+        self.recipient.revoked_at = timezone.now()
+        self.recipient.revocation_reason = "No longer authorised"
+        self.recipient.save(
+            update_fields=("revoked_at", "revocation_reason", "updated_at")
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "At least one active recipient is required.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_requires_a_completed_shoot(self):
+        self.prepare_draft_delivery()
+        self.enquiry.status = RealEstateEnquiry.Status.BOOKED
+        self.enquiry.save(update_fields=("status", "updated_at"))
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "The shoot must be completed before activation.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_preserves_the_payment_release_policy(self):
+        self.prepare_draft_delivery()
+        self.mark_payment_refunded()
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Payment is locked and no active override exists.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_accepts_an_active_payment_override(self):
+        self.prepare_draft_delivery()
+        self.mark_payment_refunded()
+        RealEstateDeliveryOverride.objects.create(
+            enquiry=self.enquiry,
+            reason="Authorised fictional release",
+            created_by=self.user,
+        )
+
+        activated = activate_delivery(self.delivery, actor=self.user)
+
+        self.assertEqual(activated.status, RealEstateDelivery.Status.ACTIVE)
+        self.assertTrue(activated.portal_enabled)
+
+    def test_activation_rejects_revoked_and_archived_deliveries(self):
+        for status, message in (
+            (
+                RealEstateDelivery.Status.REVOKED,
+                "A revoked delivery cannot be activated.",
+            ),
+            (
+                RealEstateDelivery.Status.ARCHIVED,
+                "An archived delivery cannot be activated.",
+            ),
+        ):
+            with self.subTest(status=status):
+                self.delivery.status = status
+                self.delivery.portal_enabled = False
+                self.delivery.save(
+                    update_fields=("status", "portal_enabled", "updated_at")
+                )
+
+                with self.assertRaisesMessage(ValidationError, message):
+                    activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_rejects_an_expired_schedule(self):
+        self.prepare_draft_delivery()
+        self.delivery.expires_at = timezone.now() - timedelta(seconds=1)
+        self.delivery.save(update_fields=("expires_at", "updated_at"))
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Delivery expiry must be in the future.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_rejects_expiry_before_availability(self):
+        self.prepare_draft_delivery()
+        self.delivery.available_from = timezone.now() + timedelta(days=2)
+        self.delivery.expires_at = timezone.now() + timedelta(days=1)
+        self.delivery.save(
+            update_fields=("available_from", "expires_at", "updated_at")
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Delivery expiry must be after availability.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_activation_requires_a_verified_active_deliverable(self):
+        self.prepare_draft_delivery()
+        self.file.is_active = False
+        self.file.save(update_fields=("is_active", "updated_at"))
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "At least one verified active deliverable is required.",
+        ):
+            activate_delivery(self.delivery, actor=self.user)
+
+    def test_recipient_access_remains_blocked_when_portal_is_disabled(self):
+        self.delivery.portal_enabled = False
+        self.delivery.save(update_fields=("portal_enabled", "updated_at"))
+
+        decision = evaluate_delivery_access(self.recipient)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "feature_disabled")
+
+    def test_repeated_activation_is_idempotent(self):
+        self.prepare_draft_delivery()
+        first = activate_delivery(self.delivery, actor=self.user)
+        first_published_at = first.published_at
+
+        second = activate_delivery(first, actor=self.user)
+
+        second.refresh_from_db()
+        self.assertEqual(second.status, RealEstateDelivery.Status.ACTIVE)
+        self.assertTrue(second.portal_enabled)
+        self.assertEqual(second.published_at, first_published_at)
+        self.assertEqual(
+            RealEstateTimelineEvent.objects.filter(
+                enquiry=self.enquiry,
+                event_type=RealEstateTimelineEvent.EventType.DELIVERY_RELEASED,
+            ).count(),
+            1,
+        )
 
     def test_secret_is_deterministic_not_stored_and_constant_time_comparable(self):
         first = recipient_secret(self.recipient)
