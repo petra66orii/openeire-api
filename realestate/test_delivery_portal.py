@@ -1,7 +1,9 @@
 from datetime import timedelta
 from decimal import Decimal
+from html.parser import HTMLParser
 from unittest.mock import patch
 
+from django.core import mail
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.cache import caches
@@ -17,6 +19,7 @@ from checkout.views import StripeWebhookView
 from .delivery import (
     DOWNLOAD_URL_SECONDS,
     activate_delivery,
+    build_recipient_url,
     build_staff_preview_url,
     delivery_dto,
     evaluate_delivery_access,
@@ -52,6 +55,18 @@ from .delivery_views import DeliveryScopedRateThrottle
 TOKEN_KEY = "token-key-with-high-entropy-1234567890-ABCDEFGHI"
 SESSION_KEY = "session-key-with-high-entropy-0987654321-ZYXWV"
 INTERNAL_KEY = "internal-key-with-high-entropy-1357902468-QWERTY"
+
+
+class AnchorHrefParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            href = dict(attrs).get("href")
+            if href:
+                self.hrefs.append(href)
 
 
 @override_settings(
@@ -988,6 +1003,52 @@ class DeliveryPortalTestCase(TestCase):
         ).latest("created_at")
         self.assertEqual(timeline.reference_url, "")
         self.assertNotIn(link, timeline.notes)
+        self.assertNotIn(link.partition("#")[2], timeline.notes)
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_portal_email_renders_complete_html_and_text_content(self):
+        mail.outbox = []
+        self.delivery.download_instructions = "Download each file before expiry."
+        self.delivery.licence_summary = "Use is licensed for this property listing."
+        self.delivery.save(
+            update_fields=("download_instructions", "licence_summary", "updated_at")
+        )
+        delivery_url = build_recipient_url(self.recipient)
+
+        attempt = send_delivery_recipient_email(
+            self.recipient,
+            kind=RealEstateDeliveryEmailAttempt.Kind.INITIAL,
+            idempotency_key="fictional-rendered-email",
+            actor=self.user,
+        )
+
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, RealEstateDeliveryEmailAttempt.Status.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.subject, "Your private media delivery is ready")
+        self.assertEqual(len(email.alternatives), 1)
+        html_body, mime_type = email.alternatives[0]
+        self.assertEqual(mime_type, "text/html")
+
+        parser = AnchorHrefParser()
+        parser.feed(html_body)
+        self.assertIn("Hi Fictional,", html_body)
+        self.assertIn(self.delivery.public_title, html_body)
+        self.assertIn("Your private media delivery is ready", html_body)
+        self.assertIn("Open private delivery", html_body)
+        self.assertIn(delivery_url, parser.hrefs)
+        self.assertIn("Download each file before expiry.", html_body)
+        self.assertIn("Use is licensed for this property listing.", html_body)
+        self.assertIn(delivery_url, email.body)
+
+        timeline = RealEstateTimelineEvent.objects.get(
+            event_type=RealEstateTimelineEvent.EventType.DELIVERY_SENT
+        )
+        secret = delivery_url.partition("#")[2]
+        self.assertNotIn(delivery_url, timeline.notes)
+        self.assertNotIn(secret, timeline.notes)
+        self.assertEqual(timeline.reference_url, "")
 
     @patch(
         "realestate.delivery_emails.record_timeline_event",
