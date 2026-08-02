@@ -1,14 +1,12 @@
 {% extends "emails/base_email.html" %}
 
-{% block content %}
+{% block title %}Your private media delivery is ready{% endblock %}
+{% block preheader %}Your private media delivery is ready to open.{% endblock %}
+{% block heading %}Your private media delivery is ready{% endblock %}
+{% block body %}
   <p>Hi {{ first_name }},</p>
   <p>Your private OpenÉire Studios media delivery is ready.</p>
-  <h2>{{ delivery_title }}</h2>
-  <p>
-    <a href="{{ delivery_url }}" style="display:inline-block;padding:12px 20px;background:#ffc400;color:#111;text-decoration:none;font-weight:700;">
-      Open private delivery
-    </a>
-  </p>
+  <p><strong>{{ delivery_title }}</strong></p>
   <p>Access is currently available for {{ access_days }} day{{ access_days|pluralize }}.</p>
   {% if download_instructions %}<p><strong>Download instructions:</strong><br>{{ download_instructions|linebreaksbr }}</p>{% endif %}
   {% if licence_summary %}<p><strong>Licence / use summary:</strong><br>{{ licence_summary|linebreaksbr }}</p>{% endif %}

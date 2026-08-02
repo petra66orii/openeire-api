@@ -49,10 +49,13 @@ def send_delivery_recipient_email(recipient, *, kind, idempotency_key, actor=Non
         )
         return attempt
     delivery = recipient.delivery
+    delivery_url = build_recipient_url(recipient)
     context = {
         "first_name": recipient.display_name.split()[0] or "there",
         "delivery_title": delivery.public_title,
-        "delivery_url": build_recipient_url(recipient),
+        "delivery_url": delivery_url,
+        "cta_url": delivery_url,
+        "cta_label": "Open private delivery",
         "expires_at": delivery.expires_at,
         "access_days": max(
             1, (delivery.expires_at.date() - timezone.localdate()).days
