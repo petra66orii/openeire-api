@@ -6,6 +6,7 @@ from .delivery import build_recipient_url, evaluate_delivery_access
 from .emails import get_realestate_reply_to_email, send_templated_email
 from .models import (
     RealEstateDeliveryEmailAttempt,
+    RealEstateDeliveryRecipient,
     RealEstateTimelineEvent,
 )
 from .timeline import record_timeline_event
@@ -22,6 +23,11 @@ SUBJECTS = {
 
 
 def send_delivery_recipient_email(recipient, *, kind, idempotency_key, actor=None):
+    # Rotation updates a locked database instance. Always reload at this boundary
+    # so callers cannot generate a link from a pre-rotation token version.
+    recipient = RealEstateDeliveryRecipient.objects.select_related(
+        "delivery", "delivery__enquiry"
+    ).get(pk=recipient.pk)
     attempt, created = RealEstateDeliveryEmailAttempt.objects.get_or_create(
         idempotency_key=idempotency_key,
         defaults={

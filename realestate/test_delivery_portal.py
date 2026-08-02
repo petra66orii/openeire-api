@@ -1042,6 +1042,17 @@ class DeliveryPortalTestCase(TestCase):
         self.assertIn("Use is licensed for this property listing.", html_body)
         self.assertIn(delivery_url, email.body)
 
+        exchange = APIClient().post(
+            reverse("delivery-exchange"),
+            {
+                "public_id": str(self.recipient.public_id),
+                "secret": delivery_url.partition("#")[2],
+            },
+            format="json",
+            **self.internal_headers(),
+        )
+        self.assertEqual(exchange.status_code, 200)
+
         timeline = RealEstateTimelineEvent.objects.get(
             event_type=RealEstateTimelineEvent.EventType.DELIVERY_SENT
         )
@@ -1049,6 +1060,78 @@ class DeliveryPortalTestCase(TestCase):
         self.assertNotIn(delivery_url, timeline.notes)
         self.assertNotIn(secret, timeline.notes)
         self.assertEqual(timeline.reference_url, "")
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_resend_after_rotation_uses_current_database_credential(self):
+        old_url = build_recipient_url(self.recipient)
+        old_secret = old_url.partition("#")[2]
+        version_before_rotation = self.recipient.token_version
+
+        rotate_recipient_secret(self.recipient, actor=self.user)
+        mail.outbox = []
+        attempt = send_delivery_recipient_email(
+            self.recipient,
+            kind=RealEstateDeliveryEmailAttempt.Kind.RESEND,
+            idempotency_key="fictional-rotated-resend",
+            actor=self.user,
+        )
+
+        attempt.refresh_from_db()
+        reloaded = RealEstateDeliveryRecipient.objects.get(pk=self.recipient.pk)
+        current_url = build_recipient_url(reloaded)
+        current_secret = current_url.partition("#")[2]
+        self.assertEqual(attempt.status, RealEstateDeliveryEmailAttempt.Status.SENT)
+        self.assertEqual(reloaded.token_version, version_before_rotation + 1)
+        self.assertEqual(len(current_secret), 43)
+        self.assertNotEqual(old_secret, current_secret)
+
+        email = mail.outbox[0]
+        html_body = email.alternatives[0][0]
+        parser = AnchorHrefParser()
+        parser.feed(html_body)
+        delivery_hrefs = [href for href in parser.hrefs if "/delivery/" in href]
+        text_urls = [
+            line.strip()
+            for line in email.body.splitlines()
+            if "/delivery/" in line and "#" in line
+        ]
+        self.assertEqual(delivery_hrefs, [current_url])
+        self.assertEqual(text_urls, [current_url])
+        self.assertNotIn(old_url, html_body)
+        self.assertNotIn(old_url, email.body)
+
+        public_id_from_url = current_url.rsplit("/", 1)[1].partition("#")[0]
+        self.assertEqual(public_id_from_url, str(reloaded.public_id))
+        reloaded_again = RealEstateDeliveryRecipient.objects.get(pk=reloaded.pk)
+        self.assertTrue(recipient_secret_matches(reloaded_again, current_secret))
+
+        client = APIClient()
+        old_exchange = client.post(
+            reverse("delivery-exchange"),
+            {"public_id": public_id_from_url, "secret": old_secret},
+            format="json",
+            **self.internal_headers(),
+        )
+        current_exchange = client.post(
+            reverse("delivery-exchange"),
+            {"public_id": public_id_from_url, "secret": current_secret},
+            format="json",
+            **self.internal_headers(),
+        )
+        self.assertEqual(old_exchange.status_code, 404)
+        self.assertEqual(
+            old_exchange.data,
+            {"state": "unavailable", "detail": "Delivery is unavailable."},
+        )
+        self.assertNotIn(old_secret, str(old_exchange.data))
+        self.assertEqual(current_exchange.status_code, 200)
+
+        for event in RealEstateTimelineEvent.objects.filter(enquiry=self.enquiry):
+            audit_text = f"{event.title} {event.notes} {event.reference_url}"
+            self.assertNotIn(old_url, audit_text)
+            self.assertNotIn(current_url, audit_text)
+            self.assertNotIn(old_secret, audit_text)
+            self.assertNotIn(current_secret, audit_text)
 
     @patch(
         "realestate.delivery_emails.record_timeline_event",
@@ -1058,14 +1141,20 @@ class DeliveryPortalTestCase(TestCase):
     def test_timeline_failure_does_not_erase_successful_email_attempt(
         self, _send_email, _timeline
     ):
-        attempt = send_delivery_recipient_email(
-            self.recipient,
-            kind=RealEstateDeliveryEmailAttempt.Kind.RESEND,
-            idempotency_key="fictional-send-audit-failure",
-            actor=self.user,
-        )
+        with self.assertLogs("realestate.delivery_emails", level="ERROR") as logs:
+            attempt = send_delivery_recipient_email(
+                self.recipient,
+                kind=RealEstateDeliveryEmailAttempt.Kind.RESEND,
+                idempotency_key="fictional-send-audit-failure",
+                actor=self.user,
+            )
         attempt.refresh_from_db()
         self.assertEqual(attempt.status, RealEstateDeliveryEmailAttempt.Status.SENT)
+        delivery_url = _send_email.call_args.kwargs["context"]["delivery_url"]
+        credential = delivery_url.partition("#")[2]
+        captured_logs = " ".join(logs.output)
+        self.assertNotIn(delivery_url, captured_logs)
+        self.assertNotIn(credential, captured_logs)
 
     def test_cleanup_defaults_to_dry_run(self):
         from io import StringIO
