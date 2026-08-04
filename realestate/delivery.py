@@ -314,6 +314,9 @@ def delivery_dto(recipient):
                 "filename": item.original_filename,
                 "size": item.file_size,
                 "mime_type": item.mime_type,
+                "format_label": (
+                    "ZIP archive" if item.mime_type == "application/zip" else ""
+                ),
             }
         )
     delivery = recipient.delivery
@@ -359,6 +362,9 @@ def delivery_preview_dto(delivery):
                 "filename": item.original_filename,
                 "size": item.file_size,
                 "mime_type": item.mime_type,
+                "format_label": (
+                    "ZIP archive" if item.mime_type == "application/zip" else ""
+                ),
             }
         )
     return {

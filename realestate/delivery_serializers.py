@@ -26,13 +26,20 @@ class DeliveryUploadStartSerializer(serializers.Serializer):
     filename = serializers.CharField(max_length=255)
     display_name = serializers.CharField(max_length=255)
     category = serializers.ChoiceField(choices=RealEstateDeliverable.Category.choices)
-    content_type = serializers.CharField(max_length=100)
+    content_type = serializers.CharField(max_length=100, allow_blank=True)
     file_size = serializers.IntegerField(min_value=1, max_value=get_max_size())
     sort_order = serializers.IntegerField(min_value=0, default=0)
     replaces_id = serializers.UUIDField(required=False, allow_null=True)
 
     def validate(self, attrs):
-        validate_upload(attrs["filename"], attrs["content_type"], attrs["file_size"])
+        safe_name, canonical_type = validate_upload(
+            attrs["filename"],
+            attrs["content_type"],
+            attrs["file_size"],
+            attrs["category"],
+        )
+        attrs["filename"] = safe_name
+        attrs["content_type"] = canonical_type
         delivery = RealEstateDelivery.objects.filter(pk=attrs["delivery_id"]).first()
         if not delivery:
             raise serializers.ValidationError("Selected delivery does not exist.")

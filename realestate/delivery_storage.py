@@ -16,10 +16,15 @@ DELIVERY_PREFIX = "real-estate-deliveries"
 ALLOWED_TYPES = {
     "application/pdf",
     "application/zip",
+    "application/x-zip-compressed",
     "image/jpeg",
     "image/webp",
     "video/mp4",
 }
+CANONICAL_ZIP_TYPE = "application/zip"
+ZIP_MIME_TYPES = {CANONICAL_ZIP_TYPE, "application/x-zip-compressed"}
+ZIP_FALLBACK_MIME_TYPES = {"", "application/octet-stream"}
+ZIP_CATEGORIES = {"photographs", "archive"}
 GENERATED_OBJECT_NAME_RE = re.compile(r"^[0-9a-f]{32}(?:\.[A-Za-z0-9]{1,10})?$")
 
 
@@ -62,13 +67,28 @@ def _validated_prefix():
     return prefix
 
 
-def validate_upload(filename, content_type, file_size):
+def validate_upload(filename, content_type, file_size, category):
+    safe_name = safe_download_filename(filename)
     normalized_type = str(content_type or "").strip().lower()
-    if normalized_type not in get_allowed_types():
+    allowed_types = get_allowed_types()
+    is_zip = Path(safe_name).suffix.lower() == ".zip"
+    zip_policy_enabled = bool(allowed_types.intersection(ZIP_MIME_TYPES))
+
+    if is_zip:
+        if (
+            str(category or "") not in ZIP_CATEGORIES
+            or normalized_type not in ZIP_MIME_TYPES | ZIP_FALLBACK_MIME_TYPES
+            or not zip_policy_enabled
+        ):
+            raise ValidationError("Unsupported delivery file type.")
+        normalized_type = CANONICAL_ZIP_TYPE
+    elif normalized_type in ZIP_MIME_TYPES:
+        raise ValidationError("Unsupported delivery file type.")
+    elif normalized_type not in allowed_types:
         raise ValidationError("Unsupported delivery file type.")
     if int(file_size) <= 0 or int(file_size) > get_max_size():
         raise ValidationError("Delivery file size is outside the allowed range.")
-    return safe_download_filename(filename), normalized_type
+    return safe_name, normalized_type
 
 
 def delivery_object_key(delivery, filename):
@@ -100,8 +120,10 @@ def _bucket():
     return settings.R2_PRIVATE_BUCKET_NAME
 
 
-def start_upload(delivery, filename, content_type, file_size):
-    safe_name, normalized_type = validate_upload(filename, content_type, file_size)
+def start_upload(delivery, filename, content_type, file_size, category):
+    safe_name, normalized_type = validate_upload(
+        filename, content_type, file_size, category
+    )
     object_key = delivery_object_key(delivery, safe_name)
     response = _client().create_multipart_upload(
         Bucket=_bucket(),

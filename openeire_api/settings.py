@@ -123,7 +123,10 @@ REAL_ESTATE_DELIVERY_MAX_FILES = _safe_int_env(
 )
 REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES = os.getenv(
     "REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES",
-    "application/zip,image/jpeg,image/webp,video/mp4,application/pdf",
+    (
+        "application/zip,application/x-zip-compressed,image/jpeg,image/webp,"
+        "video/mp4,application/pdf"
+    ),
 )
 
 if REAL_ESTATE_DELIVERY_PORTAL_ENABLED and not IS_TEST_ENV:

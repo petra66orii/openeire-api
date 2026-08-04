@@ -13,7 +13,17 @@
     {% csrf_token %}
     <div class="form-row">
       <label for="delivery-file">File</label>
-      <input id="delivery-file" type="file" required>
+      <input
+        id="delivery-file"
+        type="file"
+        accept=".jpg,.jpeg,.webp,.mp4,.pdf,.zip,image/jpeg,image/webp,video/mp4,application/pdf,application/zip,application/x-zip-compressed"
+        aria-describedby="delivery-file-help"
+        required
+      >
+      <p id="delivery-file-help" class="help">
+        Accepted formats: JPG, WebP, MP4, PDF and ZIP. Use Photographs for a
+        complete photograph package ZIP. Maximum size: {{ max_file_size|filesizeformat }}.
+      </p>
     </div>
     <div class="form-row">
       <label for="delivery-display-name">Client-safe display name</label>
@@ -39,6 +49,7 @@
       createDeliveryUploadApi,
       DeliveryUploadCancelledError,
       formatUploadBytes,
+      getDeliveryUploadContentType,
       getDeliveryUploadErrorMessage,
     } from "{% static 'realestate/js/delivery_multipart_uploader.mjs' %}";
 
@@ -82,6 +93,7 @@
       if (activeTask) return;
       const file = fileInput.files && fileInput.files[0];
       if (!file) return;
+      const category = categoryInput.value;
 
       finalising = false;
       setControlsDisabled(true);
@@ -96,8 +108,8 @@
           delivery_id: {{ delivery.pk }},
           filename: file.name,
           display_name: nameInput.value,
-          category: categoryInput.value,
-          content_type: file.type || "application/octet-stream",
+          category,
+          content_type: getDeliveryUploadContentType(file, category),
           file_size: file.size,
           sort_order: 0,
         },
