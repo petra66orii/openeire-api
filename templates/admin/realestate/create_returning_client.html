@@ -1,0 +1,25 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p>Confirm these authoritative client details from the reviewed enquiry. This does not merge any historical records.</p>
+  <div class="module aligned">
+    <p><strong>Name:</strong> {{ enquiry.name }}</p>
+    <p><strong>Email:</strong> {{ enquiry.email }}</p>
+    <p><strong>Phone:</strong> {{ enquiry.phone }}</p>
+    <p><strong>Client type:</strong> {{ enquiry.get_client_type_display }}</p>
+    <p><strong>Agency/company:</strong> {{ enquiry.company_name|default:"—" }}</p>
+  </div>
+  {% if duplicate_candidates %}
+    <div class="messagelist"><div class="warning">Possible duplicates exist. Review them before confirming:</div></div>
+    <ul>{% for client in duplicate_candidates %}<li><a href="{% url 'customadmin:realestate_realestateclient_change' client.pk %}">{{ client }}</a></li>{% endfor %}</ul>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="{{ action_name }}">
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ enquiry.pk }}">
+    <input type="hidden" name="confirm_create_client" value="1">
+    <button type="submit" class="default">Create verified client</button>
+    <a href="{% url 'customadmin:realestate_realestateenquiry_change' enquiry.pk %}" class="button cancel-link">Cancel</a>
+  </form>
+{% endblock %}

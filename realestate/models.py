@@ -21,6 +21,68 @@ from .turnaround import (
 )
 
 
+def normalize_realestate_email(value):
+    return str(value or "").strip().lower()
+
+
+def normalize_realestate_phone(value):
+    return "".join(character for character in str(value or "") if character.isdigit())
+
+
+class RealEstateClient(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        INACTIVE = "inactive", "Inactive"
+        ARCHIVED = "archived", "Archived"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    name = models.CharField(max_length=255)
+    email = models.EmailField()
+    normalized_email = models.EmailField(blank=True, db_index=True, editable=False)
+    phone = models.CharField(max_length=50)
+    normalized_phone = models.CharField(max_length=32, blank=True, db_index=True, editable=False)
+    client_type = models.CharField(max_length=32, choices=(
+        ("estate_agent", "Estate Agent"),
+        ("developer", "Developer"),
+        ("private_seller", "Private Seller"),
+        ("landlord", "Landlord"),
+        ("other", "Other"),
+    ))
+    company_name = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    identity_confirmed_at = models.DateTimeField()
+    identity_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="realestate_clients_confirmed",
+    )
+    source_enquiry = models.ForeignKey(
+        "RealEstateEnquiry",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="clients_created_from_enquiry",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "company_name")
+        permissions = [
+            ("resolve_realestateclient", "Can resolve real estate client identity"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = str(self.email or "").strip()
+        self.phone = str(self.phone or "").strip()
+        self.normalized_email = normalize_realestate_email(self.email)
+        self.normalized_phone = normalize_realestate_phone(self.phone)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.company_name or self.email})"
+
+
 class RealEstateEnquiry(models.Model):
     class PaymentArrangement(models.TextChoices):
         DEPOSIT_THEN_BALANCE = "deposit_then_balance", "30% deposit then balance"
@@ -136,6 +198,13 @@ class RealEstateEnquiry(models.Model):
         CLOSED = "closed", "Closed"
         SPAM = "spam", "Spam"
 
+    class SubmissionSource(models.TextChoices):
+        PUBLIC_FORM = "public_form", "Public form"
+        RETURNING_CLIENT = "returning_client", "Returning client"
+        WHATSAPP_MANUAL = "whatsapp_manual", "WhatsApp / manual"
+        DJANGO_ADMIN = "django_admin", "Django admin"
+        LEGACY_UNKNOWN = "legacy_unknown", "Legacy / unknown"
+
     class DeliveryProvider(models.TextChoices):
         MYAIRBRIDGE = "myairbridge", "MyAirBridge"
         GOOGLE_DRIVE = "google_drive", "Google Drive"
@@ -245,6 +314,30 @@ class RealEstateEnquiry(models.Model):
     audio_requirements = models.TextField(blank=True)
     how_heard = models.CharField(max_length=32, choices=HowHeard.choices, blank=True)
     message = models.TextField(blank=True)
+
+    client = models.ForeignKey(
+        RealEstateClient,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="enquiries",
+    )
+    submission_source = models.CharField(
+        max_length=24,
+        choices=SubmissionSource.choices,
+        default=SubmissionSource.LEGACY_UNKNOWN,
+    )
+    returning_credential = models.ForeignKey(
+        "RealEstateBookingCredential",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="enquiries",
+    )
+    submission_id = models.UUIDField(null=True, blank=True, unique=True)
+    contact_details_reviewed_at = models.DateTimeField(null=True, blank=True)
+    contact_update_requested = models.BooleanField(default=False)
+    contact_update_request = models.TextField(blank=True)
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
     quoted_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
@@ -458,6 +551,144 @@ class RealEstateEnquiry(models.Model):
         ):
             self.payment_due_date = self.shoot_date
         super().save(*args, **kwargs)
+
+
+class RealEstateBookingCredential(models.Model):
+    client = models.ForeignKey(
+        RealEstateClient,
+        on_delete=models.CASCADE,
+        related_name="booking_credentials",
+    )
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    is_primary = models.BooleanField(default=True)
+    token_salt = models.UUIDField(default=uuid.uuid4, editable=False)
+    token_version = models.PositiveIntegerField(default=1)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_booking_credentials_revoked",
+    )
+    revocation_reason = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="realestate_booking_credentials_created",
+    )
+    rotated_at = models.DateTimeField(null=True, blank=True)
+    rotated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_booking_credentials_rotated",
+    )
+    last_exchanged_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("client",),
+                condition=Q(is_primary=True, revoked_at__isnull=True),
+                name="uniq_active_primary_re_booking_credential",
+            ),
+            models.CheckConstraint(
+                check=Q(token_version__gt=0),
+                name="re_booking_credential_version_positive",
+            ),
+        ]
+        permissions = [
+            ("generate_realestatebookingcredential", "Can generate real estate booking credentials"),
+            ("rotate_realestatebookingcredential", "Can rotate real estate booking credentials"),
+            ("revoke_realestatebookingcredential", "Can revoke real estate booking credentials"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.revoked_at and not str(self.revocation_reason or "").strip():
+            raise ValidationError("Revoked booking credentials require a reason.")
+
+    def __str__(self):
+        return f"Booking access for {self.client}"
+
+
+class RealEstateBookingAccessEvent(models.Model):
+    class EventType(models.TextChoices):
+        EXCHANGE = "exchange", "Credential exchange"
+        SESSION = "session", "Session accessed"
+        SUBMISSION = "submission", "Booking submitted"
+        ACCESS_DENIED = "access_denied", "Access denied"
+        ROTATED = "rotated", "Credential rotated"
+        REVOKED = "revoked", "Credential revoked"
+        EMAIL_SENT = "email_sent", "Booking link email sent"
+
+    class ResultCode(models.TextChoices):
+        ALLOWED = "allowed", "Allowed"
+        SUBMITTED = "submitted", "Submitted"
+        DUPLICATE = "duplicate", "Duplicate submission"
+        EXPIRED = "expired", "Expired"
+        REVOKED = "revoked", "Revoked"
+        CLIENT_INACTIVE = "client_inactive", "Client inactive"
+        INVALID_SESSION = "invalid_session", "Invalid session"
+        ROTATED = "rotated", "Rotated"
+        EMAIL_ACCEPTED = "email_accepted", "Email accepted"
+
+    credential = models.ForeignKey(
+        RealEstateBookingCredential,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+    )
+    client = models.ForeignKey(
+        RealEstateClient,
+        on_delete=models.PROTECT,
+        related_name="booking_access_events",
+    )
+    enquiry = models.ForeignKey(
+        RealEstateEnquiry,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="booking_access_events",
+    )
+    event_type = models.CharField(max_length=24, choices=EventType.choices)
+    result_code = models.CharField(max_length=24, choices=ResultCode.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+
+class RealEstateBookingEmailAttempt(models.Model):
+    class Kind(models.TextChoices):
+        INITIAL = "initial", "Initial"
+        RESEND = "resend", "Resend"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    credential = models.ForeignKey(
+        RealEstateBookingCredential,
+        on_delete=models.PROTECT,
+        related_name="email_attempts",
+    )
+    kind = models.CharField(max_length=12, choices=Kind.choices)
+    idempotency_key = models.CharField(max_length=128, unique=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    attempted_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    failure_code = models.CharField(max_length=64, blank=True)
+    content_version = models.CharField(max_length=16, default="1")
+
+    class Meta:
+        ordering = ("-attempted_at",)
 
 
 class RealEstateTimelineEvent(models.Model):

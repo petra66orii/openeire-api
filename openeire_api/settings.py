@@ -129,6 +129,56 @@ REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES = os.getenv(
     ),
 )
 
+# Returning-client booking access is a separate security domain from delivery.
+REAL_ESTATE_BOOKING_PORTAL_ENABLED = env_bool(
+    os.getenv("REAL_ESTATE_BOOKING_PORTAL_ENABLED"),
+    default=False,
+)
+REAL_ESTATE_BOOKING_EMAIL_ENABLED = env_bool(
+    os.getenv("REAL_ESTATE_BOOKING_EMAIL_ENABLED"),
+    default=False,
+)
+REAL_ESTATE_BOOKING_TOKEN_KEY = os.getenv("REAL_ESTATE_BOOKING_TOKEN_KEY", "")
+REAL_ESTATE_BOOKING_SESSION_KEY = os.getenv("REAL_ESTATE_BOOKING_SESSION_KEY", "")
+REAL_ESTATE_BOOKING_INTERNAL_SECRET = os.getenv(
+    "REAL_ESTATE_BOOKING_INTERNAL_SECRET", ""
+)
+REAL_ESTATE_BOOKING_CREDENTIAL_DAYS = _safe_int_env(
+    "REAL_ESTATE_BOOKING_CREDENTIAL_DAYS", 90
+)
+REAL_ESTATE_BOOKING_SESSION_SECONDS = _safe_int_env(
+    "REAL_ESTATE_BOOKING_SESSION_SECONDS", 12 * 60 * 60
+)
+
+if REAL_ESTATE_BOOKING_PORTAL_ENABLED and not IS_TEST_ENV:
+    booking_secrets = {
+        "REAL_ESTATE_BOOKING_TOKEN_KEY": REAL_ESTATE_BOOKING_TOKEN_KEY,
+        "REAL_ESTATE_BOOKING_SESSION_KEY": REAL_ESTATE_BOOKING_SESSION_KEY,
+        "REAL_ESTATE_BOOKING_INTERNAL_SECRET": REAL_ESTATE_BOOKING_INTERNAL_SECRET,
+    }
+    excluded_booking_secrets = {
+        SECRET_KEY,
+        REAL_ESTATE_DELIVERY_TOKEN_KEY,
+        REAL_ESTATE_DELIVERY_SESSION_KEY,
+        REAL_ESTATE_DELIVERY_INTERNAL_SECRET,
+    }
+    for booking_secret_name, booking_secret_value in booking_secrets.items():
+        if len(booking_secret_value) < 32 or len(set(booking_secret_value)) < 8:
+            raise ImproperlyConfigured(
+                f"{booking_secret_name} must be a dedicated high-entropy secret "
+                "of at least 32 characters when the booking portal is enabled."
+            )
+        if booking_secret_value in excluded_booking_secrets:
+            raise ImproperlyConfigured(
+                f"{booking_secret_name} must not reuse a Django or delivery secret."
+            )
+    if len(set(booking_secrets.values())) != len(booking_secrets):
+        raise ImproperlyConfigured(
+            "Booking token, session and internal-service secrets must all be different."
+        )
+    if REAL_ESTATE_BOOKING_CREDENTIAL_DAYS <= 0 or REAL_ESTATE_BOOKING_SESSION_SECONDS <= 0:
+        raise ImproperlyConfigured("Booking credential and session lifetimes must be positive.")
+
 if REAL_ESTATE_DELIVERY_PORTAL_ENABLED and not IS_TEST_ENV:
     delivery_secrets = {
         "REAL_ESTATE_DELIVERY_TOKEN_KEY": REAL_ESTATE_DELIVERY_TOKEN_KEY,
@@ -274,6 +324,9 @@ REST_FRAMEWORK = {
         'real_estate_delivery_exchange': '60/minute',
         'real_estate_delivery_session': '300/minute',
         'real_estate_delivery_download': '300/minute',
+        'real_estate_booking_exchange': '30/minute',
+        'real_estate_booking_session': '120/minute',
+        'real_estate_booking_submit': '20/hour',
         'checkout_payment_intent': '60/hour',
         'discount_validation': '30/hour',
         'blog_comment': '20/hour',

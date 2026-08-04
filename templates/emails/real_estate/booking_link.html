@@ -1,0 +1,13 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}Your private OpenÉire booking link{% endblock %}
+{% block preheader %}Book another property using your saved client details.{% endblock %}
+{% block heading %}Book another property{% endblock %}
+{% block body %}
+  <p>Hello {{ first_name }},</p>
+  <p>Use your private OpenÉire Studios link to request another property shoot without entering your saved contact and agency details again.</p>
+  <p><a href="{{ booking_url }}">Book another property</a></p>
+  <p><strong>Copy-and-paste fallback:</strong><br><span style="word-break:break-all">{{ booking_url }}</span></p>
+  <p>Keep this link private. It expires on {{ expires_at|date:"j F Y" }}.</p>
+  <p>OpenÉire Studios will still review the property, scope, quotation and date before confirming a booking.</p>
+{% endblock %}

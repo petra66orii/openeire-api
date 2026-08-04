@@ -54,7 +54,9 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
     throttle_scope = "real_estate_enquiry"
 
     def perform_create(self, serializer):
-        self.enquiry = serializer.save()
+        self.enquiry = serializer.save(
+            submission_source=RealEstateEnquiry.SubmissionSource.PUBLIC_FORM
+        )
         notes = []
         if self.enquiry.preferred_package:
             notes.append(

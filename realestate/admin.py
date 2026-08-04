@@ -2,8 +2,12 @@ import logging
 
 from django.contrib import admin
 from django.contrib import messages
+from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME, ActionForm
 from django import forms
+from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
+from django.db.models import Q
 from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.http import HttpResponse, HttpResponseRedirect
@@ -25,6 +29,10 @@ from .documents import generate_booking_agreement_pdf
 from .models import RealEstateEnquiry
 from .models import RealEstateTimelineEvent
 from .models import (
+    RealEstateBookingAccessEvent,
+    RealEstateBookingCredential,
+    RealEstateBookingEmailAttempt,
+    RealEstateClient,
     RealEstateDeliverable,
     RealEstateDelivery,
     RealEstateDeliveryAccessEvent,
@@ -35,6 +43,13 @@ from .models import (
     RealEstateInvoice,
     RealEstatePayment,
 )
+from .booking import (
+    build_booking_url,
+    generate_primary_credential,
+    revoke_booking_credential,
+    rotate_booking_credential,
+)
+from .booking_emails import send_booking_link_email
 from .delivery import (
     activate_delivery,
     build_staff_preview_url,
@@ -259,6 +274,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "preferred_date",
         "status",
         "form_schema_version",
+        "submission_source",
         "quoted_price",
         "shoot_date",
         "booking_agreement_received",
@@ -272,6 +288,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "how_heard",
         "created_at",
         "form_schema_version",
+        "submission_source",
+        "contact_update_requested",
     )
     search_fields = (
         "name",
@@ -280,6 +298,9 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "company_name",
         "property_address",
         "eircode",
+        "client__name",
+        "client__normalized_email",
+        "client__normalized_phone",
     )
     readonly_fields = (
         "created_at",
@@ -298,6 +319,9 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "quoted_deposit_amount",
         "quoted_balance_due",
         "financial_summary",
+        "submission_id",
+        "client",
+        "contact_details_reviewed_at",
     )
     actions = (
         "send_quote_email",
@@ -310,12 +334,43 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "send_follow_up_email",
         "send_weather_reschedule_email",
         "send_thank_you_email",
+        "create_returning_client_from_enquiry",
     )
     inlines = (
         RealEstateInvoiceInline,
         RealEstateDeliveryOverrideInline,
         RealEstateTimelineEventInline,
     )
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if not request.user.has_perm("realestate.resolve_realestateclient"):
+            actions.pop("create_returning_client_from_enquiry", None)
+        return actions
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj and "submission_source" not in fields:
+            fields.append("submission_source")
+        return tuple(fields)
+
+    def formfield_for_choice_field(self, db_field, request, **kwargs):
+        if db_field.name == "submission_source":
+            kwargs["choices"] = (
+                (
+                    RealEstateEnquiry.SubmissionSource.DJANGO_ADMIN,
+                    RealEstateEnquiry.SubmissionSource.DJANGO_ADMIN.label,
+                ),
+                (
+                    RealEstateEnquiry.SubmissionSource.WHATSAPP_MANUAL,
+                    RealEstateEnquiry.SubmissionSource.WHATSAPP_MANUAL.label,
+                ),
+            )
+            formfield = super().formfield_for_choice_field(db_field, request, **kwargs)
+            formfield.initial = RealEstateEnquiry.SubmissionSource.DJANGO_ADMIN
+            return formfield
+        return super().formfield_for_choice_field(db_field, request, **kwargs)
+
     fieldsets = (
         (
             "Contact",
@@ -329,6 +384,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "how_heard",
                     "consent_to_contact",
                     "form_schema_version",
+                    "client",
+                    "submission_source",
+                    "submission_id",
+                    "contact_details_reviewed_at",
+                    "contact_update_requested",
+                    "contact_update_request",
                 )
             },
         ),
@@ -1719,10 +1780,67 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             ],
         )
 
+    @admin.action(description="Create verified returning client from reviewed enquiry")
+    def create_returning_client_from_enquiry(self, request, queryset):
+        if not request.user.has_perm("realestate.resolve_realestateclient"):
+            raise PermissionDenied("Client-resolution permission is required.")
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one reviewed enquiry.", messages.ERROR)
+            return None
+        enquiry = queryset.first()
+        if enquiry.client_id:
+            self.message_user(request, "This enquiry is already linked to a client.", messages.WARNING)
+            return None
+        duplicate_candidates = RealEstateClient.objects.filter(
+            Q(normalized_email=str(enquiry.email or "").strip().lower())
+            | Q(normalized_phone="".join(ch for ch in str(enquiry.phone or "") if ch.isdigit()))
+        )
+        if request.POST.get("confirm_create_client") == "1":
+            with transaction.atomic():
+                enquiry = RealEstateEnquiry.objects.select_for_update().get(
+                    pk=enquiry.pk
+                )
+                if enquiry.client_id:
+                    self.message_user(
+                        request,
+                        "This enquiry was already linked while the confirmation page was open.",
+                        messages.WARNING,
+                    )
+                    return None
+                client = RealEstateClient.objects.create(
+                    name=enquiry.name,
+                    email=enquiry.email,
+                    phone=enquiry.phone,
+                    client_type=enquiry.client_type,
+                    company_name=enquiry.company_name,
+                    identity_confirmed_at=timezone.now(),
+                    identity_confirmed_by=request.user,
+                    source_enquiry=enquiry,
+                )
+                enquiry.client = client
+                enquiry.save(update_fields=("client", "updated_at"))
+            self.message_user(request, f"Verified client created: {client}.", messages.SUCCESS)
+            return None
+        return TemplateResponse(
+            request,
+            "admin/realestate/create_returning_client.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Review stable client details",
+                "enquiry": enquiry,
+                "duplicate_candidates": duplicate_candidates,
+                "action_checkbox_name": ACTION_CHECKBOX_NAME,
+                "action_name": "create_returning_client_from_enquiry",
+            },
+        )
+
     def save_model(self, request, obj, form, change):
         previous = None
         if change and obj.pk:
             previous = RealEstateEnquiry.objects.filter(pk=obj.pk).first()
+
+        if not change and obj.submission_source == RealEstateEnquiry.SubmissionSource.LEGACY_UNKNOWN:
+            obj.submission_source = RealEstateEnquiry.SubmissionSource.DJANGO_ADMIN
 
         if (
             previous
@@ -2608,6 +2726,239 @@ class RealEstateDeliveryUploadSessionAdmin(admin.ModelAdmin):
     )
 
     def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RealEstateClient, site=custom_admin_site)
+class RealEstateClientAdmin(admin.ModelAdmin):
+    list_display = ("name", "company_name", "status", "normalized_email", "normalized_phone", "identity_confirmed_at")
+    list_filter = ("status", "client_type", "created_at")
+    search_fields = ("name", "company_name", "normalized_email", "normalized_phone")
+    readonly_fields = (
+        "public_id", "normalized_email", "normalized_phone", "identity_confirmed_at",
+        "identity_confirmed_by", "possible_duplicate_warning", "linked_enquiries",
+        "created_at", "updated_at",
+    )
+    actions = ("generate_booking_access",)
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and request.user.has_perm(
+            "realestate.resolve_realestateclient"
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if not request.user.has_perm(
+            "realestate.generate_realestatebookingcredential"
+        ):
+            actions.pop("generate_booking_access", None)
+        return actions
+
+    @admin.display(description="Possible duplicate warning")
+    def possible_duplicate_warning(self, obj):
+        if not obj or not obj.pk:
+            return "Save the client to run duplicate warnings."
+        candidates = RealEstateClient.objects.exclude(pk=obj.pk).filter(
+            Q(normalized_email=obj.normalized_email) | Q(normalized_phone=obj.normalized_phone)
+        )[:10]
+        if not candidates:
+            return "No normalized email/phone matches. This is a warning aid, not identity proof."
+        links = [format_html('<a href="{}">{}</a>', reverse("customadmin:realestate_realestateclient_change", args=(item.pk,)), item) for item in candidates]
+        return format_html("Possible matches (manual review required): {}", mark_safe(", ".join(map(str, links))))
+
+    @admin.display(description="Linked enquiries")
+    def linked_enquiries(self, obj):
+        if not obj or not obj.pk:
+            return "—"
+        links = [format_html('<a href="{}">{}</a>', reverse("customadmin:realestate_realestateenquiry_change", args=(item.pk,)), item) for item in obj.enquiries.all()[:50]]
+        return mark_safe("<br>".join(map(str, links))) if links else "No linked enquiries."
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.identity_confirmed_at = timezone.now()
+            obj.identity_confirmed_by = request.user
+        super().save_model(request, obj, form, change)
+
+    @admin.action(description="Generate or show active private booking access")
+    def generate_booking_access(self, request, queryset):
+        if not request.user.has_perm("realestate.generate_realestatebookingcredential"):
+            raise PermissionDenied("Booking credential generation permission is required.")
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one active client.", messages.ERROR)
+            return None
+        if request.POST.get("confirm_booking_action") != "generate":
+            return TemplateResponse(
+                request,
+                "admin/realestate/booking_credential_action.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Generate private booking access",
+                    "message": (
+                        "This creates private booking access for the selected verified client. "
+                        "An existing active link will be preserved."
+                    ),
+                    "queryset": queryset,
+                    "action_name": "generate_booking_access",
+                    "confirmation": "generate",
+                    "action_checkbox_name": ACTION_CHECKBOX_NAME,
+                    "cancel_url": reverse(
+                        "customadmin:realestate_realestateclient_changelist"
+                    ),
+                },
+            )
+        credential, changed = generate_primary_credential(queryset.first(), actor=request.user)
+        self.message_user(request, "Booking access generated." if changed else "Existing active booking access preserved.", messages.SUCCESS)
+        return HttpResponseRedirect(reverse("customadmin:realestate_realestatebookingcredential_change", args=(credential.pk,)))
+
+
+class BookingCredentialActionForm(ActionForm):
+    reason = forms.CharField(required=False, max_length=1000, widget=forms.Textarea)
+
+
+@admin.register(RealEstateBookingCredential, site=custom_admin_site)
+class RealEstateBookingCredentialAdmin(admin.ModelAdmin):
+    list_display = ("client", "public_id", "expires_at", "token_version", "revoked_at", "last_exchanged_at")
+    list_filter = ("is_primary", "revoked_at", "expires_at")
+    search_fields = ("client__name", "client__company_name", "client__normalized_email", "public_id")
+    readonly_fields = tuple(field.name for field in RealEstateBookingCredential._meta.fields) + ("private_booking_link",)
+    actions = ("rotate_selected", "revoke_selected", "send_or_resend_email")
+    action_form = BookingCredentialActionForm
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_fields(self, request, obj=None):
+        fields = list(super().get_fields(request, obj))
+        if not request.user.has_perm(
+            "realestate.generate_realestatebookingcredential"
+        ):
+            fields = [field for field in fields if field != "private_booking_link"]
+        return fields
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if not request.user.has_perm(
+            "realestate.rotate_realestatebookingcredential"
+        ):
+            actions.pop("rotate_selected", None)
+        if not request.user.has_perm(
+            "realestate.revoke_realestatebookingcredential"
+        ):
+            actions.pop("revoke_selected", None)
+        if (
+            not request.user.has_perm(
+                "realestate.generate_realestatebookingcredential"
+            )
+            or not getattr(settings, "REAL_ESTATE_BOOKING_EMAIL_ENABLED", False)
+        ):
+            actions.pop("send_or_resend_email", None)
+        return actions
+
+    @admin.display(description="Private booking link")
+    def private_booking_link(self, obj):
+        if not obj or obj.revoked_at:
+            return "Unavailable"
+        try:
+            private_url = build_booking_url(obj)
+        except Exception:
+            return "Booking secrets or frontend URL are not configured."
+        return format_html(
+            '<input id="private-booking-link" value="{}" readonly style="width:80%"> '
+            '<button type="button" onclick="navigator.clipboard.writeText(document.getElementById(\'private-booking-link\').value)">Copy link</button>',
+            private_url,
+        )
+
+    def _confirmation(self, request, queryset, *, action_name, confirmation, title, message, requires_reason=False):
+        return TemplateResponse(request, "admin/realestate/booking_credential_action.html", {
+            **self.admin_site.each_context(request), "title": title, "message": message,
+            "queryset": queryset, "action_name": action_name, "confirmation": confirmation,
+            "requires_reason": requires_reason, "action_checkbox_name": ACTION_CHECKBOX_NAME,
+            "cancel_url": reverse("customadmin:realestate_realestatebookingcredential_changelist"),
+        })
+
+    @admin.action(description="Rotate selected booking link (explicit invalidation)")
+    def rotate_selected(self, request, queryset):
+        if not request.user.has_perm("realestate.rotate_realestatebookingcredential"):
+            raise PermissionDenied("Booking credential rotation permission is required.")
+        if request.POST.get("confirm_booking_action") != "rotate":
+            return self._confirmation(request, queryset, action_name="rotate_selected", confirmation="rotate", title="Rotate private booking access", message="This invalidates the existing link and every current booking session.")
+        for credential in queryset:
+            rotate_booking_credential(credential, actor=request.user)
+        self.message_user(request, f"Rotated {queryset.count()} credential(s).", messages.SUCCESS)
+
+    @admin.action(description="Revoke selected booking access (reason required)")
+    def revoke_selected(self, request, queryset):
+        if not request.user.has_perm("realestate.revoke_realestatebookingcredential"):
+            raise PermissionDenied("Booking credential revocation permission is required.")
+        reason = str(request.POST.get("reason") or "").strip()
+        if request.POST.get("confirm_booking_action") != "revoke" or not reason:
+            return self._confirmation(request, queryset, action_name="revoke_selected", confirmation="revoke", title="Revoke private booking access", message="Revocation immediately invalidates links and sessions.", requires_reason=True)
+        for credential in queryset:
+            revoke_booking_credential(credential, actor=request.user, reason=reason)
+        self.message_user(request, f"Revoked {queryset.count()} credential(s).", messages.SUCCESS)
+
+    @admin.action(description="Send/resend booking link email (tracking must be disabled)")
+    def send_or_resend_email(self, request, queryset):
+        if not request.user.has_perm("realestate.generate_realestatebookingcredential"):
+            raise PermissionDenied("Booking credential generation permission is required.")
+        if not getattr(settings, "REAL_ESTATE_BOOKING_EMAIL_ENABLED", False):
+            raise PermissionDenied(
+                "Booking email is disabled until provider tracking is verified."
+            )
+        if request.POST.get("confirm_booking_action") != "send":
+            return self._confirmation(
+                request,
+                queryset,
+                action_name="send_or_resend_email",
+                confirmation="send",
+                title="Send private booking access",
+                message=(
+                    "Confirm that provider click tracking is disabled and verified. "
+                    "This sends the current authoritative link without rotation."
+                ),
+            )
+        for credential in queryset:
+            kind = RealEstateBookingEmailAttempt.Kind.RESEND if credential.email_attempts.exists() else RealEstateBookingEmailAttempt.Kind.INITIAL
+            send_booking_link_email(credential, kind=kind, idempotency_key=f"admin:{uuid.uuid4()}")
+        self.message_user(request, "Booking email attempt(s) recorded. Confirm provider tracking is disabled.", messages.WARNING)
+
+
+@admin.register(RealEstateBookingAccessEvent, site=custom_admin_site)
+class RealEstateBookingAccessEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "event_type", "result_code", "client", "credential", "enquiry")
+    list_filter = ("event_type", "result_code", "created_at")
+    search_fields = ("client__name", "credential__public_id")
+    readonly_fields = tuple(field.name for field in RealEstateBookingAccessEvent._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RealEstateBookingEmailAttempt, site=custom_admin_site)
+class RealEstateBookingEmailAttemptAdmin(admin.ModelAdmin):
+    list_display = ("attempted_at", "credential", "kind", "status", "sent_at", "failure_code")
+    list_filter = ("kind", "status", "attempted_at")
+    readonly_fields = tuple(field.name for field in RealEstateBookingEmailAttempt._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
         return False
 
     def has_delete_permission(self, request, obj=None):

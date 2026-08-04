@@ -1,0 +1,9 @@
+Hello {{ first_name }},
+
+Use your private OpenÉire Studios link to request another property shoot without entering your saved contact and agency details again.
+
+{{ booking_url }}
+
+Copy and paste the complete address above into your browser if the button or link does not open. Keep it private. It expires on {{ expires_at|date:"j F Y" }}.
+
+OpenÉire Studios will still review the property, scope, quotation and date before confirming a booking.

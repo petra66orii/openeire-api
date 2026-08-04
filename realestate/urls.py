@@ -14,9 +14,17 @@ from .delivery_views import (
     StaffDeliveryUploadPartView,
     StaffDeliveryUploadStartView,
 )
+from .booking_views import (
+    BookingExchangeView,
+    BookingSessionView,
+    ReturningBookingSubmissionView,
+)
 
 
 urlpatterns = [
+    path("booking/exchange/", BookingExchangeView.as_view(), name="booking-exchange"),
+    path("booking/session/", BookingSessionView.as_view(), name="booking-session"),
+    path("booking/enquiries/", ReturningBookingSubmissionView.as_view(), name="booking-enquiry-create"),
     path("delivery/exchange/", DeliveryExchangeView.as_view(), name="delivery-exchange"),
     path("delivery/session/", DeliverySessionView.as_view(), name="delivery-session"),
     path("delivery/download/", DeliveryDownloadView.as_view(), name="delivery-download"),
