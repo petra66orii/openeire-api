@@ -217,8 +217,10 @@ class ReturningBookingSubmissionView(BookingInternalView):
                 created = True
         except IntegrityError:
             enquiry = RealEstateEnquiry.objects.filter(submission_id=submission_id).first()
-            if not enquiry or enquiry.client_id != credential.client_id:
+            if not enquiry:
                 raise
+            if enquiry.client_id != credential.client_id:
+                return Response(GENERIC_UNAVAILABLE, status=status.HTTP_409_CONFLICT)
 
         if created:
             self._send_emails(enquiry)
