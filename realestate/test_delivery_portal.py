@@ -30,12 +30,15 @@ from .delivery import (
     revoke_recipient_access,
     rotate_recipient_secret,
 )
+from .delivery_serializers import DeliveryUploadStartSerializer
 from .delivery_emails import send_delivery_recipient_email
 from .delivery_storage import (
     complete_upload,
     delete_validated_object,
     delivery_object_key,
     download_url,
+    start_upload,
+    validate_upload,
 )
 from .models import (
     RealEstateDeliverable,
@@ -398,6 +401,10 @@ class DeliveryPortalTestCase(TestCase):
         payload = delivery_dto(loaded)
         self.assertEqual(payload["state"], "valid")
         self.assertNotIn("object_key", str(payload))
+        delivered_file = payload["delivery"]["groups"][0]["files"][0]
+        self.assertEqual(delivered_file["mime_type"], "application/zip")
+        self.assertEqual(delivered_file["format_label"], "ZIP archive")
+        self.assertEqual(delivered_file["display_name"], "Web photographs")
         self.assertIn(str(self.file.public_id), str(payload))
 
     def test_access_rechecks_payment_revocation_expiry_and_shoot(self):
@@ -800,6 +807,156 @@ class DeliveryPortalTestCase(TestCase):
         self.assertEqual(session.created_by, self.user)
         self.assertEqual(session.delivery, self.delivery)
 
+    @override_settings(
+        REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES=(
+            "application/zip,image/jpeg,image/webp,video/mp4,application/pdf"
+        )
+    )
+    def test_zip_upload_validation_canonicalizes_supported_browser_variants(self):
+        cases = (
+            ("complete-package.zip", "application/zip"),
+            ("complete-package.ZIP", "application/x-zip-compressed"),
+            ("windows-package.zip", "application/octet-stream"),
+            ("empty-browser-type.zip", ""),
+            ("client-export.exe.zip", "application/zip"),
+        )
+        for filename, content_type in cases:
+            with self.subTest(filename=filename, content_type=content_type):
+                serializer = DeliveryUploadStartSerializer(
+                    data={
+                        "delivery_id": self.delivery.pk,
+                        "filename": filename,
+                        "display_name": "Complete photograph package",
+                        "category": RealEstateDeliverable.Category.PHOTOGRAPHS,
+                        "content_type": content_type,
+                        "file_size": 1024,
+                    }
+                )
+                self.assertTrue(serializer.is_valid(), serializer.errors)
+                self.assertEqual(
+                    serializer.validated_data["content_type"], "application/zip"
+                )
+                self.assertTrue(
+                    serializer.validated_data["filename"].lower().endswith(".zip")
+                )
+
+    def test_zip_validation_rejects_wrong_extensions_categories_and_generic_octet(self):
+        cases = (
+            (
+                "malware.exe",
+                "application/zip",
+                RealEstateDeliverable.Category.PHOTOGRAPHS,
+            ),
+            (
+                "notes.txt",
+                "application/x-zip-compressed",
+                RealEstateDeliverable.Category.ARCHIVE,
+            ),
+            (
+                "photograph.jpg",
+                "application/octet-stream",
+                RealEstateDeliverable.Category.PHOTOGRAPHS,
+            ),
+            (
+                "video.zip",
+                "application/zip",
+                RealEstateDeliverable.Category.MAIN_VIDEO,
+            ),
+            (
+                "wrong-type.zip",
+                "image/jpeg",
+                RealEstateDeliverable.Category.PHOTOGRAPHS,
+            ),
+        )
+        for filename, content_type, category in cases:
+            with self.subTest(filename=filename, content_type=content_type, category=category):
+                serializer = DeliveryUploadStartSerializer(
+                    data={
+                        "delivery_id": self.delivery.pk,
+                        "filename": filename,
+                        "display_name": "Rejected upload",
+                        "category": category,
+                        "content_type": content_type,
+                        "file_size": 1024,
+                    }
+                )
+                self.assertFalse(serializer.is_valid())
+                self.assertEqual(
+                    serializer.errors["non_field_errors"][0],
+                    "Unsupported delivery file type.",
+                )
+
+    @override_settings(REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES="image/jpeg")
+    def test_zip_specific_path_still_respects_environment_mime_policy(self):
+        with self.assertRaisesMessage(
+            ValidationError, "Unsupported delivery file type."
+        ):
+            validate_upload(
+                "package.zip",
+                "application/octet-stream",
+                1024,
+                RealEstateDeliverable.Category.PHOTOGRAPHS,
+            )
+
+    def test_existing_delivery_mime_types_remain_supported(self):
+        cases = (
+            ("photograph.jpg", "image/jpeg", RealEstateDeliverable.Category.PHOTOGRAPHS),
+            ("photograph.webp", "image/webp", RealEstateDeliverable.Category.PHOTOGRAPHS),
+            ("property.mp4", "video/mp4", RealEstateDeliverable.Category.MAIN_VIDEO),
+            ("floor-plan.pdf", "application/pdf", RealEstateDeliverable.Category.FLOOR_PLAN),
+        )
+        for filename, content_type, category in cases:
+            with self.subTest(filename=filename, content_type=content_type):
+                safe_name, canonical_type = validate_upload(
+                    filename, content_type, 1024, category
+                )
+                self.assertEqual(safe_name, filename)
+                self.assertEqual(canonical_type, content_type)
+
+    @patch("realestate.delivery_storage._client")
+    def test_zip_multipart_initiation_uses_canonical_type_and_private_key(
+        self, client_factory
+    ):
+        client_factory.return_value.create_multipart_upload.return_value = {
+            "UploadId": "zip-upload-id"
+        }
+        result = start_upload(
+            self.delivery,
+            "complete-package.ZIP",
+            "application/x-zip-compressed",
+            1024 * 1024 * 1024,
+            RealEstateDeliverable.Category.PHOTOGRAPHS,
+        )
+
+        upload_id, object_key, part_size, filename, content_type = result
+        self.assertEqual(upload_id, "zip-upload-id")
+        self.assertTrue(object_key.endswith(".zip"))
+        self.assertNotIn("complete-package", object_key)
+        self.assertGreaterEqual(part_size, 10 * 1024 * 1024)
+        self.assertEqual(filename, "complete-package.ZIP")
+        self.assertEqual(content_type, "application/zip")
+        call = client_factory.return_value.create_multipart_upload.call_args.kwargs
+        self.assertEqual(call["ContentType"], "application/zip")
+        self.assertEqual(call["Metadata"], {"filename": "complete-package.ZIP"})
+
+    def test_admin_uploader_lists_zip_support_and_safe_accept_rules(self):
+        client = self.client
+        client.force_login(self.user)
+        response = client.get(
+            reverse(
+                "customadmin:realestate_realestatedelivery_uploads",
+                args=(self.delivery.pk,),
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response, "Accepted formats: JPG, WebP, MP4, PDF and ZIP"
+        )
+        self.assertContains(response, "application/zip")
+        self.assertContains(response, "application/x-zip-compressed")
+        self.assertContains(response, ".zip")
+
     @patch("realestate.delivery_views.start_upload")
     def test_staff_upload_start_requires_delivery_change_permission(self, start):
         staff_without_permission = get_user_model().objects.create_user(
@@ -878,11 +1035,22 @@ class DeliveryPortalTestCase(TestCase):
         storage_client.generate_presigned_url.return_value = (
             "https://r2.example.test/signed"
         )
+        self.file.original_filename = "../../fictional-photos.zip"
         self.assertEqual(download_url(self.file), "https://r2.example.test/signed")
         self.assertEqual(
             storage_client.generate_presigned_url.call_args.kwargs["ExpiresIn"],
             DOWNLOAD_URL_SECONDS,
         )
+        download_params = storage_client.generate_presigned_url.call_args.kwargs[
+            "Params"
+        ]
+        self.assertEqual(download_params["ResponseContentType"], "application/zip")
+        self.assertIn("attachment;", download_params["ResponseContentDisposition"])
+        self.assertIn(
+            "fictional-photos.zip", download_params["ResponseContentDisposition"]
+        )
+        self.assertNotIn("..", download_params["ResponseContentDisposition"])
+        self.assertNotIn("/", download_params["ResponseContentDisposition"])
 
     @patch("realestate.delivery_storage._client")
     def test_multipart_completion_rejects_missing_or_duplicate_parts(

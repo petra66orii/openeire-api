@@ -42,6 +42,7 @@ from .delivery import (
     rotate_recipient_secret,
 )
 from .delivery_emails import send_delivery_recipient_email
+from .delivery_storage import get_max_size
 from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override, void_local_realestate_invoice
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
@@ -2196,6 +2197,7 @@ class RealEstateDeliveryAdmin(admin.ModelAdmin):
                 "title": "Upload delivery media",
                 "delivery": delivery,
                 "categories": RealEstateDeliverable.Category.choices,
+                "max_file_size": get_max_size(),
             },
         )
 

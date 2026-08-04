@@ -287,7 +287,11 @@ class StaffDeliveryUploadStartView(StaffDeliveryUploadView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         upload_id, object_key, part_size, filename, mime_type = start_upload(
-            data["delivery"], data["filename"], data["content_type"], data["file_size"]
+            data["delivery"],
+            data["filename"],
+            data["content_type"],
+            data["file_size"],
+            data["category"],
         )
         try:
             session = RealEstateDeliveryUploadSession.objects.create(

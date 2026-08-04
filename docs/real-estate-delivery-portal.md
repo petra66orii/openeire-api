@@ -49,7 +49,7 @@ Backend:
 - `REAL_ESTATE_DELIVERY_R2_PREFIX=real-estate-deliveries`
 - `REAL_ESTATE_DELIVERY_MAX_FILE_SIZE=53687091200`
 - `REAL_ESTATE_DELIVERY_MAX_FILES=100`
-- `REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES=application/zip,image/jpeg,image/webp,video/mp4,application/pdf`
+- `REAL_ESTATE_DELIVERY_ALLOWED_MIME_TYPES=application/zip,application/x-zip-compressed,image/jpeg,image/webp,video/mp4,application/pdf`
 - Existing private R2 variables: `R2_ENDPOINT_URL`,
   `R2_PRIVATE_BUCKET_NAME`, `R2_PRIVATE_ACCESS_KEY_ID` and
   `R2_PRIVATE_SECRET_ACCESS_KEY`.
@@ -112,7 +112,10 @@ backup strategy.
    payer or other roles. Payment does not grant recipient access.
 4. Review the existing finance panel. Resolve missing final/full invoices,
    partial payments, refunds/disputes or use the existing reasoned override.
-5. Open **Upload media**. Choose a client-safe display name and category. The
+5. Open **Upload media**. Choose a client-safe display name and category. JPG,
+   WebP, MP4, PDF and ZIP files are supported. Use **Photographs** for a
+   complete property photograph package ZIP; **ZIP / archive** remains
+   available for other intentional archives. The
    browser uploads parts directly to private R2, with no more than the
    server-provided number of concurrent part requests. Keep the page open
    through final verification. Uploads do not resume across a refresh or
@@ -136,8 +139,29 @@ Until the rollout is accepted, the existing `delivery_provider` and
 `delivery_link` fields remain the MyAirBridge workflow. Historical records and
 templates are unchanged. Use the existing MyAirBridge action as fallback.
 
-The MVP does not automate ZIP creation. Prepare ZIP files locally, scan/check
-them, and upload them manually.
+The MVP does not automate ZIP creation. ZIP archives are delivered exactly as
+uploaded and Django/Next never extract, inspect, transform or generate them.
+Prepare and check archives locally before uploading them. The configured
+maximum is 50 GiB per file (approximately 50 GB as displayed by the admin), so
+the expected approximately 1 GiB photograph packages fit without a limit
+change.
+
+ZIP validation is deliberately narrower than the general MIME policy:
+
+- the final case-insensitive filename extension must be `.zip`;
+- `application/zip` and `application/x-zip-compressed` are accepted;
+- an empty browser MIME or `application/octet-stream` is accepted only for a
+  final `.zip` filename in the **Photographs** or **ZIP / archive** category;
+- `application/octet-stream` is never a general delivery-file allowance;
+- a ZIP MIME with `.exe` or another final extension is rejected;
+- names such as `client-export.exe.zip` are accepted because only the final
+  safe extension determines the filename policy. This does not inspect or make
+  claims about archive contents;
+- accepted archives are stored and verified as canonical `application/zip`.
+
+Windows browsers commonly report `application/x-zip-compressed`, an empty MIME
+or `application/octet-stream` for ZIP files. These values use the constrained
+ZIP path above and do not broaden uploads for other file types.
 
 ## Finance and reversals
 
@@ -228,6 +252,8 @@ Common failures:
 - Payment locked: inspect all issued final/full invoices, successful payments,
   reversal metadata and overrides.
 - Upload missing `ETag`: expose `ETag` in private-bucket CORS.
+- Unsupported ZIP: confirm the final `.zip` extension, Photographs or ZIP /
+  archive category, and one of the supported Windows MIME behaviours above.
 - Upload verification failed: compare expected size/MIME with R2 `HeadObject`;
   do not manually activate the object.
 - Download generation failed: verify private R2 credentials/bucket and current

@@ -1,5 +1,26 @@
 const DEFAULT_RETRY_LIMIT = 3;
 const CANCELLED_MESSAGE = "Upload cancelled.";
+const CANONICAL_ZIP_TYPE = "application/zip";
+const ZIP_MIME_TYPES = new Set([
+  CANONICAL_ZIP_TYPE,
+  "application/x-zip-compressed",
+  "application/octet-stream",
+  "",
+]);
+const ZIP_CATEGORIES = new Set(["photographs", "archive"]);
+
+export const getDeliveryUploadContentType = (file, category) => {
+  const filename = String(file?.name || "");
+  const browserType = String(file?.type || "").trim().toLowerCase();
+  if (
+    /\.zip$/i.test(filename) &&
+    ZIP_CATEGORIES.has(String(category || "")) &&
+    ZIP_MIME_TYPES.has(browserType)
+  ) {
+    return CANONICAL_ZIP_TYPE;
+  }
+  return browserType || "application/octet-stream";
+};
 
 export class DeliveryUploadCancelledError extends Error {
   constructor(message = CANCELLED_MESSAGE) {
@@ -37,7 +58,7 @@ const safeBackendDetail = (detail, fallback) => {
 
 const phaseFallback = {
   start:
-    "Could not start the upload. Check the file type, size and delivery permissions.",
+    "Could not start the upload. Accepted delivery formats are JPG, WebP, MP4, PDF and ZIP.",
   "part-url":
     "Could not authorise an upload part. The upload session may have expired.",
   complete:
@@ -249,6 +270,10 @@ export const createDeliveryMultipartUpload = ({
   if (!file || !Number.isFinite(file.size) || file.size <= 0) {
     throw new Error("A non-empty file is required.");
   }
+  const uploadContentType =
+    String(startPayload?.content_type || "").trim().toLowerCase() ||
+    String(file.type || "").trim().toLowerCase() ||
+    "application/octet-stream";
 
   const abortController = new AbortController();
   let startedUpload = null;
@@ -324,7 +349,7 @@ export const createDeliveryMultipartUpload = ({
         const blob = file.slice(
           start,
           end,
-          file.type || "application/octet-stream",
+          uploadContentType,
         );
         let lastError = null;
 
@@ -356,7 +381,7 @@ export const createDeliveryMultipartUpload = ({
             }
             const result = await uploadPart({
               blob,
-              contentType: file.type || "application/octet-stream",
+              contentType: uploadContentType,
               onProgress: (loadedBytes) => {
                 partProgress.set(
                   partNumber,

@@ -8,6 +8,7 @@ import {
   createDeliveryUploadApi,
   DeliveryUploadCancelledError,
   DeliveryUploadError,
+  getDeliveryUploadContentType,
   uploadPartWithXhr,
 } from "../static/realestate/js/delivery_multipart_uploader.mjs";
 
@@ -38,6 +39,76 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+
+test("canonicalizes only constrained ZIP browser MIME fallbacks", () => {
+  const zip = (name, type) => ({ name, type });
+  assert.equal(
+    getDeliveryUploadContentType(zip("package.zip", "application/zip"), "photographs"),
+    "application/zip",
+  );
+  assert.equal(
+    getDeliveryUploadContentType(
+      zip("package.ZIP", "application/x-zip-compressed"),
+      "photographs",
+    ),
+    "application/zip",
+  );
+  assert.equal(
+    getDeliveryUploadContentType(
+      zip("windows.zip", "application/octet-stream"),
+      "archive",
+    ),
+    "application/zip",
+  );
+  assert.equal(
+    getDeliveryUploadContentType(zip("empty.zip", ""), "photographs"),
+    "application/zip",
+  );
+  assert.equal(
+    getDeliveryUploadContentType(
+      zip("photograph.jpg", "application/octet-stream"),
+      "photographs",
+    ),
+    "application/octet-stream",
+  );
+  assert.equal(
+    getDeliveryUploadContentType(
+      zip("wrong-category.zip", "application/octet-stream"),
+      "main_video",
+    ),
+    "application/octet-stream",
+  );
+});
+
+test("uses the canonical start MIME for every ZIP part", async () => {
+  const file = makeFile(25, "application/x-zip-compressed");
+  file.name = "complete-package.ZIP";
+  const { api } = makeApi({ partSize: 10 });
+  const observedTypes = [];
+  const task = createDeliveryMultipartUpload({
+    api,
+    file,
+    startPayload: {
+      delivery_id: 17,
+      filename: file.name,
+      display_name: "Complete photograph package",
+      category: "photographs",
+      content_type: getDeliveryUploadContentType(file, "photographs"),
+      file_size: file.size,
+    },
+    uploadPart: async ({ blob, contentType, url }) => {
+      observedTypes.push([blob.type, contentType]);
+      return { etag: `etag-${partNumberFromUrl(url)}` };
+    },
+  });
+
+  await task.promise;
+  assert.deepEqual(observedTypes, [
+    ["application/zip", "application/zip"],
+    ["application/zip", "application/zip"],
+    ["application/zip", "application/zip"],
+  ]);
+});
 
 const makeApi = ({
   maxConcurrency = 4,
