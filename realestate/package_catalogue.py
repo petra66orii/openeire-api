@@ -13,6 +13,7 @@ class RealEstatePackage:
     price_eur: int | None
     included_photographs: int | None
     other_deliverables: str = ""
+    included_add_ons: frozenset[str] = frozenset()
 
     @property
     def included_photographs_label(self):
@@ -20,7 +21,7 @@ class RealEstatePackage:
             return "Included photographs as specifically agreed"
         return (
             f"{self.included_photographs} professionally edited interior "
-            "and exterior photographs"
+            "and exterior ground photographs"
         )
 
     @property
@@ -40,27 +41,36 @@ REAL_ESTATE_PACKAGE_CATALOGUE = {
     ),
     "starter": RealEstatePackage(
         name="Starter",
-        price_eur=229,
+        price_eur=259,
         included_photographs=25,
-        other_deliverables="5-8 aerial drone photographs",
+        other_deliverables=(
+            "5-8 aerial drone stills in addition to the ground photographs + "
+            "2D measured floor plan"
+        ),
+        included_add_ons=frozenset({"floor_plan"}),
     ),
     "pro": RealEstatePackage(
         name="Pro",
-        price_eur=399,
+        price_eur=419,
         included_photographs=30,
         other_deliverables=(
-            "5-8 aerial drone photographs + 60-90s ground video + "
-            "60-90s 4K aerial drone video + standard portrait and square social cuts"
+            "5-8 aerial drone stills in addition to the ground photographs + "
+            "2D measured floor plan + 60-90s ground video + separate 60-90s "
+            "4K aerial drone video + one vertical 9:16 social-media video"
         ),
+        included_add_ons=frozenset({"floor_plan"}),
     ),
     "premium": RealEstatePackage(
         name="Premium",
-        price_eur=579,
+        price_eur=549,
         included_photographs=35,
         other_deliverables=(
-            "5-8 aerial drone photographs + ground video + aerial drone video + "
-            "standard social cuts + hosted 3D virtual tour + 2D measured floor plan"
+            "5-8 aerial drone stills in addition to the ground photographs + "
+            "2D measured floor plan + 60-90s ground video + separate 60-90s "
+            "4K aerial drone video + one vertical 9:16 social-media video + "
+            "hosted 3D virtual tour"
         ),
+        included_add_ons=frozenset({"floor_plan", "virtual_tour_3d"}),
     ),
     "custom": RealEstatePackage(
         name="Custom",
@@ -97,3 +107,8 @@ def get_included_photographs_label(package_code, fallback="Specifically agreed")
 def get_included_photograph_count(package_code):
     package = get_package(package_code)
     return package.included_photographs if package else None
+
+
+def get_included_add_ons(package_code):
+    package = get_package(package_code)
+    return package.included_add_ons if package else frozenset()

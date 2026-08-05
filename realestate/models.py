@@ -12,6 +12,7 @@ from .package_catalogue import (
     PACKAGE_SUMMARIES,
     get_included_photograph_count,
     get_included_photographs_label,
+    get_included_add_ons,
     get_package_summary,
 )
 from .turnaround import (
@@ -146,11 +147,13 @@ class RealEstateEnquiry(models.Model):
 
     ADD_ON_LABELS = {
         "additional_stills": "Additional edited photographs - EUR 10 per photograph",
-        "floor_plan": "Floor plan, 2D measured - EUR 75",
+        "floor_plan": "Measured 2D floor plan - EUR 75",
         "virtual_tour_3d": "Hosted 3D virtual tour - EUR 150",
         "rush_delivery": "Rush same-day delivery, still photography only - EUR 75",
         "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
-        "additional_social_cuts": "Additional social media cuts - EUR 50",
+        "additional_social_cuts": (
+            "Additional social-media cuts, alternative formats or additional edits - EUR 50"
+        ),
         "travel_supplement": "Travel supplement beyond 40 km - EUR 0.50 per km",
     }
 
@@ -415,7 +418,14 @@ class RealEstateEnquiry(models.Model):
 
     def get_add_on_labels(self):
         labels = []
+        included_add_ons = (
+            frozenset()
+            if self._get_persisted_package_scope() or self._requires_historical_scope_review()
+            else get_included_add_ons(self.preferred_package)
+        )
         for key in self.add_ons or []:
+            if key in included_add_ons:
+                continue
             label = self.ADD_ON_LABELS.get(key, key)
             if key == "additional_stills" and self.additional_stills_quantity:
                 label = f"{label} x {self.additional_stills_quantity}"

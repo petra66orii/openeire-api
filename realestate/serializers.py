@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import RealEstateEnquiry
+from .package_catalogue import get_included_add_ons
 
 
 IRISH_COUNTIES = (
@@ -41,13 +42,6 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         "property_features", "access_contact_name", "access_contact_phone",
         "access_notes", "on_camera_people", "audio_requirements", "message",
     )
-    PACKAGE_ADD_ON_CONFLICTS = {
-        RealEstateEnquiry.PreferredPackage.PRO: {"additional_social_cuts"},
-        RealEstateEnquiry.PreferredPackage.PREMIUM: {
-            "floor_plan", "virtual_tour_3d", "additional_social_cuts",
-        },
-    }
-
     # These were unrestricted strings in the deployed legacy form. V2 choices
     # are enforced in validate() so old clients are not rejected mid-rollout.
     county = serializers.CharField(max_length=100)
@@ -161,6 +155,15 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             if not attrs.get(field_name):
                 errors[field_name] = "This field may not be blank."
 
+        add_ons = set(attrs.get("add_ons") or [])
+        package = attrs.get("preferred_package")
+        conflicts = add_ons & get_included_add_ons(package)
+        if conflicts:
+            labels = ", ".join(
+                RealEstateEnquiry.ADD_ON_LABELS[key] for key in sorted(conflicts)
+            )
+            errors["add_ons"] = f"Already included with the selected package: {labels}."
+
         if not self._is_v2(attrs):
             if errors:
                 raise serializers.ValidationError(errors)
@@ -264,7 +267,6 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
                     "Describe the spoken-audio or microphone requirements."
                 )
 
-        add_ons = set(attrs.get("add_ons") or [])
         quantity = attrs.get("additional_stills_quantity")
         if "additional_stills" in add_ons and quantity is None:
             errors["additional_stills_quantity"] = (
@@ -274,14 +276,6 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             errors["additional_stills_quantity"] = (
                 "Only provide a quantity when additional stills are selected."
             )
-        package = attrs.get("preferred_package")
-        conflicts = add_ons & self.PACKAGE_ADD_ON_CONFLICTS.get(package, set())
-        if conflicts:
-            labels = ", ".join(
-                RealEstateEnquiry.ADD_ON_LABELS[key] for key in sorted(conflicts)
-            )
-            errors["add_ons"] = f"Already included with the selected package: {labels}."
-
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
