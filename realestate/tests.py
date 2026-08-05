@@ -61,7 +61,7 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "property_address": "Example House, Salthill, Galway",
     "package_name": "Pro package",
     "included_photographs_label": (
-        "30 professionally edited interior and exterior photographs"
+        "30 professionally edited interior and exterior ground photographs"
     ),
     "additional_photograph_copy": (
         "Additional edited photographs may be agreed at EUR 10 per photograph."
@@ -209,6 +209,24 @@ class RealEstatePricingTests(TestCase):
         self.assertEqual(amounts["vat_total"], Decimal("91.77"))
         self.assertEqual(amounts["total_including_vat"], Decimal("490.77"))
         self.assertEqual(amounts["deposit_amount"], Decimal("147.23"))
+
+    @override_settings(VAT_REGISTERED=False)
+    def test_updated_package_totals_use_the_existing_30_percent_deposit_rule(self):
+        for package_code, total, deposit, balance in (
+            ("essential", "175.00", "52.50", "122.50"),
+            ("starter", "259.00", "77.70", "181.30"),
+            ("pro", "419.00", "125.70", "293.30"),
+            ("premium", "549.00", "164.70", "384.30"),
+        ):
+            with self.subTest(package=package_code):
+                enquiry = self._enquiry(
+                    preferred_package=package_code,
+                    quoted_price=Decimal(total),
+                )
+                amounts = calculate_realestate_deposit_amounts(enquiry)
+                self.assertEqual(amounts["total_including_vat"], Decimal(total))
+                self.assertEqual(amounts["deposit_amount"], Decimal(deposit))
+                self.assertEqual(amounts["balance_due"], Decimal(balance))
 
 
 @override_settings(STRIPE_SECRET_KEY="sk_test_deposit_sessions")
@@ -601,7 +619,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                 )
                 for rendered in (html, text):
                     self.assertIn(
-                        "30 professionally edited interior and exterior photographs",
+                        "30 professionally edited interior and exterior ground photographs",
                         rendered,
                     )
                     self.assertIn("EUR 10 per photograph", rendered)
@@ -624,7 +642,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                 text = render_to_string("emails/real_estate/quote.txt", context)
                 expected_copy = (
                     f"{expected} professionally edited interior and exterior "
-                    "photographs"
+                    "ground photographs"
                 )
                 self.assertIn(expected_copy, html)
                 self.assertIn(expected_copy, text)
@@ -1373,7 +1391,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             eircode="H91 LONG",
             property_type="Detached house",
-            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
             preferred_date="2026-06-20",
             shoot_date="2026-06-20",
             shoot_time="10:30",
@@ -1410,8 +1428,11 @@ class BookingAgreementDocumentTests(TestCase):
             "| Access notes / restrictions | Use the courtyard entrance and call on arrival |",
             rendered,
         )
-        self.assertIn("Floor plan, 2D measured - €75", rendered)
-        self.assertIn("Additional social media cuts - €50", rendered)
+        self.assertIn("Measured 2D floor plan - €75", rendered)
+        self.assertIn(
+            "Additional social-media cuts, alternative formats or additional edits - €50",
+            rendered,
+        )
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", rendered)
         self.assertIn("| Travel supplement applies | Yes - included in the quoted services total |", rendered)
         self.assertIn("| Travel supplement included | €65.00 |", rendered)
@@ -1449,7 +1470,7 @@ class BookingAgreementDocumentTests(TestCase):
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
         self.assertEqual(snapshot.template_version, "1.8")
         self.assertIn(
-            "30 professionally edited interior and exterior photographs",
+            "30 professionally edited interior and exterior ground photographs",
             first,
         )
         self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
@@ -1466,7 +1487,7 @@ class BookingAgreementDocumentTests(TestCase):
             property_address="Example House",
             county="Galway",
             property_type="Detached house",
-            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
             quoted_price="399.00",
             add_ons=["floor_plan"],
             consent_to_contact=True,
@@ -1498,7 +1519,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertEqual(issued_snapshot.template_version, "1.8")
         self.assertEqual(new_snapshot.template_version, "1.8")
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
-        self.assertIn("Floor plan, 2D measured - €75", new_markdown)
+        self.assertIn("Measured 2D floor plan - €75", new_markdown)
         self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
         self.assertIn("| Travel supplement included | €65.00 |", new_markdown)
         self.assertEqual(enquiry.booking_agreement_snapshots.count(), 2)
@@ -1613,7 +1634,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             property_type="Apartment",
             preferred_package=RealEstateEnquiry.PreferredPackage.STARTER,
-            quoted_price="294.00",
+            quoted_price="324.00",
             add_ons=["travel_supplement"],
             consent_to_contact=True,
         )
@@ -1629,9 +1650,9 @@ class BookingAgreementDocumentTests(TestCase):
         enquiry.save(update_fields=["travel_supplement_amount", "travel_details"])
         rendered = render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("Starter - €229", rendered)
+        self.assertIn("Starter - €259", rendered)
         self.assertIn("| Travel supplement included | €65.00 |", rendered)
-        self.assertIn("| Quoted services total | €294.00 |", rendered)
+        self.assertIn("| Quoted services total | €324.00 |", rendered)
         self.assertIn(enquiry.travel_details, rendered)
 
 
@@ -1733,7 +1754,7 @@ class RealEstateEnquiryTests(APITestCase):
             "access_provider": "enquirer",
             "readiness_acknowledged": True,
             "preferred_package": "pro",
-            "add_ons": ["floor_plan"],
+            "add_ons": [],
             "scheduling_preference": "request_date",
             "preferred_date": (timezone.localdate() + timedelta(days=14)).isoformat(),
             "preferred_time_window": "morning",
@@ -1767,7 +1788,7 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.data["included_photograph_count"], 30)
         self.assertEqual(
             response.data["included_photographs_label"],
-            "30 professionally edited interior and exterior photographs",
+            "30 professionally edited interior and exterior ground photographs",
         )
         self.assertNotIn("internal_notes", response.data)
         for private_pricing_field in (
@@ -2122,7 +2143,8 @@ class RealEstateEnquiryTests(APITestCase):
 
     def test_package_inclusions_cannot_be_selected_as_add_ons(self):
         for package, add_on in (
-            ("pro", "additional_social_cuts"),
+            ("starter", "floor_plan"),
+            ("pro", "floor_plan"),
             ("premium", "floor_plan"),
             ("premium", "virtual_tour_3d"),
         ):
@@ -2138,6 +2160,52 @@ class RealEstateEnquiryTests(APITestCase):
                 )
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("add_ons", response.data)
+
+    def test_floor_plan_add_on_remains_available_for_essential_and_custom(self):
+        for package in ("essential", "custom"):
+            with self.subTest(package=package):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "email": f"{package}@example.com",
+                        "preferred_package": package,
+                        "add_ons": ["floor_plan"],
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 201)
+
+    def test_additional_social_video_work_remains_available_for_pro_and_premium(self):
+        for package in ("pro", "premium"):
+            with self.subTest(package=package):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "email": f"social-{package}@example.com",
+                        "preferred_package": package,
+                        "add_ons": ["additional_social_cuts"],
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 201)
+
+    def test_new_package_summary_omits_a_manually_stored_duplicate_floor_plan(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Manual record",
+            email="manual@example.com",
+            phone="+353871234567",
+            client_type="private_seller",
+            property_address="Manual address",
+            county="Galway",
+            property_type="house",
+            preferred_package="starter",
+            consent_to_contact=True,
+            add_ons=["floor_plan"],
+        )
+
+        self.assertEqual(enquiry.get_add_ons_summary(), "None")
 
     def test_public_travel_selection_is_rejected_but_model_support_remains(self):
         response = self.client.post(
@@ -2163,9 +2231,12 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(historical.add_ons, ["travel_supplement"])
 
     def test_current_package_summaries_include_ground_video_and_floor_plan(self):
+        self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["starter"])
         self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
+        self.assertIn("vertical 9:16 social-media video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
         self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
         self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+        self.assertIn("vertical 9:16 social-media video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
 
     def test_authoritative_package_catalogue_preserves_prices_and_new_allowances(self):
         self.assertEqual(
@@ -2175,9 +2246,9 @@ class RealEstateEnquiryTests(APITestCase):
             },
             {
                 "essential": (175, 10),
-                "starter": (229, 25),
-                "pro": (399, 30),
-                "premium": (579, 35),
+                "starter": (259, 25),
+                "pro": (419, 30),
+                "premium": (549, 35),
                 "custom": (None, None),
                 "not_sure": (None, None),
             },
@@ -2190,7 +2261,7 @@ class RealEstateEnquiryTests(APITestCase):
             "premium": 35,
         }.items():
             self.assertIn(
-                f"{expected} professionally edited interior and exterior photographs",
+                f"{expected} professionally edited interior and exterior ground photographs",
                 RealEstateEnquiry.PACKAGE_SUMMARIES[code],
             )
 

@@ -2,18 +2,19 @@
 
 ## Effective scope
 
-The photograph allowances in `realestate.package_catalogue` apply to enquiries
-quoted or contracted after the backend catalogue release is deployed:
+The package rules in `realestate.package_catalogue` apply to enquiries quoted
+or contracted after the backend catalogue release is deployed:
 
-- Essential: 10 professionally edited interior and exterior photographs
-- Starter: 25 professionally edited interior and exterior photographs
-- Pro: 30 professionally edited interior and exterior photographs
-- Premium: 35 professionally edited interior and exterior photographs
+- Essential: EUR 175; 10 ground photographs
+- Starter: EUR 259; 25 ground photographs, 5-8 additional aerial stills and a measured 2D floor plan
+- Pro: EUR 419; 30 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, ground video, separate 4K drone video and one vertical 9:16 social video
+- Premium: EUR 549; 35 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, ground video, separate 4K drone video, one vertical 9:16 social video and a hosted 3D tour
 - Custom / Not sure: specifically agreed
 
-Package prices, other deliverables, add-ons, travel rules, and package-aware
-turnaround are unchanged. Additional edited photographs remain EUR 10 per
-photograph.
+Additional edited photographs remain EUR 10 per photograph. The EUR 75 floor-plan
+add-on is available for Essential and suitable Custom work, and is rejected as a
+duplicate selection for Starter, Pro and Premium. Alternative social formats,
+additional cuts and extra edits remain available for EUR 50.
 
 ## Historical protection
 

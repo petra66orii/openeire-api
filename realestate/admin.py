@@ -47,6 +47,7 @@ from .finance import can_release_realestate_delivery, create_realestate_balance_
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
 from .payments import prepare_realestate_deposit_checkout_session
+from .package_catalogue import get_included_add_ons
 from .timeline import record_timeline_event
 from .financial_documents import (
     build_invoice_filename, build_receipt_filename,
@@ -55,6 +56,37 @@ from .financial_documents import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class RealEstateEnquiryAdminForm(forms.ModelForm):
+    class Meta:
+        model = RealEstateEnquiry
+        fields = "__all__"
+
+    def clean(self):
+        cleaned_data = super().clean()
+        package = cleaned_data.get("preferred_package")
+        add_ons = set(cleaned_data.get("add_ons") or [])
+        conflicts = add_ons & get_included_add_ons(package)
+        instance_is_historical = bool(
+            self.instance.pk
+            and (
+                self.instance.status in {
+                    RealEstateEnquiry.Status.BOOKED,
+                    RealEstateEnquiry.Status.COMPLETED,
+                }
+                or self.instance.booking_agreement_snapshots.exists()
+            )
+        )
+        if conflicts and not instance_is_historical:
+            labels = ", ".join(
+                RealEstateEnquiry.ADD_ON_LABELS[key] for key in sorted(conflicts)
+            )
+            self.add_error(
+                "add_ons",
+                f"Already included with the selected package: {labels}.",
+            )
+        return cleaned_data
 
 
 class RealEstateTimelineEventInline(admin.TabularInline):
@@ -162,6 +194,7 @@ class RealEstateDeliveryOverrideInline(admin.TabularInline):
 
 @admin.register(RealEstateEnquiry, site=custom_admin_site)
 class RealEstateEnquiryAdmin(admin.ModelAdmin):
+    form = RealEstateEnquiryAdminForm
     change_form_template = "admin/realestate/enquiry/change_form.html"
     EMAIL_TIMELINE_EVENTS = {
         "quote": (
