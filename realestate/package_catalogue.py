@@ -5,6 +5,10 @@ ADDITIONAL_PHOTOGRAPH_PRICE_EUR = 10
 ADDITIONAL_PHOTOGRAPH_COPY = (
     "Additional edited photographs may be agreed at EUR 10 per photograph."
 )
+COMBINED_PROPERTY_VIDEO_DELIVERABLE = (
+    "One combined 4K property film — 60–90 sec ground footage + 60–90 sec "
+    "aerial footage (approx. 2–3 min total)"
+)
 
 
 @dataclass(frozen=True)
@@ -55,8 +59,8 @@ REAL_ESTATE_PACKAGE_CATALOGUE = {
         included_photographs=30,
         other_deliverables=(
             "5-8 aerial drone stills in addition to the ground photographs + "
-            "2D measured floor plan + 60-90s ground video + separate 60-90s "
-            "4K aerial drone video + one vertical 9:16 social-media video"
+            f"2D measured floor plan + {COMBINED_PROPERTY_VIDEO_DELIVERABLE} + "
+            "one vertical 9:16 social-media video"
         ),
         included_add_ons=frozenset({"floor_plan"}),
     ),
@@ -66,8 +70,8 @@ REAL_ESTATE_PACKAGE_CATALOGUE = {
         included_photographs=35,
         other_deliverables=(
             "5-8 aerial drone stills in addition to the ground photographs + "
-            "2D measured floor plan + 60-90s ground video + separate 60-90s "
-            "4K aerial drone video + one vertical 9:16 social-media video + "
+            f"2D measured floor plan + {COMBINED_PROPERTY_VIDEO_DELIVERABLE} + "
+            "one vertical 9:16 social-media video + "
             "hosted 3D virtual tour"
         ),
         included_add_ons=frozenset({"floor_plan", "virtual_tour_3d"}),

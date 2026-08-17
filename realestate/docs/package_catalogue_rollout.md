@@ -7,8 +7,8 @@ or contracted after the backend catalogue release is deployed:
 
 - Essential: EUR 175; 10 ground photographs
 - Starter: EUR 259; 25 ground photographs, 5-8 additional aerial stills and a measured 2D floor plan
-- Pro: EUR 419; 30 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, ground video, separate 4K drone video and one vertical 9:16 social video
-- Premium: EUR 549; 35 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, ground video, separate 4K drone video, one vertical 9:16 social video and a hosted 3D tour
+- Pro: EUR 419; 30 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, One combined 4K property film — 60–90 sec ground footage + 60–90 sec aerial footage (approx. 2–3 min total), and one separate vertical 9:16 social video
+- Premium: EUR 549; 35 ground photographs, 5-8 additional aerial stills, a measured 2D floor plan, One combined 4K property film — 60–90 sec ground footage + 60–90 sec aerial footage (approx. 2–3 min total), one separate vertical 9:16 social video and a hosted 3D tour
 - Custom / Not sure: specifically agreed
 
 Additional edited photographs remain EUR 10 per photograph. The EUR 75 floor-plan
