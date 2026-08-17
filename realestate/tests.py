@@ -646,6 +646,14 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                 )
                 self.assertIn(expected_copy, html)
                 self.assertIn(expected_copy, text)
+                if package_code in {"pro", "premium"}:
+                    for rendered in (html, text):
+                        self.assertIn(
+                            "One combined 4K property film — 60–90 sec ground footage + "
+                            "60–90 sec aerial footage (approx. 2–3 min total)",
+                            rendered,
+                        )
+                        self.assertNotIn("separate 60–90", rendered)
 
     def test_base_template_renders_logo_when_logo_url_exists(self):
         html = render_to_string(
@@ -1175,9 +1183,16 @@ class BookingAgreementDocumentTests(TestCase):
         )
 
         pdf_bytes = generate_booking_agreement_pdf(enquiry)
+        rendered = self._render_booking_agreement_markdown(enquiry)
 
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
         self.assertGreater(len(pdf_bytes), 1000)
+        self.assertIn(
+            "One combined 4K property film — 60–90 sec ground footage + "
+            "60–90 sec aerial footage (approx. 2–3 min total)",
+            rendered,
+        )
+        self.assertNotIn("separate 60–90", rendered)
         self.assertEqual(
             build_booking_agreement_filename(enquiry),
             f"openeire-booking-agreement-re-{enquiry.id}-jane-agent.pdf",
@@ -1780,6 +1795,11 @@ class RealEstateEnquiryTests(APITestCase):
                 RealEstateEnquiry.PreferredPackage.PRO
             ],
         )
+        self.assertIn(
+            "One combined 4K property film — 60–90 sec ground footage + "
+            "60–90 sec aerial footage (approx. 2–3 min total)",
+            response.data["package_summary"],
+        )
         self.assertEqual(response.data["turnaround_code"], TWO_BUSINESS_DAYS)
         self.assertEqual(
             response.data["turnaround_label"],
@@ -2230,13 +2250,19 @@ class RealEstateEnquiryTests(APITestCase):
         )
         self.assertEqual(historical.add_ons, ["travel_supplement"])
 
-    def test_current_package_summaries_include_ground_video_and_floor_plan(self):
+    def test_current_package_summaries_describe_one_combined_property_video(self):
         self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["starter"])
-        self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
-        self.assertIn("vertical 9:16 social-media video", RealEstateEnquiry.PACKAGE_SUMMARIES["pro"])
-        self.assertIn("ground video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+        expected_video = (
+            "One combined 4K property film — 60–90 sec ground footage + "
+            "60–90 sec aerial footage (approx. 2–3 min total)"
+        )
+        for package_code in ("pro", "premium"):
+            summary = RealEstateEnquiry.PACKAGE_SUMMARIES[package_code]
+            self.assertIn(expected_video, summary)
+            self.assertIn("vertical 9:16 social-media video", summary)
+            self.assertNotIn("separate 60", summary)
         self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
-        self.assertIn("vertical 9:16 social-media video", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+        self.assertIn("hosted 3D virtual tour", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
 
     def test_authoritative_package_catalogue_preserves_prices_and_new_allowances(self):
         self.assertEqual(
