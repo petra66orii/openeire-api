@@ -1550,6 +1550,10 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             try:
                 checkout = prepare_realestate_deposit_checkout_session(enquiry)
             except Exception as exc:
+                logger.exception(
+                    "Real estate deposit checkout preparation failed. enquiry_id=%s",
+                    enquiry.pk,
+                )
                 failed_count += 1
                 warnings.append(
                     f"{enquiry}: deposit checkout preparation failed "

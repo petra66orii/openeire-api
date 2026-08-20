@@ -311,7 +311,7 @@ class RealEstateEnquiry(models.Model):
 
     proposed_shoot_date = models.DateField(null=True, blank=True)
     booking_agreement_received = models.BooleanField(default=False)
-    deposit_payment_link = models.URLField(max_length=500, blank=True)
+    deposit_payment_link = models.URLField(max_length=2048, blank=True)
     stripe_deposit_session_id = models.CharField(max_length=255, blank=True)
     stripe_deposit_creation_key = models.CharField(max_length=255, blank=True)
     deposit_paid = models.BooleanField(default=False)
@@ -642,8 +642,8 @@ class RealEstateInvoice(models.Model):
     paid_at = models.DateTimeField(null=True, blank=True)
     stripe_invoice_id = models.CharField(max_length=255, blank=True)
     stripe_invoice_number = models.CharField(max_length=255, blank=True)
-    stripe_hosted_invoice_url = models.URLField(max_length=500, blank=True)
-    stripe_invoice_pdf_url = models.URLField(max_length=500, blank=True)
+    stripe_hosted_invoice_url = models.URLField(max_length=2048, blank=True)
+    stripe_invoice_pdf_url = models.URLField(max_length=2048, blank=True)
     stripe_invoice_status = models.CharField(max_length=32, blank=True)
     stripe_invoice_created_at = models.DateTimeField(null=True, blank=True)
     stripe_invoice_finalized_at = models.DateTimeField(null=True, blank=True)
@@ -653,7 +653,7 @@ class RealEstateInvoice(models.Model):
         related_name="realestate_invoices_marked_paid_out_of_band",
     )
     stripe_checkout_session_id = models.CharField(max_length=255, blank=True)
-    stripe_checkout_url = models.URLField(max_length=500, blank=True)
+    stripe_checkout_url = models.URLField(max_length=2048, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
