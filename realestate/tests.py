@@ -463,6 +463,33 @@ class RealEstateDepositCheckoutSessionTests(TestCase):
         self.assertEqual(self.enquiry.stripe_deposit_creation_key, "")
 
     @patch("realestate.payments.stripe.checkout.Session.create")
+    def test_checkout_preparation_persists_url_longer_than_500_characters(
+        self, mock_create
+    ):
+        self.enquiry.stripe_deposit_session_id = ""
+        self.enquiry.deposit_payment_link = ""
+        self.enquiry.save(
+            update_fields=("stripe_deposit_session_id", "deposit_payment_link")
+        )
+        checkout_url = "https://checkout.stripe.com/c/pay/" + ("a" * 600)
+        self.assertGreater(len(checkout_url), 500)
+        self.assertEqual(
+            RealEstateEnquiry._meta.get_field("deposit_payment_link").max_length,
+            2048,
+        )
+        mock_create.return_value = {
+            "id": "cs_test_long_checkout_url",
+            "url": checkout_url,
+        }
+
+        result = prepare_realestate_deposit_checkout_session(self.enquiry)
+
+        self.assertEqual(result.checkout_url, checkout_url)
+        self.enquiry.refresh_from_db()
+        self.assertEqual(self.enquiry.deposit_payment_link, checkout_url)
+        self.assertEqual(len(self.enquiry.deposit_payment_link), len(checkout_url))
+
+    @patch("realestate.payments.stripe.checkout.Session.create")
     def test_permanent_creation_error_clears_attempt_key(self, mock_create):
         self.enquiry.stripe_deposit_session_id = ""
         self.enquiry.deposit_payment_link = ""
