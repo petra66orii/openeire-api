@@ -182,11 +182,7 @@ def _email_financial_context(enquiry):
     full_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.FULL)
     invoice = full_invoice or balance_invoice or deposit_invoice or (invoices[0] if invoices else None)
 
-    total_required = (
-        getattr(enquiry, "custom_required_total", None)
-        if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
-        else None
-    ) or (full_invoice.total if full_invoice else None) or getattr(enquiry, "quoted_total", None) or getattr(enquiry, "quoted_price", None)
+    total_required = enquiry.adjusted_required_total
     deposit_amount = deposit_invoice.total if deposit_invoice else getattr(enquiry, "quoted_deposit_amount", None)
     balance_due = balance_invoice.total if balance_invoice else getattr(enquiry, "quoted_balance_due", None)
     if arrangement != RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
@@ -236,6 +232,8 @@ def _email_financial_context(enquiry):
         "is_full_on_shoot_day": arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
         "is_custom_payment": arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM,
         "total_required": total_required or "",
+        "original_required_total": enquiry.original_required_total,
+        "total_active_adjustments": enquiry.total_active_adjustments,
         "deposit_amount": deposit_amount or "",
         "balance_due": balance_due or "",
         "payment_due_date": _format_display_date(due_date),

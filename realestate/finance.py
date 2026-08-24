@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, time
 
@@ -16,6 +17,7 @@ from .models import (
     RealEstateDeliveryOverride,
     RealEstateDocumentSequence,
     RealEstateEnquiry,
+    RealEstateFinancialAdjustment,
     RealEstateInvoice,
     RealEstatePayment,
     RealEstateTimelineEvent,
@@ -28,8 +30,31 @@ MONEY = Decimal("0.01")
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class RealEstateFinancialSummary:
+    original_required_total: Decimal
+    total_active_adjustments: Decimal
+    adjusted_required_total: Decimal
+    total_cleared_payments: Decimal
+    adjusted_balance_due: Decimal
+
+
 def money(value):
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+
+def get_realestate_financial_summary(enquiry):
+    original = money(enquiry.original_required_total)
+    adjustments = money(enquiry.total_active_adjustments)
+    adjusted = money(original - adjustments)
+    cleared = money(enquiry.total_cleared_payments)
+    return RealEstateFinancialSummary(
+        original_required_total=original,
+        total_active_adjustments=adjustments,
+        adjusted_required_total=adjusted,
+        total_cleared_payments=cleared,
+        adjusted_balance_due=money(max(adjusted - cleared, Decimal("0.00"))),
+    )
 
 
 def allocate_document_number(kind, *, at=None):
@@ -50,9 +75,13 @@ def _invoice_amounts(enquiry, invoice_type):
     if invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT:
         total = money(snapshot["deposit_amount"])
     elif invoice_type == RealEstateInvoice.InvoiceType.BALANCE:
-        total = money(snapshot["balance_due"])
+        total = money(
+            enquiry.adjusted_required_total - Decimal(snapshot["deposit_amount"])
+        )
     else:
-        total = money(snapshot["total_including_vat"])
+        total = money(enquiry.adjusted_required_total)
+    if total <= 0:
+        raise ValidationError("The adjusted invoice total must be greater than zero.")
 
     vat_rate = Decimal(snapshot["vat_rate"])
     if snapshot["vat_registered"] and vat_rate:
@@ -65,7 +94,7 @@ def _invoice_amounts(enquiry, invoice_type):
 
 
 @transaction.atomic
-def ensure_realestate_invoice(enquiry, invoice_type, *, issue=True):
+def ensure_realestate_invoice(enquiry, invoice_type, *, issue=True, supersedes=None):
     enquiry = RealEstateEnquiry.objects.select_for_update().get(pk=enquiry.pk)
     existing = RealEstateInvoice.objects.filter(
         enquiry=enquiry, invoice_type=invoice_type
@@ -109,6 +138,7 @@ def ensure_realestate_invoice(enquiry, invoice_type, *, issue=True):
         customer_phone_snapshot=enquiry.phone,
         property_reference_snapshot=enquiry.property_address,
         job_reference_snapshot=f"RE-{enquiry.pk}",
+        supersedes=supersedes,
         issued_at=now if issue else None,
         due_at=due_at if issue else None,
     )
@@ -360,6 +390,213 @@ def void_local_realestate_invoice(invoice, *, user=None):
         return invoice, True
 
 
+def _final_invoice_type(enquiry):
+    if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
+        return RealEstateInvoice.InvoiceType.BALANCE
+    if enquiry.payment_arrangement in {
+        RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
+        RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+    }:
+        return RealEstateInvoice.InvoiceType.FULL
+    return None
+
+
+def _assert_invoice_can_be_locally_superseded(invoice):
+    if not invoice:
+        return
+    if invoice.status in {
+        RealEstateInvoice.Status.PARTIALLY_PAID,
+        RealEstateInvoice.Status.PAID,
+    } or invoice.payments.exists():
+        raise ValidationError(
+            "The current final invoice has payment history and cannot be superseded."
+        )
+    stripe_references = (
+        invoice.stripe_invoice_id,
+        invoice.stripe_invoice_number,
+        invoice.stripe_hosted_invoice_url,
+        invoice.stripe_invoice_pdf_url,
+        invoice.stripe_checkout_session_id,
+        invoice.stripe_checkout_url,
+    )
+    if any(str(value or "").strip() for value in stripe_references):
+        raise ValidationError(
+            "The current final invoice already has a Stripe identity. Use the separate "
+            "Stripe credit-note or remote invoice revision workflow."
+        )
+
+
+def _replace_local_final_invoice(enquiry, invoice, *, user):
+    if not invoice:
+        return None
+    _assert_invoice_can_be_locally_superseded(invoice)
+    issue = invoice.status != RealEstateInvoice.Status.DRAFT
+    old_invoice, _changed = void_local_realestate_invoice(invoice, user=user)
+    replacement, created = ensure_realestate_invoice(
+        enquiry,
+        invoice.invoice_type,
+        issue=issue,
+        supersedes=old_invoice,
+    )
+    if not created:
+        raise ValidationError("A replacement final invoice already exists.")
+    record_timeline_event(
+        enquiry,
+        RealEstateTimelineEvent.EventType.NOTE,
+        actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+        title="Invoice superseded",
+        notes=(
+            f"Invoice {old_invoice.invoice_number} was superseded by "
+            f"{replacement.invoice_number}."
+        ),
+        created_by=user,
+    )
+    return replacement
+
+
+@transaction.atomic
+def apply_realestate_financial_adjustment(
+    *, enquiry, adjustment_type, amount, customer_description, internal_reason,
+    user, request_token,
+):
+    if not user or not user.is_staff or not user.has_perm(
+        "realestate.apply_financial_adjustment"
+    ):
+        raise PermissionDenied("Financial-adjustment permission is required.")
+
+    enquiry = RealEstateEnquiry.objects.select_for_update().get(pk=enquiry.pk)
+    amount = money(amount)
+    customer_description = str(customer_description or "").strip()
+    internal_reason = str(internal_reason or "").strip()
+    existing = RealEstateFinancialAdjustment.objects.filter(
+        request_token=request_token
+    ).first()
+    if existing:
+        if (
+            existing.enquiry_id != enquiry.pk
+            or existing.adjustment_type != adjustment_type
+            or existing.amount != amount
+            or existing.customer_description != customer_description
+            or existing.internal_reason != internal_reason
+        ):
+            raise ValidationError(
+                "The adjustment request token is already in use for different details."
+            )
+        return existing, None, False
+
+    if amount <= 0:
+        raise ValidationError("Adjustment amount must be greater than zero.")
+    if adjustment_type not in RealEstateFinancialAdjustment.AdjustmentType.values:
+        raise ValidationError("Select a valid adjustment type.")
+    if not customer_description:
+        raise ValidationError("A customer-safe description is required.")
+    if not internal_reason:
+        raise ValidationError("An internal reason is required.")
+
+    original = money(enquiry.original_required_total)
+    if original <= 0:
+        raise ValidationError("The enquiry has no agreed required total.")
+    adjusted_total = money(
+        original - enquiry.total_active_adjustments - amount
+    )
+    cleared = money(enquiry.total_cleared_payments)
+    if adjusted_total < cleared:
+        raise ValidationError(
+            "The adjustment would reduce the required total below cleared payments."
+        )
+
+    final_type = _final_invoice_type(enquiry)
+    current_final = None
+    if final_type:
+        current_final = enquiry.invoices.exclude(
+            status=RealEstateInvoice.Status.VOID
+        ).filter(invoice_type=final_type).first()
+        _assert_invoice_can_be_locally_superseded(current_final)
+    if final_type == RealEstateInvoice.InvoiceType.BALANCE:
+        deposit_total = money(
+            enquiry.invoices.exclude(status=RealEstateInvoice.Status.VOID)
+            .filter(invoice_type=RealEstateInvoice.InvoiceType.DEPOSIT)
+            .values_list("total", flat=True)
+            .first()
+            or enquiry.quoted_deposit_amount
+            or "0.00"
+        )
+        if adjusted_total <= deposit_total:
+            raise ValidationError(
+                "The adjustment would leave no positive balance invoice after the deposit."
+            )
+
+    adjustment = RealEstateFinancialAdjustment.objects.create(
+        enquiry=enquiry,
+        adjustment_type=adjustment_type,
+        amount=amount,
+        customer_description=customer_description,
+        internal_reason=internal_reason,
+        created_by=user,
+        request_token=request_token,
+    )
+    replacement = _replace_local_final_invoice(
+        enquiry, current_final, user=user
+    )
+    record_timeline_event(
+        enquiry,
+        RealEstateTimelineEvent.EventType.NOTE,
+        actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+        title="Financial adjustment applied",
+        notes=(
+            f"{adjustment.get_adjustment_type_display()} of EUR {amount} applied as "
+            f"'{customer_description}'."
+        ),
+        created_by=user,
+    )
+    return adjustment, replacement, True
+
+
+@transaction.atomic
+def reverse_realestate_financial_adjustment(*, adjustment, reason, user):
+    if not user or not user.is_staff or not user.has_perm(
+        "realestate.reverse_financial_adjustment"
+    ):
+        raise PermissionDenied("Financial-adjustment reversal permission is required.")
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValidationError("A reversal reason is required.")
+
+    adjustment = (
+        RealEstateFinancialAdjustment.objects.select_for_update()
+        .select_related("enquiry")
+        .get(pk=adjustment.pk)
+    )
+    enquiry = RealEstateEnquiry.objects.select_for_update().get(pk=adjustment.enquiry_id)
+    if adjustment.reversed_at:
+        return adjustment, None, False
+
+    final_type = _final_invoice_type(enquiry)
+    current_final = None
+    if final_type:
+        current_final = enquiry.invoices.exclude(
+            status=RealEstateInvoice.Status.VOID
+        ).filter(invoice_type=final_type).first()
+        _assert_invoice_can_be_locally_superseded(current_final)
+
+    adjustment.reversed_by = user
+    adjustment.reversed_at = timezone.now()
+    adjustment.reversal_reason = reason
+    adjustment.save(update_fields=("reversed_by", "reversed_at", "reversal_reason"))
+    replacement = _replace_local_final_invoice(enquiry, current_final, user=user)
+    record_timeline_event(
+        enquiry,
+        RealEstateTimelineEvent.EventType.NOTE,
+        actor_type=RealEstateTimelineEvent.ActorType.ADMIN,
+        title="Financial adjustment reversed",
+        notes=(
+            f"Adjustment {adjustment.pk} for EUR {adjustment.amount} was reversed."
+        ),
+        created_by=user,
+    )
+    return adjustment, replacement, True
+
+
 def _successful_total(invoice):
     return invoice.payments.filter(status=RealEstatePayment.Status.SUCCEEDED).aggregate(
         value=Sum("amount")
@@ -518,10 +755,16 @@ def can_release_realestate_delivery(enquiry):
         invoice_type__in=(RealEstateInvoice.InvoiceType.BALANCE, RealEstateInvoice.InvoiceType.FULL)
     ).exists()
     if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM:
-        required = enquiry.custom_required_total or Decimal("0")
+        required = enquiry.adjusted_required_total
         invoiced = sum((invoice.total for invoice in invoices), Decimal("0"))
         has_final_invoice = bool(invoices.exists() and invoiced >= required)
-    if has_final_invoice and invoices.exists() and all(invoice.amount_outstanding == 0 for invoice in invoices):
+    summary = get_realestate_financial_summary(enquiry)
+    if (
+        has_final_invoice
+        and invoices.exists()
+        and summary.total_cleared_payments >= summary.adjusted_required_total
+        and all(invoice.amount_outstanding == 0 for invoice in invoices)
+    ):
         return True
     return enquiry.delivery_overrides.filter(revoked_at__isnull=True).exists()
 

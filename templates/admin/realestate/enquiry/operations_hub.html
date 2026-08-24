@@ -118,7 +118,9 @@
     <div class="re-ops-card">
       <h3>Financial</h3>
       <dl class="re-ops-list">
-        <dt>Total</dt><dd>{{ hub.financial.total }}</dd>
+        <dt>Original total</dt><dd>{{ hub.financial.original_total }}</dd>
+        <dt>Adjustments</dt><dd>- {{ hub.financial.adjustments }}</dd>
+        <dt>Adjusted total</dt><dd>{{ hub.financial.adjusted_total }}</dd>
         <dt>Deposit required</dt><dd>{{ hub.financial.deposit_required }}</dd>
         <dt>Deposit paid</dt><dd>{{ hub.financial.deposit_paid }}</dd>
         <dt>Balance due</dt><dd>{{ hub.financial.balance_due }}</dd>
@@ -150,6 +152,28 @@
     {% for button in hub.buttons %}
       <a class="re-ops-button {{ button.style }}" href="{{ button.href }}">{{ button.label }}</a>
     {% endfor %}
+  </div>
+
+  <div class="re-ops-table-wrap">
+    <h3>Financial adjustments</h3>
+    <table class="re-ops-table">
+      <thead><tr><th>Type</th><th>Amount</th><th>Customer description</th><th>State</th><th>Created by</th><th>Created</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for adjustment in hub.adjustments %}
+          <tr>
+            <td>{{ adjustment.type }}</td>
+            <td>- {{ adjustment.amount }}</td>
+            <td>{{ adjustment.customer_description }}</td>
+            <td>{{ adjustment.state }}</td>
+            <td>{{ adjustment.created_by }}</td>
+            <td>{{ adjustment.created_at }}</td>
+            <td>{% if adjustment.reverse_url %}<a href="{{ adjustment.reverse_url }}">Reverse</a>{% else %}&mdash;{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="7">No financial adjustments.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 
   <div class="re-ops-table-wrap">

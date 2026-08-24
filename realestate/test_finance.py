@@ -1,28 +1,40 @@
 from decimal import Decimal
 from io import BytesIO, StringIO
 from pathlib import Path
+import threading
 from unittest.mock import Mock, patch
+import uuid
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.management import call_command, CommandError
-from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
-from django.db import connection
+from django.test import (
+    RequestFactory,
+    TestCase,
+    TransactionTestCase,
+    override_settings,
+    skipUnlessDBFeature,
+)
+from django.db import close_old_connections, connection, connections
 from django.db.migrations.executor import MigrationExecutor
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 
 from .documents import build_booking_agreement_filename, generate_booking_agreement_pdf
+from .emails import build_realestate_email_context
 from .finance import (
     _refresh_invoice_and_compatibility,
+    apply_realestate_financial_adjustment,
     can_release_realestate_delivery,
     create_realestate_balance_checkout_session,
     ensure_standard_realestate_invoices,
     ensure_invoices_for_arrangement,
     grant_delivery_override,
+    get_realestate_financial_summary,
     record_realestate_payment,
+    reverse_realestate_financial_adjustment,
     revoke_delivery_override,
     void_local_realestate_invoice,
 )
@@ -40,7 +52,13 @@ from .financial_documents import (
     generate_cash_receipt_pdf,
     generate_invoice_pdf,
 )
-from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment, RealEstateTimelineEvent
+from .models import (
+    RealEstateEnquiry,
+    RealEstateFinancialAdjustment,
+    RealEstateInvoice,
+    RealEstatePayment,
+    RealEstateTimelineEvent,
+)
 from .payments import _stripe_metadata, calculate_realestate_deposit_amounts
 from checkout.views import StripeWebhookView
 
@@ -1502,3 +1520,353 @@ class RealEstateAdminOperationsHubTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(enquiry.invoices.exists())
+
+
+class RealEstateFinancialAdjustmentTests(TestCase):
+    def setUp(self):
+        self.enquiry = RealEstateEnquiry.objects.create(
+            name="Fictional Agent",
+            email="fictional-agent@example.com",
+            phone="123",
+            client_type=RealEstateEnquiry.ClientType.ESTATE_AGENT,
+            property_address="Example Property",
+            county="Galway",
+            property_type="House",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+            quoted_price=Decimal("294.00"),
+        )
+        calculate_realestate_deposit_amounts(self.enquiry)
+        self.deposit, self.original_balance = ensure_standard_realestate_invoices(
+            self.enquiry
+        )
+        self.staff = get_user_model().objects.create_user(
+            "finance_staff", is_staff=True
+        )
+        self.staff.user_permissions.add(
+            Permission.objects.get(codename="view_realestateenquiry"),
+            Permission.objects.get(codename="change_realestateenquiry"),
+            Permission.objects.get(codename="apply_financial_adjustment"),
+            Permission.objects.get(codename="reverse_financial_adjustment"),
+        )
+        record_realestate_payment(
+            invoice=self.deposit,
+            amount=Decimal("88.20"),
+            method=RealEstatePayment.Method.BANK_TRANSFER,
+            paid_at=timezone.now(),
+            recorded_by=self.staff,
+            external_reference="Deposit received",
+            notes="Cleared deposit",
+        )
+
+    def apply_goodwill(self, *, token=None, amount="50.00", user=None):
+        return apply_realestate_financial_adjustment(
+            enquiry=self.enquiry,
+            adjustment_type=RealEstateFinancialAdjustment.AdjustmentType.GOODWILL_CREDIT,
+            amount=Decimal(amount),
+            customer_description="Goodwill adjustment",
+            internal_reason="Approved fictional service-recovery adjustment",
+            user=user or self.staff,
+            request_token=token or uuid.uuid4(),
+        )
+
+    def test_adjustment_preserves_deposit_and_supersedes_balance_once(self):
+        token = uuid.uuid4()
+        adjustment, replacement, created = self.apply_goodwill(token=token)
+
+        self.assertTrue(created)
+        self.assertEqual(adjustment.amount, Decimal("50.00"))
+        self.deposit.refresh_from_db()
+        self.original_balance.refresh_from_db()
+        self.assertEqual(self.deposit.status, RealEstateInvoice.Status.PAID)
+        self.assertEqual(self.deposit.total, Decimal("88.20"))
+        self.assertEqual(self.deposit.amount_paid, Decimal("88.20"))
+        self.assertEqual(self.original_balance.total, Decimal("205.80"))
+        self.assertEqual(self.original_balance.status, RealEstateInvoice.Status.VOID)
+        self.assertEqual(replacement.total, Decimal("155.80"))
+        self.assertEqual(replacement.supersedes, self.original_balance)
+        self.assertEqual(self.original_balance.superseded_by, replacement)
+
+        summary = get_realestate_financial_summary(self.enquiry)
+        self.assertEqual(summary.original_required_total, Decimal("294.00"))
+        self.assertEqual(summary.total_active_adjustments, Decimal("50.00"))
+        self.assertEqual(summary.adjusted_required_total, Decimal("244.00"))
+        self.assertEqual(summary.total_cleared_payments, Decimal("88.20"))
+        self.assertEqual(summary.adjusted_balance_due, Decimal("155.80"))
+
+        repeated_adjustment, repeated_replacement, repeated_created = self.apply_goodwill(
+            token=token
+        )
+        self.assertEqual(repeated_adjustment, adjustment)
+        self.assertIsNone(repeated_replacement)
+        self.assertFalse(repeated_created)
+        self.assertEqual(RealEstateFinancialAdjustment.objects.count(), 1)
+        self.assertEqual(
+            self.enquiry.invoices.filter(
+                invoice_type=RealEstateInvoice.InvoiceType.BALANCE,
+                status=RealEstateInvoice.Status.ISSUED,
+            ).count(),
+            1,
+        )
+
+    def test_replacement_payment_unlocks_delivery_but_void_invoice_never_does(self):
+        _adjustment, replacement, _created = self.apply_goodwill()
+        self.assertFalse(can_release_realestate_delivery(self.enquiry))
+        with self.assertRaisesMessage(ValidationError, "void invoice"):
+            record_realestate_payment(
+                invoice=self.original_balance,
+                amount=Decimal("155.80"),
+                method=RealEstatePayment.Method.OTHER,
+                paid_at=timezone.now(),
+            )
+        self.assertFalse(can_release_realestate_delivery(self.enquiry))
+
+        record_realestate_payment(
+            invoice=replacement,
+            amount=Decimal("155.80"),
+            method=RealEstatePayment.Method.BANK_TRANSFER,
+            paid_at=timezone.now(),
+            recorded_by=self.staff,
+            external_reference="Final balance",
+            notes="Cleared balance",
+        )
+        self.assertTrue(can_release_realestate_delivery(self.enquiry))
+
+    def test_internal_reason_is_absent_from_customer_outputs_and_stripe_metadata(self):
+        internal_reason = "Approved fictional service-recovery adjustment"
+        _adjustment, replacement, _created = self.apply_goodwill()
+        pdf_text = generate_invoice_pdf(replacement).decode("latin-1")
+        self.assertIn("Goodwill adjustment", pdf_text)
+        self.assertIn("155.80", pdf_text)
+        self.assertNotIn(internal_reason, pdf_text)
+        metadata = __import__(
+            "realestate.stripe_invoices", fromlist=["_stripe_metadata"]
+        )._stripe_metadata(replacement)
+        self.assertEqual(metadata["realestate_invoice_number"], replacement.invoice_number)
+        self.assertNotIn(internal_reason, repr(metadata))
+        email_context = build_realestate_email_context(self.enquiry)
+        self.assertNotIn(internal_reason, repr(email_context))
+
+    @patch("realestate.stripe_invoices.stripe.InvoiceItem.create")
+    @patch("realestate.stripe_invoices.stripe.Invoice.finalize_invoice")
+    @patch("realestate.stripe_invoices.stripe.Invoice.create")
+    @patch("realestate.stripe_invoices.stripe.Customer.create")
+    def test_stripe_replacement_requests_exact_adjusted_balance_without_internal_reason(
+        self, customer_create, invoice_create, finalize, item_create
+    ):
+        internal_reason = "Approved fictional service-recovery adjustment"
+        _adjustment, replacement, _created = self.apply_goodwill()
+        customer_create.return_value = {"id": "cus_adjusted"}
+        invoice_create.return_value = {"id": "in_adjusted"}
+        finalize.return_value = {
+            "id": "in_adjusted",
+            "number": "STRIPE-ADJUSTED",
+            "status": "open",
+            "hosted_invoice_url": "https://invoice.stripe.test/adjusted",
+            "invoice_pdf": "https://invoice.stripe.test/adjusted.pdf",
+            "created": 1784650000,
+        }
+
+        local_invoice, created = create_stripe_invoice(replacement)
+
+        self.assertTrue(created)
+        self.assertEqual(local_invoice.stripe_invoice_id, "in_adjusted")
+        self.assertEqual(item_create.call_args.kwargs["amount"], 15580)
+        self.assertEqual(
+            item_create.call_args.kwargs["metadata"]["realestate_invoice_number"],
+            replacement.invoice_number,
+        )
+        customer_visible = repr(
+            {
+                "invoice": invoice_create.call_args.kwargs,
+                "item": item_create.call_args.kwargs,
+            }
+        )
+        self.assertIn("Goodwill adjustment", customer_visible)
+        self.assertNotIn(internal_reason, customer_visible)
+
+    def test_invalid_excessive_and_unauthorised_adjustments_are_blocked(self):
+        unprivileged = get_user_model().objects.create_user("ordinary_staff", is_staff=True)
+        with self.assertRaises(PermissionDenied):
+            self.apply_goodwill(user=unprivileged)
+        for amount in ("0.00", "-1.00", "205.81"):
+            with self.subTest(amount=amount), self.assertRaises(ValidationError):
+                self.apply_goodwill(amount=amount)
+        self.assertFalse(RealEstateFinancialAdjustment.objects.exists())
+        self.original_balance.refresh_from_db()
+        self.assertEqual(self.original_balance.status, RealEstateInvoice.Status.ISSUED)
+
+    def test_stripe_identity_blocks_adjustment_without_local_changes(self):
+        self.original_balance.stripe_invoice_id = "in_existing"
+        self.original_balance.save(update_fields=("stripe_invoice_id", "updated_at"))
+        with self.assertRaisesMessage(ValidationError, "Stripe identity"):
+            self.apply_goodwill()
+        self.assertFalse(RealEstateFinancialAdjustment.objects.exists())
+        self.original_balance.refresh_from_db()
+        self.assertEqual(self.original_balance.status, RealEstateInvoice.Status.ISSUED)
+
+    def test_admin_adjustment_form_requires_specific_permission_and_confirmation(self):
+        url = reverse(
+            "customadmin:realestate_realestateenquiry_ops_action",
+            args=(self.enquiry.pk, "apply-financial-adjustment"),
+        )
+        viewer = get_user_model().objects.create_user(
+            "change_only", is_staff=True
+        )
+        viewer.user_permissions.add(
+            Permission.objects.get(codename="view_realestateenquiry"),
+            Permission.objects.get(codename="change_realestateenquiry"),
+        )
+        self.client.force_login(viewer)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            url,
+            {
+                "adjustment_type": RealEstateFinancialAdjustment.AdjustmentType.GOODWILL_CREDIT,
+                "amount": "50.00",
+                "customer_description": "Goodwill adjustment",
+                "internal_reason": "Private operational reason",
+                "request_token": str(uuid.uuid4()),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "This field is required")
+        self.assertFalse(RealEstateFinancialAdjustment.objects.exists())
+
+        response = self.client.post(
+            url,
+            {
+                "adjustment_type": RealEstateFinancialAdjustment.AdjustmentType.GOODWILL_CREDIT,
+                "amount": "50.00",
+                "customer_description": "Goodwill adjustment",
+                "internal_reason": "Private operational reason",
+                "confirmation": "on",
+                "request_token": str(uuid.uuid4()),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(RealEstateFinancialAdjustment.objects.count(), 1)
+
+    def test_reversal_supersedes_unpaid_replacement_and_paid_reversal_is_blocked(self):
+        adjustment, replacement, _created = self.apply_goodwill()
+        reversed_adjustment, restored_invoice, changed = reverse_realestate_financial_adjustment(
+            adjustment=adjustment,
+            reason="Goodwill decision withdrawn after review",
+            user=self.staff,
+        )
+        self.assertTrue(changed)
+        self.assertFalse(reversed_adjustment.is_active)
+        replacement.refresh_from_db()
+        self.assertEqual(replacement.status, RealEstateInvoice.Status.VOID)
+        self.assertEqual(restored_invoice.total, Decimal("205.80"))
+        self.assertEqual(restored_invoice.supersedes, replacement)
+        self.assertEqual(self.enquiry.total_active_adjustments, Decimal("0.00"))
+
+        second_adjustment, second_replacement, _created = self.apply_goodwill()
+        record_realestate_payment(
+            invoice=second_replacement,
+            amount=second_replacement.total,
+            method=RealEstatePayment.Method.BANK_TRANSFER,
+            paid_at=timezone.now(),
+            recorded_by=self.staff,
+            external_reference="Paid revised balance",
+            notes="Cleared",
+        )
+        with self.assertRaisesMessage(ValidationError, "payment history"):
+            reverse_realestate_financial_adjustment(
+                adjustment=second_adjustment,
+                reason="Unsafe after payment",
+                user=self.staff,
+            )
+        second_adjustment.refresh_from_db()
+        self.assertTrue(second_adjustment.is_active)
+
+
+@skipUnlessDBFeature("has_select_for_update")
+class RealEstateFinancialAdjustmentConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.enquiry = RealEstateEnquiry.objects.create(
+            name="Fictional Concurrent Client",
+            email="concurrent@example.com",
+            phone="123",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Example Concurrent Property",
+            county="Galway",
+            property_type="House",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True,
+            quoted_price=Decimal("294.00"),
+        )
+        calculate_realestate_deposit_amounts(self.enquiry)
+        deposit, _balance = ensure_standard_realestate_invoices(self.enquiry)
+        self.staff = get_user_model().objects.create_user(
+            "concurrent_finance_staff", is_staff=True
+        )
+        self.staff.user_permissions.add(
+            Permission.objects.get(codename="apply_financial_adjustment")
+        )
+        record_realestate_payment(
+            invoice=deposit,
+            amount=Decimal("88.20"),
+            method=RealEstatePayment.Method.BANK_TRANSFER,
+            paid_at=timezone.now(),
+            recorded_by=self.staff,
+            external_reference="Fictional deposit",
+            notes="Concurrency test",
+        )
+
+    def test_same_request_token_concurrently_creates_one_adjustment_and_replacement(self):
+        request_token = uuid.uuid4()
+        barrier = threading.Barrier(2)
+        created_results = []
+        errors = []
+
+        def apply_from_independent_connection():
+            close_old_connections()
+            try:
+                user = get_user_model().objects.get(pk=self.staff.pk)
+                enquiry = RealEstateEnquiry.objects.get(pk=self.enquiry.pk)
+                barrier.wait(timeout=10)
+                _adjustment, _replacement, created = apply_realestate_financial_adjustment(
+                    enquiry=enquiry,
+                    adjustment_type=RealEstateFinancialAdjustment.AdjustmentType.GOODWILL_CREDIT,
+                    amount=Decimal("50.00"),
+                    customer_description="Goodwill adjustment",
+                    internal_reason="Approved fictional concurrency test",
+                    user=user,
+                    request_token=request_token,
+                )
+                created_results.append(created)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=apply_from_independent_connection)
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertCountEqual(created_results, [True, False])
+        self.assertEqual(RealEstateFinancialAdjustment.objects.count(), 1)
+        active_balance = self.enquiry.invoices.get(
+            invoice_type=RealEstateInvoice.InvoiceType.BALANCE,
+            status=RealEstateInvoice.Status.ISSUED,
+        )
+        self.assertEqual(active_balance.total, Decimal("155.80"))
+        self.assertEqual(
+            self.enquiry.invoices.filter(
+                invoice_type=RealEstateInvoice.InvoiceType.BALANCE
+            ).count(),
+            2,
+        )

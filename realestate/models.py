@@ -349,6 +349,43 @@ class RealEstateEnquiry(models.Model):
     def __str__(self):
         return f"[{self.county}] {self.get_preferred_package_display()} - {self.name}"
 
+    @property
+    def original_required_total(self):
+        value = (
+            self.custom_required_total
+            if self.payment_arrangement == self.PaymentArrangement.CUSTOM
+            else (self.quoted_total or self.quoted_price)
+        )
+        return Decimal(value or "0.00")
+
+    @property
+    def total_active_adjustments(self):
+        if not self.pk:
+            return Decimal("0.00")
+        return self.financial_adjustments.filter(reversed_at__isnull=True).aggregate(
+            value=Sum("amount")
+        )["value"] or Decimal("0.00")
+
+    @property
+    def adjusted_required_total(self):
+        return max(
+            self.original_required_total - self.total_active_adjustments,
+            Decimal("0.00"),
+        )
+
+    @property
+    def total_cleared_payments(self):
+        if not self.pk:
+            return Decimal("0.00")
+        return sum((invoice.amount_paid for invoice in self.invoices.all()), Decimal("0.00"))
+
+    @property
+    def adjusted_balance_due(self):
+        return max(
+            self.adjusted_required_total - self.total_cleared_payments,
+            Decimal("0.00"),
+        )
+
     def get_preferred_package_summary(self):
         persisted_scope = self._get_persisted_package_scope()
         if persisted_scope:
@@ -654,6 +691,13 @@ class RealEstateInvoice(models.Model):
     )
     stripe_checkout_session_id = models.CharField(max_length=255, blank=True)
     stripe_checkout_url = models.URLField(max_length=2048, blank=True)
+    supersedes = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="superseded_by",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -709,6 +753,72 @@ class RealEstateInvoice(models.Model):
 
     def __str__(self):
         return self.invoice_number
+
+
+class RealEstateFinancialAdjustment(models.Model):
+    class AdjustmentType(models.TextChoices):
+        GOODWILL_CREDIT = "goodwill_credit", "Goodwill credit"
+        NEGOTIATED_DISCOUNT = "negotiated_discount", "Negotiated discount"
+        PRICING_CORRECTION = "pricing_correction", "Pricing correction"
+
+    enquiry = models.ForeignKey(
+        RealEstateEnquiry,
+        on_delete=models.PROTECT,
+        related_name="financial_adjustments",
+    )
+    adjustment_type = models.CharField(max_length=32, choices=AdjustmentType.choices)
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    customer_description = models.CharField(max_length=255)
+    internal_reason = models.TextField()
+    request_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="realestate_financial_adjustments_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_financial_adjustments_reversed",
+    )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversal_reason = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.CheckConstraint(
+                check=Q(amount__gt=0),
+                name="re_financial_adjustment_amount_positive",
+            ),
+        ]
+        permissions = (
+            ("apply_financial_adjustment", "Can apply financial adjustment"),
+            ("reverse_financial_adjustment", "Can reverse financial adjustment"),
+        )
+
+    @property
+    def is_active(self):
+        return self.reversed_at is None
+
+    def clean(self):
+        super().clean()
+        if self.amount is None or self.amount <= 0:
+            raise ValidationError({"amount": "Adjustment amount must be greater than zero."})
+        if not str(self.customer_description or "").strip():
+            raise ValidationError({"customer_description": "A customer description is required."})
+        if not str(self.internal_reason or "").strip():
+            raise ValidationError({"internal_reason": "An internal reason is required."})
+
+    def __str__(self):
+        return f"{self.get_adjustment_type_display()} - EUR {self.amount}"
 
 
 class RealEstatePayment(models.Model):
