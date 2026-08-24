@@ -69,6 +69,17 @@ def create_stripe_invoice(local_invoice, *, send=False):
     if local_invoice.due_at:
         due_days = max(1, (local_invoice.due_at.date() - timezone.localdate()).days)
     metadata = _stripe_metadata(local_invoice)
+    adjustment_descriptions = ", ".join(
+        f"{item.customer_description}: -EUR {item.amount}"
+        for item in local_invoice.enquiry.financial_adjustments.filter(
+            reversed_at__isnull=True
+        ).order_by("created_at")
+    )
+    adjustment_text = (
+        f" Adjustments: {adjustment_descriptions}."
+        if adjustment_descriptions
+        else ""
+    )
     stripe_invoice = stripe.Invoice.create(
         customer=customer_id,
         collection_method="send_invoice",
@@ -79,7 +90,8 @@ def create_stripe_invoice(local_invoice, *, send=False):
         custom_fields=[{"name": "OpenÉire invoice", "value": local_invoice.invoice_number}],
         description=(
             f"{local_invoice.description}. Property/job: {local_invoice.job_reference_snapshot}. "
-            f"Full package value: EUR {local_invoice.enquiry.quoted_total}. "
+            f"Original booking total: EUR {local_invoice.enquiry.original_required_total}."
+            f"{adjustment_text} Balance requested: EUR {local_invoice.total}. "
             "VAT not applicable — supplier not VAT registered."
         ),
         idempotency_key=f"realestate-stripe-invoice-{local_invoice.invoice_number}",

@@ -1,0 +1,32 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p><strong>Enquiry:</strong> {{ enquiry }}</p>
+
+  <div class="module aligned">
+    <p><strong>Original total:</strong> EUR {{ summary.original_required_total }}</p>
+    <p><strong>Active adjustments:</strong> - EUR {{ summary.total_active_adjustments }}</p>
+    <p><strong>Adjusted total:</strong> EUR {{ summary.adjusted_required_total }}</p>
+    <p><strong>Cleared payments:</strong> EUR {{ summary.total_cleared_payments }}</p>
+    <p><strong>Balance due:</strong> EUR {{ summary.adjusted_balance_due }}</p>
+  </div>
+
+  {% if adjustment %}
+    <div class="module aligned">
+      <p><strong>Adjustment:</strong> {{ adjustment.get_adjustment_type_display }}</p>
+      <p><strong>Amount:</strong> EUR {{ adjustment.amount }}</p>
+      <p><strong>Customer description:</strong> {{ adjustment.customer_description }}</p>
+    </div>
+  {% endif %}
+
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% if adjustment %}<input type="hidden" name="adjustment" value="{{ adjustment.pk }}">{% endif %}
+    {{ form.as_p }}
+    <button type="submit" class="{% if danger %}deletelink{% else %}default{% endif %}">
+      Confirm
+    </button>
+    <a href="{{ return_url }}" class="button cancel-link">Cancel</a>
+  </form>
+{% endblock %}

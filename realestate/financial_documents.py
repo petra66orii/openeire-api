@@ -39,10 +39,22 @@ def build_invoice_filename(invoice):
 def generate_invoice_pdf(invoice):
     enquiry = invoice.enquiry
     deliverables = enquiry.get_preferred_package_summary()
+    active_adjustments = list(
+        enquiry.financial_adjustments.filter(reversed_at__isnull=True).order_by("created_at")
+    )
+    deposit_received = sum(
+        (
+            item.amount_paid
+            for item in enquiry.invoices.filter(
+                invoice_type="deposit",
+            )
+        ),
+        0,
+    )
     payment_refs = ", ".join(
         filter(None, invoice.payments.filter(status="succeeded").values_list("external_reference", flat=True))
     ) or "—"
-    rows = (
+    rows = [
         ("Invoice number", invoice.invoice_number),
         ("Customer", invoice.customer_name_snapshot),
         ("Company", invoice.company_name_snapshot or "—"),
@@ -52,7 +64,8 @@ def generate_invoice_pdf(invoice):
         ("Due date", invoice.due_at.date().isoformat() if invoice.due_at else "—"),
         ("Description", invoice.description),
         ("Payment stage", invoice.get_invoice_type_display()),
-        ("Full package value", f"EUR {enquiry.quoted_total:.2f}"),
+        ("Original booking total", f"EUR {enquiry.original_required_total:.2f}"),
+        ("Deposit received", f"EUR {deposit_received:.2f}"),
         ("Package deliverables", deliverables),
         ("Subtotal", f"EUR {invoice.subtotal:.2f}"),
         ("VAT", f"EUR {invoice.vat_amount:.2f}"),
@@ -61,6 +74,19 @@ def generate_invoice_pdf(invoice):
         ("Outstanding", f"EUR {invoice.amount_outstanding:.2f}"),
         ("Status", invoice.get_status_display()),
         ("Payment references", payment_refs),
+    ]
+    adjustment_rows = [
+        (adjustment.customer_description, f"- EUR {adjustment.amount:.2f}")
+        for adjustment in active_adjustments
+    ]
+    rows[11:11] = adjustment_rows
+    rows.insert(
+        11 + len(adjustment_rows),
+        ("Adjusted booking total", f"EUR {enquiry.adjusted_required_total:.2f}"),
+    )
+    rows.insert(
+        12 + len(adjustment_rows),
+        ("Balance due", f"EUR {enquiry.adjusted_balance_due:.2f}"),
     )
     notices = [RELEASE_NOTICE]
     if not invoice.vat_rate:

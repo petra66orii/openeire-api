@@ -32,6 +32,7 @@ from .models import (
     RealEstateDeliveryOverride,
     RealEstateDeliveryRecipient,
     RealEstateDeliveryUploadSession,
+    RealEstateFinancialAdjustment,
     RealEstateInvoice,
     RealEstatePayment,
 )
@@ -43,7 +44,17 @@ from .delivery import (
 )
 from .delivery_emails import send_delivery_recipient_email
 from .delivery_storage import get_max_size
-from .finance import can_release_realestate_delivery, create_realestate_balance_checkout_session, ensure_invoices_for_arrangement, record_realestate_payment, revoke_delivery_override, void_local_realestate_invoice
+from .finance import (
+    apply_realestate_financial_adjustment,
+    can_release_realestate_delivery,
+    create_realestate_balance_checkout_session,
+    ensure_invoices_for_arrangement,
+    get_realestate_financial_summary,
+    record_realestate_payment,
+    reverse_realestate_financial_adjustment,
+    revoke_delivery_override,
+    void_local_realestate_invoice,
+)
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
 from .payments import calculate_realestate_deposit_amounts
 from .payments import prepare_realestate_deposit_checkout_session
@@ -56,6 +67,28 @@ from .financial_documents import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class FinancialAdjustmentForm(forms.Form):
+    adjustment_type = forms.ChoiceField(
+        choices=RealEstateFinancialAdjustment.AdjustmentType.choices
+    )
+    amount = forms.DecimalField(
+        min_value=Decimal("0.01"), decimal_places=2, max_digits=10
+    )
+    customer_description = forms.CharField(max_length=255)
+    internal_reason = forms.CharField(widget=forms.Textarea)
+    confirmation = forms.BooleanField(
+        label="I confirm this adjustment and the replacement invoice amount."
+    )
+    request_token = forms.UUIDField(widget=forms.HiddenInput)
+
+
+class FinancialAdjustmentReversalForm(forms.Form):
+    reason = forms.CharField(widget=forms.Textarea)
+    confirmation = forms.BooleanField(
+        label="I confirm this reversal and the replacement invoice amount."
+    )
 
 
 class RealEstateEnquiryAdminForm(forms.ModelForm):
@@ -157,6 +190,30 @@ class RealEstateInvoiceInline(admin.TabularInline):
         if obj.stripe_checkout_url:
             links.append(format_html('<a href="{}" target="_blank" rel="noopener noreferrer">Checkout</a>', obj.stripe_checkout_url))
         return mark_safe(" · ".join(str(link) for link in links)) if links else "—"
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+class RealEstateFinancialAdjustmentInline(admin.TabularInline):
+    model = RealEstateFinancialAdjustment
+    extra = 0
+    can_delete = False
+    fields = (
+        "adjustment_type",
+        "amount",
+        "customer_description",
+        "internal_reason",
+        "created_by",
+        "created_at",
+        "reversed_by",
+        "reversed_at",
+        "reversal_reason",
+    )
+    readonly_fields = fields
 
     def has_add_permission(self, request, obj=None):
         return False
@@ -345,6 +402,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "send_thank_you_email",
     )
     inlines = (
+        RealEstateFinancialAdjustmentInline,
         RealEstateInvoiceInline,
         RealEstateDeliveryOverrideInline,
         RealEstateTimelineEventInline,
@@ -524,13 +582,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         if not enquiry or not enquiry.pk:
             return "Save the enquiry to create financial records."
         invoices = list(enquiry.invoices.all())
-        total_paid = sum((invoice.amount_paid for invoice in invoices), Decimal("0"))
-        required = (
-            enquiry.custom_required_total
-            if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
-            else enquiry.quoted_total
-        ) or Decimal("0")
-        outstanding = max(required - total_paid, Decimal("0"))
+        summary = get_realestate_financial_summary(enquiry)
         rows = []
         for invoice in invoices:
             url = reverse("customadmin:realestate_realestateinvoice_change", args=(invoice.pk,))
@@ -550,12 +602,19 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             RealEstateEnquiry.PaymentArrangement.CUSTOM: "Explicit custom terms and invoice amounts are required.",
         }.get(enquiry.payment_arrangement, "")
         return format_html(
-            '<div style="padding:12px;border:1px solid #ccc"><strong>Total:</strong> EUR {} &nbsp; '
-            '<strong>Paid:</strong> EUR {} &nbsp; <strong>Outstanding:</strong> EUR {}<br>'
+            '<div style="padding:12px;border:1px solid #ccc"><strong>Original total:</strong> EUR {} &nbsp; '
+            '<strong>Adjustments:</strong> - EUR {} &nbsp; <strong>Adjusted total:</strong> EUR {}<br>'
+            '<strong>Paid:</strong> EUR {} &nbsp; <strong>Balance due:</strong> EUR {} &nbsp; '
+            '<strong>Outstanding:</strong> EUR {}<br>'
             '<strong>Agreement:</strong> {} &nbsp; <strong>Booking:</strong> {} &nbsp; '
             '<strong>Delivery:</strong> {} &nbsp; <strong>Override:</strong> {}<br>'
             '<strong>Workflow:</strong> {}<ul>{}</ul></div>',
-            required, total_paid, outstanding,
+            summary.original_required_total,
+            summary.total_active_adjustments,
+            summary.adjusted_required_total,
+            summary.total_cleared_payments,
+            summary.adjusted_balance_due,
+            summary.adjusted_balance_due,
             "Received" if enquiry.booking_agreement_received else "Pending",
             enquiry.get_status_display(),
             "Ready" if can_release_realestate_delivery(enquiry) else "Locked",
@@ -664,15 +723,13 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             .select_related("invoice", "recorded_by")
             .order_by("-paid_at", "-created_at")
         )
+        adjustments = list(
+            enquiry.financial_adjustments.select_related("created_by", "reversed_by")
+            .order_by("-created_at")
+        )
         active_override = enquiry.delivery_overrides.filter(revoked_at__isnull=True).first()
         ready = can_release_realestate_delivery(enquiry)
-        total_paid = sum((invoice.amount_paid for invoice in invoices), Decimal("0.00"))
-        required_total = (
-            enquiry.custom_required_total
-            if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
-            else (enquiry.quoted_total or enquiry.quoted_price)
-        ) or Decimal("0.00")
-        outstanding = max(required_total - total_paid, Decimal("0.00"))
+        summary = get_realestate_financial_summary(enquiry)
         deposit_invoice = next((invoice for invoice in invoices if invoice.invoice_type == RealEstateInvoice.InvoiceType.DEPOSIT), None)
         balance_invoice = next((invoice for invoice in invoices if invoice.invoice_type == RealEstateInvoice.InvoiceType.BALANCE), None)
         payment_invoice = self._invoice_for_next_payment(invoices)
@@ -686,6 +743,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         can_view_invoice = request.user.has_perm("realestate.view_realestateinvoice")
         can_view_payment = request.user.has_perm("realestate.view_realestatepayment")
         can_view_timeline = request.user.has_perm("realestate.view_realestatetimelineevent")
+        can_apply_adjustment = request.user.has_perm(
+            "realestate.apply_financial_adjustment"
+        )
+        can_reverse_adjustment = request.user.has_perm(
+            "realestate.reverse_financial_adjustment"
+        )
 
         buttons = []
 
@@ -704,6 +767,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "issue-invoices",
             style="primary" if recommended_action == "issue-invoices" else "secondary",
             enabled=can_change and not invoices,
+        )
+        add_button(
+            "Apply financial adjustment",
+            "apply-financial-adjustment",
+            enabled=can_change and can_apply_adjustment,
         )
         add_button(
             "Send deposit invoice",
@@ -818,6 +886,24 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 "revoked_at": override.revoked_at,
             })
 
+        adjustment_rows = []
+        for adjustment in adjustments:
+            adjustment_rows.append({
+                "type": adjustment.get_adjustment_type_display(),
+                "amount": self._money(adjustment.amount),
+                "customer_description": adjustment.customer_description,
+                "created_by": adjustment.created_by,
+                "created_at": adjustment.created_at,
+                "state": "Active" if adjustment.is_active else "Reversed",
+                "reversal_reason": adjustment.reversal_reason,
+                "reverse_url": (
+                    self._ops_url(enquiry, "reverse-financial-adjustment")
+                    + f"?adjustment={adjustment.pk}"
+                    if adjustment.is_active and can_reverse_adjustment
+                    else ""
+                ),
+            })
+
         return {
             "booking": {
                 "status": enquiry.get_status_display(),
@@ -829,15 +915,17 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 "agreement": "Received" if enquiry.booking_agreement_received else "Pending",
             },
             "financial": {
-                "total": self._money(required_total),
+                "original_total": self._money(summary.original_required_total),
+                "adjustments": self._money(summary.total_active_adjustments),
+                "adjusted_total": self._money(summary.adjusted_required_total),
                 "deposit_required": self._money(deposit_invoice.total if deposit_invoice else getattr(enquiry, "quoted_deposit_amount", None)) if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE else "Not applicable",
                 "deposit_paid": "Yes" if enquiry.deposit_paid else "No",
-                "balance_due": self._money(balance_invoice.amount_outstanding if balance_invoice else getattr(enquiry, "quoted_balance_due", None)) if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE else "Not applicable",
-                "paid": self._money(total_paid),
-                "outstanding": self._money(outstanding),
+                "balance_due": self._money(summary.adjusted_balance_due),
+                "paid": self._money(summary.total_cleared_payments),
+                "outstanding": self._money(summary.adjusted_balance_due),
                 "invoice_numbers": ", ".join(invoice.invoice_number for invoice in invoices) or "None",
                 "stripe_status": stripe_invoice.stripe_invoice_status if stripe_invoice and stripe_invoice.stripe_invoice_status else ("Open" if stripe_invoice and stripe_invoice.stripe_invoice_id else "Not created"),
-                "payment_status": "Paid" if outstanding == 0 and invoices else ("Part paid" if total_paid else "Unpaid"),
+                "payment_status": "Paid" if summary.adjusted_balance_due == 0 and invoices else ("Part paid" if summary.total_cleared_payments else "Unpaid"),
             },
             "delivery": {
                 "state": "Ready" if ready and not enquiry.delivery_link else ("Released" if ready and enquiry.delivery_link else "Locked"),
@@ -850,6 +938,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "buttons": buttons,
             "invoices": invoice_rows,
             "payments": payment_rows,
+            "adjustments": adjustment_rows,
             "overrides": override_rows,
         }
 
@@ -1038,6 +1127,105 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
 
         try:
             self._require_change_permission(request, enquiry)
+
+            if action == "apply-financial-adjustment":
+                if not request.user.has_perm("realestate.apply_financial_adjustment"):
+                    raise PermissionDenied(
+                        "You do not have permission to apply financial adjustments."
+                    )
+                form = FinancialAdjustmentForm(
+                    request.POST if request.method == "POST" else None,
+                    initial={"request_token": uuid.uuid4()},
+                )
+                if request.method == "POST" and form.is_valid():
+                    try:
+                        adjustment, replacement, created = apply_realestate_financial_adjustment(
+                            enquiry=enquiry,
+                            adjustment_type=form.cleaned_data["adjustment_type"],
+                            amount=form.cleaned_data["amount"],
+                            customer_description=form.cleaned_data["customer_description"],
+                            internal_reason=form.cleaned_data["internal_reason"],
+                            user=request.user,
+                            request_token=form.cleaned_data["request_token"],
+                        )
+                    except ValidationError as exc:
+                        form.add_error(None, exc)
+                    else:
+                        suffix = (
+                            f" Replacement invoice {replacement.invoice_number} was created."
+                            if replacement
+                            else ""
+                        )
+                        self.message_user(
+                            request,
+                            ("Financial adjustment applied." if created else "This adjustment was already applied.") + suffix,
+                            level=messages.SUCCESS,
+                        )
+                        return self._redirect_to_enquiry(enquiry)
+                return TemplateResponse(
+                    request,
+                    "admin/realestate/financial_adjustment.html",
+                    {
+                        **self.admin_site.each_context(request),
+                        "form": form,
+                        "title": "Apply financial adjustment",
+                        "enquiry": enquiry,
+                        "summary": get_realestate_financial_summary(enquiry),
+                        "return_url": reverse(
+                            "customadmin:realestate_realestateenquiry_change",
+                            args=(enquiry.pk,),
+                        ),
+                    },
+                )
+
+            if action == "reverse-financial-adjustment":
+                if not request.user.has_perm("realestate.reverse_financial_adjustment"):
+                    raise PermissionDenied(
+                        "You do not have permission to reverse financial adjustments."
+                    )
+                adjustment_id = request.GET.get("adjustment") or request.POST.get("adjustment")
+                adjustment = enquiry.financial_adjustments.get(pk=adjustment_id)
+                form = FinancialAdjustmentReversalForm(
+                    request.POST if request.method == "POST" else None
+                )
+                if request.method == "POST" and form.is_valid():
+                    try:
+                        adjustment, replacement, changed = reverse_realestate_financial_adjustment(
+                            adjustment=adjustment,
+                            reason=form.cleaned_data["reason"],
+                            user=request.user,
+                        )
+                    except ValidationError as exc:
+                        form.add_error(None, exc)
+                    else:
+                        suffix = (
+                            f" Replacement invoice {replacement.invoice_number} was created."
+                            if replacement
+                            else ""
+                        )
+                        self.message_user(
+                            request,
+                            ("Financial adjustment reversed." if changed else "This adjustment was already reversed.") + suffix,
+                            level=messages.SUCCESS,
+                        )
+                        return self._redirect_to_enquiry(enquiry)
+                return TemplateResponse(
+                    request,
+                    "admin/realestate/financial_adjustment.html",
+                    {
+                        **self.admin_site.each_context(request),
+                        "form": form,
+                        "title": "Reverse financial adjustment",
+                        "enquiry": enquiry,
+                        "adjustment": adjustment,
+                        "summary": get_realestate_financial_summary(enquiry),
+                        "return_url": reverse(
+                            "customadmin:realestate_realestateenquiry_change",
+                            args=(enquiry.pk,),
+                        ),
+                        "danger": True,
+                    },
+                )
 
             if action == "download-local-invoice":
                 invoice = self._get_ops_invoice(enquiry, request)
@@ -1843,6 +2031,42 @@ class ManualPaymentForm(forms.Form):
     notes = forms.CharField(widget=forms.Textarea)
 
 
+@admin.register(RealEstateFinancialAdjustment, site=custom_admin_site)
+class RealEstateFinancialAdjustmentAdmin(admin.ModelAdmin):
+    list_display = (
+        "enquiry",
+        "adjustment_type",
+        "amount",
+        "customer_description",
+        "state",
+        "created_by",
+        "created_at",
+    )
+    list_filter = ("adjustment_type", "reversed_at")
+    search_fields = (
+        "enquiry__name",
+        "enquiry__property_address",
+        "customer_description",
+        "internal_reason",
+    )
+    readonly_fields = tuple(
+        field.name for field in RealEstateFinancialAdjustment._meta.fields
+    )
+
+    @admin.display(description="State")
+    def state(self, obj):
+        return "Active" if obj.is_active else "Reversed"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(RealEstateInvoice, site=custom_admin_site)
 class RealEstateInvoiceAdmin(admin.ModelAdmin):
     list_display = ("invoice_number", "enquiry", "invoice_type", "status", "total", "issued_at", "paid_at")
@@ -1878,11 +2102,14 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
             )
         return (
             "invoice_number", "created_at", "updated_at", "paid_at",
+            "supersedes",
             "amount_paid_display", "amount_outstanding_display", "stripe_hosted_link", "stripe_pdf_link",
         )
 
     def has_delete_permission(self, request, obj=None):
-        return not obj or obj.status == RealEstateInvoice.Status.DRAFT
+        return not obj or (
+            obj.status == RealEstateInvoice.Status.DRAFT and not obj.supersedes_id
+        )
 
     def get_actions(self, request):
         actions = super().get_actions(request)
