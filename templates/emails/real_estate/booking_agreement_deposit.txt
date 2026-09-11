@@ -11,7 +11,7 @@ Balance due: {{ balance_due|default:"To be confirmed" }}
 {% if not vat_registered %}{{ vat_notice }}
 {% endif %}
 
-{% if deposit_payment_link %}Pay Secure Deposit: {{ deposit_payment_link }}
+{% if deposit_payment_link %}Pay deposit: {{ deposit_payment_link }}
 {% endif %}{% if booking_agreement_link %}Review Booking Agreement: {{ booking_agreement_link }}
 {% else %}Booking Agreement: attached or to follow
 {% endif %}

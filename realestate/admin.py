@@ -56,6 +56,7 @@ from .finance import (
     void_local_realestate_invoice,
 )
 from .stripe_invoices import create_stripe_invoice, mark_stripe_invoice_paid_out_of_band, send_stripe_invoice
+from .payment_terms import invoice_payment_label
 from .payments import calculate_realestate_deposit_amounts
 from .payments import prepare_realestate_deposit_checkout_session
 from .package_catalogue import get_included_add_ons
@@ -119,6 +120,14 @@ class RealEstateEnquiryAdminForm(forms.ModelForm):
                 "add_ons",
                 f"Already included with the selected package: {labels}.",
             )
+        if cleaned_data.get("status") == RealEstateEnquiry.Status.BOOKED:
+            if not cleaned_data.get("booking_agreement_received"):
+                self.add_error("booking_agreement_received", "Receive the signed Booking Agreement before confirming the booking.")
+            if (
+                cleaned_data.get("payment_arrangement") == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE
+                and not self.instance.deposit_paid
+            ):
+                self.add_error("status", "Receive the cleared deposit before confirming the booking.")
         return cleaned_data
 
 
@@ -473,6 +482,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "preferred_package",
+                    "agreed_scope",
                     "add_ons",
                     "additional_stills_quantity",
                     "travel_supplement_amount",
@@ -1034,6 +1044,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         })
 
     def _confirmation_blocker(self, enquiry):
+        if not enquiry.booking_agreement_received:
+            return "Bookings cannot be confirmed until the signed Booking Agreement is received."
         if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT:
             full_invoice = enquiry.invoices.filter(
                 invoice_type=RealEstateInvoice.InvoiceType.FULL,
@@ -1057,6 +1069,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         context.update(build_realestate_email_context(enquiry))
         if invoice:
             context.update({
+                "invoice_payment_label": invoice_payment_label(enquiry, invoice),
                 "invoice_number": invoice.invoice_number,
                 "invoice_type": invoice.get_invoice_type_display(),
                 "stripe_hosted_invoice_url": invoice.stripe_hosted_invoice_url,
@@ -1611,6 +1624,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 attachments = []
                 if attachment_builder:
                     attachments = attachment_builder(enquiry, context)
+                if template_base == "booking_agreement":
+                    issued_context = enquiry.booking_agreement_snapshots.first().context
+                    for key in ("package_name", "total_required", "deposit_amount", "balance_due",
+                                "payment_due_date", "expected_payment_method", "vat_registered", "vat_notice"):
+                        context[key] = issued_context[key]
                 send_templated_email(
                     subject=subject,
                     to=[email],
@@ -1687,7 +1705,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             description="Booking agreement email",
             required_context=lambda enquiry, context: [
                 (requirement, False)
-                for requirement in booking_agreement_missing_requirements(enquiry)
+                for requirement in booking_agreement_missing_requirements(enquiry, for_customer=True)
             ],
             attachment_builder=lambda enquiry, context: [
                 (
@@ -1695,6 +1713,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     generate_booking_agreement_pdf(
                         enquiry,
                         create_new_version=True,
+                        for_customer=True,
                         created_by=request.user,
                     ),
                     "application/pdf",

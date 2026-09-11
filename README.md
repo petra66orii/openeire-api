@@ -51,6 +51,34 @@ openeire-api/
    python manage.py runserver
    ```
 
+### Review local emails with Mailpit
+
+Set `DEBUG=True` in your local `.env` and run Django on the host machine.
+Start Mailpit once:
+
+```bash
+docker run -d --name openeire-mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit
+```
+
+Restart the existing container later with:
+
+```bash
+docker start openeire-mailpit
+```
+
+Open http://localhost:8025 to review captured messages. Development uses SMTP at
+`localhost:1025` without TLS, SSL or authentication, ignoring production SMTP
+credentials even if present in `.env`. If Mailpit is stopped, sending fails;
+there is no fallback to the production relay. Restart Django after changing `.env`.
+`DEBUG=False` retains the existing production email configuration, and sender
+identity (`DEFAULT_FROM_EMAIL`) is unchanged in both environments.
+
+To check a local booking email, use a test enquiry in the admin to send its
+Booking Agreement. In Mailpit, inspect the HTML view and text alternative, then
+open/download the attached PDF. Quote and confirmation emails can be reviewed
+the same way, subject to their existing booking/payment prerequisites. Automated
+Django email tests continue to use the in-memory test backend.
+
 ## Environment Variables
 Only variables observed in code are listed below. Values/secrets are `Configuration Required`.
 

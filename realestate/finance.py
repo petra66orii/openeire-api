@@ -711,7 +711,7 @@ def _refresh_invoice_and_compatibility(invoice, *, paid_at, actor=None, was_rele
             if stripe_payment and not enquiry.stripe_deposit_session_id:
                 enquiry.stripe_deposit_session_id = stripe_payment.stripe_checkout_session_id
                 fields.append("stripe_deposit_session_id")
-            if enquiry.status not in {
+            if enquiry.booking_agreement_received and enquiry.status not in {
                 RealEstateEnquiry.Status.BOOKED, RealEstateEnquiry.Status.COMPLETED,
                 RealEstateEnquiry.Status.CLOSED, RealEstateEnquiry.Status.SPAM,
             }:
@@ -723,7 +723,7 @@ def _refresh_invoice_and_compatibility(invoice, *, paid_at, actor=None, was_rele
             and invoice.enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT
         ):
             enquiry = invoice.enquiry
-            if enquiry.status not in {
+            if enquiry.booking_agreement_received and enquiry.status not in {
                 RealEstateEnquiry.Status.BOOKED, RealEstateEnquiry.Status.COMPLETED,
                 RealEstateEnquiry.Status.CLOSED, RealEstateEnquiry.Status.SPAM,
             }:

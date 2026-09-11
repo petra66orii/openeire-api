@@ -64,6 +64,7 @@ from checkout.views import StripeWebhookView
 
 
 class RealEstateFinanceTests(TestCase):
+    # These ledger regressions deliberately use a negotiated EUR 399 quote, not catalogue pricing.
     def setUp(self):
         self.enquiry = RealEstateEnquiry.objects.create(
             name="Jane Agent", email="jane@example.com", phone="123",
@@ -1870,3 +1871,112 @@ class RealEstateFinancialAdjustmentConcurrencyTests(TransactionTestCase):
             ).count(),
             2,
         )
+
+
+class BookingAgreementV2Tests(TestCase):
+    def enquiry(self, arrangement):
+        from datetime import date
+        return RealEstateEnquiry.objects.create(
+            name="Agreement Client", email="agreement@example.com", phone="123",
+            property_address="Example House", county="Galway", property_type="House",
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            consent_to_contact=True, quoted_price=Decimal("419.00"),
+            payment_arrangement=arrangement, shoot_date=date(2026, 9, 21),
+            expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.CASH,
+            custom_payment_terms="Signed agreement confirms booking. EUR 419 due within 14 days." if arrangement == "custom" else "",
+            custom_required_total=Decimal("419.00") if arrangement == "custom" else None,
+        )
+
+    def test_agreement_and_customer_email_matrix(self):
+        from .documents import _build_booking_agreement_context, render_booking_agreement_markdown
+        for arrangement in RealEstateEnquiry.PaymentArrangement.values:
+            with self.subTest(arrangement=arrangement):
+                enquiry = self.enquiry(arrangement)
+                context = _build_booking_agreement_context(enquiry)
+                markdown = render_booking_agreement_markdown(enquiry)
+                self.assertTrue(generate_booking_agreement_pdf(enquiry).startswith(b"%PDF"))
+                self.assertEqual(enquiry.booking_agreement_snapshots.get().template_version, "2.0")
+                self.assertIn("419.00", context["total_required"])
+                if arrangement == "deposit_then_balance":
+                    self.assertIn("125.70", context["deposit_amount"])
+                    self.assertIn("293.30", context["balance_due"])
+                    self.assertIn("booking deposit in cleared funds", markdown)
+                    self.assertNotIn("The Total Fee is due on the Shoot Date", markdown)
+                else:
+                    self.assertNotIn("| Deposit required |", markdown)
+                    self.assertNotIn("| Remaining balance |", markdown)
+                if arrangement == "full_upfront":
+                    self.assertIn("full payment in cleared funds", markdown)
+                    self.assertNotIn("deposit", markdown.lower())
+                if arrangement == "full_on_shoot_day":
+                    self.assertEqual(context["payment_due_date"], "21 September 2026")
+                    self.assertIn("before payment is made", markdown)
+                    self.assertIn("a receipt will be issued", markdown)
+                if arrangement == "custom":
+                    self.assertIn(enquiry.custom_payment_terms, markdown)
+                email_context = build_realestate_email_context(enquiry)
+                for template in ("quote", "booking_agreement", "confirmation", "invoice_issued"):
+                    for extension in ("txt", "html"):
+                        body = render_to_string(f"emails/real_estate/{template}.{extension}", email_context)
+                        if arrangement != "deposit_then_balance":
+                            self.assertNotIn("booking deposit", body.lower())
+                            self.assertNotIn("Pay deposit", body)
+                        if arrangement == "full_on_shoot_day":
+                            self.assertIn("Booking Agreement has been accepted or signed", body)
+                            self.assertNotIn("Pay in full", body)
+                if arrangement == "full_upfront":
+                    self.assertEqual(email_context["invoice_payment_label"], "Pay in full")
+                for phrase in (
+                    "Client is responsible for identifying before or during the Shoot",
+                    "features, views, boundaries, fencing, access points, rooms, land parcels, structures",
+                    "shall be treated as additional work",
+                    "additional attendance and travel charges may apply",
+                    "This does not apply where OpenÉire Studios failed to capture",
+                    "OpenÉire Studios will correct an obvious technical defect or material failure",
+                    "must be notified within 24 hours of delivery",
+                ):
+                    self.assertIn(phrase, markdown)
+
+    def test_custom_terms_required_for_model_and_document(self):
+        from .documents import render_booking_agreement_markdown
+        enquiry = self.enquiry("custom")
+        calculate_realestate_deposit_amounts(enquiry)
+        enquiry.custom_payment_terms = " "
+        with self.assertRaises(ValidationError):
+            enquiry.save()
+        with self.assertRaises(ValueError):
+            render_booking_agreement_markdown(enquiry, use_snapshot=False)
+
+    def test_confirmation_requires_signature_and_arrangement_payment(self):
+        admin = RealEstateEnquiryAdmin(RealEstateEnquiry, custom_admin_site)
+        for arrangement in RealEstateEnquiry.PaymentArrangement.values:
+            with self.subTest(arrangement=arrangement):
+                enquiry = self.enquiry(arrangement)
+                self.assertIn("signed Booking Agreement", admin._confirmation_blocker(enquiry))
+                enquiry.booking_agreement_received = True
+                enquiry.save()
+                if arrangement in ("full_on_shoot_day", "custom"):
+                    self.assertEqual(admin._confirmation_blocker(enquiry), "")
+                else:
+                    self.assertTrue(admin._confirmation_blocker(enquiry))
+                    invoice = ensure_invoices_for_arrangement(enquiry)[0]
+                    record_realestate_payment(
+                        invoice=invoice, amount=invoice.total,
+                        method=RealEstatePayment.Method.CASH, paid_at=timezone.now(),
+                    )
+                    enquiry.refresh_from_db()
+                    self.assertEqual(admin._confirmation_blocker(enquiry), "")
+
+    def test_payment_before_signature_does_not_confirm_booking(self):
+        for arrangement in ("deposit_then_balance", "full_upfront"):
+            with self.subTest(arrangement=arrangement):
+                enquiry = self.enquiry(arrangement)
+                invoice = ensure_invoices_for_arrangement(enquiry)[0]
+                record_realestate_payment(
+                    invoice=invoice, amount=invoice.total,
+                    method=RealEstatePayment.Method.CASH, paid_at=timezone.now(),
+                )
+                enquiry.refresh_from_db()
+                self.assertNotEqual(enquiry.status, RealEstateEnquiry.Status.BOOKED)
+                invoice.refresh_from_db()
+                self.assertEqual(invoice.status, RealEstateInvoice.Status.PAID)

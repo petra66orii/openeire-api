@@ -18,6 +18,7 @@ from django.urls import reverse
 from openeire_api.mail_utils import get_default_from_email
 from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment
 from .turnaround import TURNAROUND_CONTEXT
+from .payment_terms import booking_payment_copy, invoice_payment_label
 
 
 logger = logging.getLogger(__name__)
@@ -207,18 +208,9 @@ def _email_financial_context(enquiry):
         )
         latest_cash_receipt = cash_payment.cash_receipt_number if cash_payment else ""
 
-    if arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
-        booking_confirmation_rule = "Booking is confirmed after the signed agreement and cleared deposit are received."
-        quote_payment_rule = "A 30% deposit secures the booking, with the remaining balance due under the agreed terms."
-    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT:
-        booking_confirmation_rule = "Booking is confirmed after the signed agreement and full payment are received."
-        quote_payment_rule = "Full payment is required before booking confirmation; no deposit or balance split applies."
-    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY:
-        booking_confirmation_rule = "Booking may be confirmed while unpaid under the approved full-payment-on-shoot-day arrangement."
-        quote_payment_rule = "The full amount is due on the shoot date; final delivery remains locked until full payment is recorded."
-    else:
-        booking_confirmation_rule = str(getattr(enquiry, "custom_payment_terms", "") or "Approved custom terms apply.")
-        quote_payment_rule = booking_confirmation_rule
+    payment_copy = booking_payment_copy(enquiry)
+    booking_confirmation_rule = payment_copy["booking_confirmation_text"]
+    quote_payment_rule = payment_copy["payment_clause_text"]
 
     return {
         "payment_arrangement": arrangement,
@@ -245,6 +237,7 @@ def _email_financial_context(enquiry):
         "custom_payment_terms": getattr(enquiry, "custom_payment_terms", "") or "",
         "booking_confirmation_rule": booking_confirmation_rule,
         "quote_payment_rule": quote_payment_rule,
+        "invoice_payment_label": invoice_payment_label(enquiry, invoice),
         "invoice_number": invoice.invoice_number if invoice else "",
         "invoice_type": invoice.get_invoice_type_display() if invoice else "",
         "stripe_hosted_invoice_url": invoice.stripe_hosted_invoice_url if invoice else "",
