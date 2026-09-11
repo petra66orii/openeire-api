@@ -1,4 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
+import re
 from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -18,10 +19,12 @@ from .models import (
 )
 from .payments import calculate_realestate_deposit_amounts
 from .turnaround import TURNAROUND_CONTEXT
+from .payment_terms import booking_payment_copy
+from .package_catalogue import get_package
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Table, TableStyle
 
 
 BOOKING_AGREEMENT_TEMPLATE_PATH = (
@@ -91,18 +94,87 @@ def _has_travel_supplement(enquiry):
     return "travel_supplement" in (getattr(enquiry, "add_ons", None) or [])
 
 
-def booking_agreement_missing_requirements(enquiry):
-    if not _has_travel_supplement(enquiry):
-        return []
+def _scope_items(values):
+    from html import unescape
 
-    missing = []
-    travel_amount = _decimal_or_none(
-        getattr(enquiry, "travel_supplement_amount", None)
+    placeholders = {"included photographs as specifically agreed", "scope not yet agreed (preview only)."}
+    items = [unescape(value).strip().removeprefix("- ").strip() for value in values]
+    return [item for item in items if item and item.casefold() not in placeholders]
+
+
+def _agreed_deliverables(enquiry):
+    persisted = enquiry._get_persisted_package_scope() or {}
+    explicit = str(getattr(enquiry, "agreed_scope", "") or "").strip()
+    package = get_package(enquiry.preferred_package)
+    # Older snapshots stored the name (sometimes with price/scope), not the code.
+    previous_package = persisted.get("package_code")
+    package_matches = (
+        previous_package == enquiry.preferred_package if previous_package else
+        str(persisted.get("package_name") or "").split(" - ", 1)[0] == (package.name if package else "")
     )
-    if travel_amount is None or travel_amount <= 0:
-        missing.append("travel supplement amount")
-    if not str(getattr(enquiry, "travel_details", "") or "").strip():
-        missing.append("travel details")
+    if persisted and not package_matches:
+        previous_override = str(persisted.get("agreed_scope_source") or "").strip()
+        if not explicit or explicit == previous_override:
+            return []  # A package change requires newly reconciled, explicit scope.
+    if explicit:
+        return _scope_items(explicit.splitlines())
+    if persisted.get("agreed_deliverables"):
+        # Stored values are escaped for Markdown; unescape before building new context.
+        return _scope_items(persisted["agreed_deliverables"])
+    legacy_summary = str(persisted.get("package_name") or "")
+    if package and package.included_photographs is not None and " - " in legacy_summary:
+        parts = legacy_summary.split(" - ", 2)
+        if len(parts) == 3:
+            return [parts[2]]
+    if persisted or enquiry._requires_historical_scope_review():
+        return []  # Staff must recover written scope, not substitute today's catalogue.
+    if not package or package.included_photographs is None:
+        return []
+    return [package.included_photographs_label] + (
+        re.split(r" \+ (?!60)", package.other_deliverables) if package.other_deliverables else []
+    )
+
+
+def booking_agreement_missing_requirements(enquiry, *, for_customer=False):
+    missing = []
+    if _has_travel_supplement(enquiry):
+        travel_amount = _decimal_or_none(getattr(enquiry, "travel_supplement_amount", None))
+        if travel_amount is None or travel_amount <= 0:
+            missing.append("travel supplement amount")
+        if not str(getattr(enquiry, "travel_details", "") or "").strip():
+            missing.append("travel details")
+    if not for_customer:
+        return missing
+    if not enquiry.pk or enquiry._state.adding or not RealEstateEnquiry.objects.filter(pk=enquiry.pk).exists():
+        missing.append("persisted booking reference")
+    for field, label in (("name", "client name"), ("email", "client email"),
+                         ("property_address", "property address"), ("shoot_date", "agreed shoot date")):
+        if not str(getattr(enquiry, field, "") or "").strip():
+            missing.append(label)
+    if not get_package(enquiry.preferred_package) or enquiry.preferred_package == "not_sure":
+        missing.append("selected package")
+    if not _agreed_deliverables(enquiry):
+        missing.append("approved deliverables / agreed scope")
+    if enquiry.payment_arrangement not in RealEstateEnquiry.PaymentArrangement.values:
+        missing.append("valid payment arrangement")
+        return missing
+    if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM and not str(enquiry.custom_payment_terms or "").strip():
+        missing.append("approved custom payment terms")
+        return missing
+    terms = _payment_terms(enquiry)
+    if terms["original_total"] is None or terms["original_total"] <= 0:
+        missing.append("agreed enquiry price")
+    if terms["arrangement"] == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
+        if terms["deposit_amount"] is None or terms["balance_due"] is None:
+            missing.append("agreed deposit and balance")
+        elif terms["total_required"] is not None and terms["deposit_amount"] + terms["balance_due"] != terms["total_required"]:
+            missing.append("deposit and balance matching the agreed fee")
+        if not terms["payment_due_date"]:
+            missing.append("balance payment due date")
+    if terms["arrangement"] == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY and (
+        enquiry.payment_due_date and enquiry.payment_due_date != enquiry.shoot_date
+    ):
+        missing.append("payment due date matching the shoot date")
     return missing
 
 
@@ -141,7 +213,8 @@ def _ensure_pricing_snapshot(enquiry):
     ):
         try:
             calculate_realestate_deposit_amounts(enquiry)
-            enquiry.refresh_from_db()
+            if enquiry.pk and not enquiry._state.adding:
+                enquiry.refresh_from_db()
         except ValueError:
             pass
 
@@ -172,20 +245,33 @@ def _payment_terms(enquiry):
         "payment_arrangement",
         RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE,
     )
+    payment_copy = booking_payment_copy(enquiry)
     invoices = _active_invoices(enquiry)
     amounts = _snapshot_amounts(enquiry)
     deposit_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.DEPOSIT)
     balance_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.BALANCE)
     full_invoice = _invoice_by_type(invoices, RealEstateInvoice.InvoiceType.FULL)
 
-    total_required = (
+    original_total = (
         getattr(enquiry, "custom_required_total", None)
         if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
         else None
-    ) or (full_invoice.total if full_invoice else None) or amounts["total"]
+    ) or amounts["total"] or (full_invoice.total if full_invoice else None)
+
+    if original_total is None and deposit_invoice and balance_invoice:
+        original_total = deposit_invoice.total + balance_invoice.total
+    adjustments = enquiry.total_active_adjustments
+    total_required = max(original_total - adjustments, Decimal("0.00")) if original_total is not None else None
+    if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM:
+        amounts["quote_total"] = original_total
+    elif amounts["quote_total"] is None:
+        amounts["quote_total"] = original_total
 
     deposit_amount = deposit_invoice.total if deposit_invoice else amounts["deposit"]
     balance_due = balance_invoice.total if balance_invoice else amounts["balance"]
+    if adjustments and total_required is not None and deposit_amount is not None:
+        deposit_amount = min(deposit_amount, total_required)
+        balance_due = max(total_required - deposit_amount, Decimal("0.00"))
     if arrangement != RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
         deposit_amount = None
         balance_due = None
@@ -198,81 +284,6 @@ def _payment_terms(enquiry):
     if not due_date and full_invoice and full_invoice.due_at:
         due_date = full_invoice.due_at.date()
 
-    custom_terms = str(getattr(enquiry, "custom_payment_terms", "") or "").strip()
-    if arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM and not custom_terms:
-        raise ValueError("Custom booking agreements require approved custom payment terms.")
-
-    if arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
-        booking_confirmation_text = (
-            "The booking is not confirmed until OpenEire has received both the signed Booking Agreement "
-            "and the booking deposit in cleared funds."
-        )
-        payment_clause_text = (
-            "The booking deposit forms part of the Total Fee. The remaining balance is due on the due date "
-            "shown above. Final high-resolution media and usage rights remain withheld until all sums due "
-            "have been paid in full."
-        )
-        acceptance_text = (
-            "By signing electronically and by paying the booking deposit after receipt of this Booking "
-            "Agreement, the Client confirms that it has read, understood, and agreed to this Booking "
-            "Agreement and the OpenEire Property Media Service Terms."
-        )
-        cancellation_payment_text = (
-            "If the Client cancels the booking between 24 and 72 hours before the Shoot Date, 50% of the "
-            "Total Fee shall be payable by the Client, less any deposit already paid."
-        )
-    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT:
-        booking_confirmation_text = (
-            "The booking is not confirmed until OpenEire has received both the signed Booking Agreement "
-            "and full payment in cleared funds. No separate deposit or balance split applies."
-        )
-        payment_clause_text = (
-            "The Total Fee is payable in full before booking confirmation. No separate deposit or balance "
-            "split applies. Final high-resolution media and usage rights remain withheld until all sums due "
-            "have been paid in full."
-        )
-        acceptance_text = (
-            "By signing electronically and paying the Total Fee in full, the Client confirms that it has "
-            "read, understood, and agreed to this Booking Agreement and the OpenEire Property Media Service Terms."
-        )
-        cancellation_payment_text = (
-            "If the Client cancels the booking between 24 and 72 hours before the Shoot Date, 50% of the "
-            "Total Fee shall be payable by the Client, less any amount already paid."
-        )
-    elif arrangement == RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY:
-        booking_confirmation_text = (
-            "Under the approved full-payment-on-shoot-day arrangement, the booking may be confirmed after "
-            "the signed Booking Agreement is received, before payment is made."
-        )
-        payment_clause_text = (
-            "The Total Fee is due on the Shoot Date. The fee is payable for services performed and is not "
-            "contingent on the property being sold, let, or otherwise completed. Final high-resolution media "
-            "and usage rights remain withheld until full payment has been received."
-        )
-        if getattr(enquiry, "expected_payment_method", "") == RealEstateEnquiry.ExpectedPaymentMethod.CASH:
-            payment_clause_text += " Where cash is the expected payment method, a receipt will be issued."
-        acceptance_text = (
-            "By signing electronically under the approved full-payment-on-shoot-day arrangement, the Client "
-            "confirms that it has read, understood, and agreed to this Booking Agreement and the OpenEire "
-            "Property Media Service Terms. Full payment remains due on the Shoot Date."
-        )
-        cancellation_payment_text = (
-            "If the Client cancels the booking between 24 and 72 hours before the Shoot Date, 50% of the "
-            "Total Fee shall be payable by the Client, less any amount already paid."
-        )
-    else:
-        booking_confirmation_text = custom_terms
-        payment_clause_text = custom_terms
-        acceptance_text = (
-            "By signing electronically under the approved custom payment schedule, the Client confirms that "
-            "it has read, understood, and agreed to this Booking Agreement, the custom payment terms shown "
-            "above, and the OpenEire Property Media Service Terms."
-        )
-        cancellation_payment_text = (
-            "If the Client cancels the booking between 24 and 72 hours before the Shoot Date, 50% of the "
-            "Total Fee shall be payable by the Client, less any amount already paid."
-        )
-
     expected_method = (
         enquiry.get_expected_payment_method_display()
         if hasattr(enquiry, "get_expected_payment_method_display")
@@ -281,16 +292,14 @@ def _payment_terms(enquiry):
     return {
         **amounts,
         "arrangement": arrangement,
+        "original_total": _decimal_or_none(original_total),
+        "adjustment_total": adjustments,
         "total_required": _decimal_or_none(total_required),
         "deposit_amount": _decimal_or_none(deposit_amount),
         "balance_due": _decimal_or_none(balance_due),
         "payment_due_date": due_date,
         "expected_payment_method": expected_method,
-        "custom_payment_terms": custom_terms,
-        "booking_confirmation_text": booking_confirmation_text,
-        "payment_clause_text": payment_clause_text,
-        "acceptance_text": acceptance_text,
-        "cancellation_payment_text": cancellation_payment_text,
+        **payment_copy,
     }
 
 
@@ -352,11 +361,18 @@ def _build_booking_agreement_context(enquiry):
             if has_travel_supplement
             else "Not applicable"
         ),
-        "package_name": _agreement_currency_text(
-            enquiry.get_preferred_package_summary()
-            if hasattr(enquiry, "get_preferred_package_summary")
-            else getattr(enquiry, "preferred_package", "")
+        "package_name": blank_if_missing(
+            get_package(enquiry.preferred_package).name if get_package(enquiry.preferred_package) else ""
         ),
+        "package_code": enquiry.preferred_package,
+        "agreed_scope_source": str(enquiry.agreed_scope or "").strip(),
+        "scope_is_override": bool(str(enquiry.agreed_scope or "").strip()) or bool(
+            (enquiry._get_persisted_package_scope() or {}).get("scope_is_override")
+        ),
+        "agreed_deliverables": [blank_if_missing(item) for item in _agreed_deliverables(enquiry)],
+        "is_preview": bool(booking_agreement_missing_requirements(enquiry, for_customer=True)),
+        "has_adjustments": bool(terms["adjustment_total"]),
+        "adjustment_total": _format_agreement_money(terms["adjustment_total"]),
         "included_photographs_label": enquiry.get_included_photographs_label(),
         "included_photograph_count": enquiry.get_included_photograph_count(),
         "additional_photograph_copy": _agreement_currency_text(
@@ -365,10 +381,8 @@ def _build_booking_agreement_context(enquiry):
         "turnaround_label": enquiry.get_preferred_package_turnaround_label(),
         "turnaround_detail": enquiry.get_preferred_package_turnaround_detail(),
         "turnaround_context": TURNAROUND_CONTEXT,
-        "add_ons_summary": _agreement_currency_text(
-            enquiry.get_add_ons_summary()
-            if hasattr(enquiry, "get_add_ons_summary")
-            else ""
+        "add_ons_summary": blank_if_missing(
+            ", ".join(re.split(r" - (?:EUR |\u20ac)", label, maxsplit=1)[0] for label in enquiry.get_add_on_labels()) or "None"
         ),
         "quote_total": _format_agreement_money(terms["quote_total"]),
         "vat_total": _format_agreement_money(terms["vat_total"]),
@@ -421,10 +435,23 @@ def render_booking_agreement_markdown(
     use_snapshot=True,
     create_new_version=False,
     created_by=None,
+    for_customer=False,
 ):
+    if for_customer:
+        missing = booking_agreement_missing_requirements(enquiry, for_customer=True)
+        if missing:
+            raise ValueError("Booking Agreement cannot be sent until provided: " + ", ".join(missing) + ".")
     if use_snapshot and not create_new_version and getattr(enquiry, "pk", None):
         existing = enquiry.booking_agreement_snapshots.first()
         if existing:
+            if for_customer and (
+                existing.context.get("is_preview") or "RE-DRAFT" in existing.rendered_markdown
+                or existing.context.get("booking_reference") != _booking_reference(enquiry)
+                or any(existing.context.get(key) in (None, "", BOOKING_AGREEMENT_BLANK) for key in (
+                    "client_name", "email", "property_address", "shoot_date", "total_required", "package_name",
+                ))
+            ):
+                raise ValueError("This is a draft snapshot. Issue a new validated Booking Agreement.")
             return existing.rendered_markdown
 
     missing_requirements = booking_agreement_missing_requirements(enquiry)
@@ -456,12 +483,14 @@ def generate_booking_agreement_pdf(
     use_snapshot=True,
     create_new_version=False,
     created_by=None,
+    for_customer=False,
 ):
     rendered_markdown = render_booking_agreement_markdown(
         enquiry,
         use_snapshot=use_snapshot,
         create_new_version=create_new_version,
         created_by=created_by,
+        for_customer=for_customer,
     )
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -474,11 +503,42 @@ def generate_booking_agreement_pdf(
         title=f"{get_business_identity().display_name} Real Estate Booking Agreement",
         author=get_business_identity().display_name,
     )
-    document.build(
-        render_markdown_to_flowables(
-            rendered_markdown,
-            table_width=document.width,
-            keep_headings_with_next=True,
-        )
+    flowables = render_markdown_to_flowables(
+        rendered_markdown, table_width=document.width, keep_headings_with_next=True,
     )
+    # Keep compact tables, short clauses, and headings with their first content.
+    # Oversized content still uses ReportLab's normal splitting fallback.
+    for flowable in flowables:
+        if isinstance(flowable, Table):
+            flowable.setStyle(TableStyle([
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            if flowable.wrap(document.width, document.height)[1] <= document.height - 12:
+                flowable.splitByRow = 0
+    arranged = []
+    index = 0
+    while index < len(flowables):
+        flowable = flowables[index]
+        if isinstance(flowable, Paragraph) and flowable.getPlainText().startswith("9. Signatures and Acceptance"):
+            arranged.append(KeepTogether(flowables[index:]))
+            break
+        if isinstance(flowable, Paragraph) and (
+            getattr(flowable.style, "keepWithNext", False) or flowable.getPlainText().endswith(":")
+        ):
+            group = [flowable]
+            index += 1
+            while index < len(flowables):
+                next_flowable = flowables[index]
+                group.append(next_flowable)
+                index += 1
+                if isinstance(next_flowable, Table):
+                    break
+                if isinstance(next_flowable, Paragraph) and not next_flowable.getPlainText().endswith(":"):
+                    break
+            arranged.append(KeepTogether(group))
+            continue
+        arranged.append(KeepTogether([flowable]) if isinstance(flowable, Paragraph) else flowable)
+        index += 1
+    document.build(arranged)
     return buffer.getvalue()

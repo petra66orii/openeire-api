@@ -749,7 +749,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             "Please review and sign the agreement using the secure link below.",
             booking_text,
         )
-        self.assertIn("Pay Secure Deposit:", deposit_text)
+        self.assertIn("Pay deposit:", deposit_text)
         self.assertIn(
             "Your booking is confirmed according to the selected payment arrangement.",
             booking_text,
@@ -963,7 +963,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             context,
         )
 
-        self.assertIn("Pay Secure Deposit", html)
+        self.assertIn("Pay deposit", html)
         self.assertIn("Review Booking Agreement", html)
 
         class DepositLinkParser(HTMLParser):
@@ -979,7 +979,7 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                     self.current_href = None
 
             def handle_data(self, data):
-                if data.strip() == "Pay Secure Deposit":
+                if data.strip() == "Pay deposit":
                     self.href = self.current_href
 
         parser = DepositLinkParser()
@@ -1205,7 +1205,7 @@ class BookingAgreementDocumentTests(TestCase):
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
             preferred_date="2026-06-20",
-            quoted_price="399.00",
+            quoted_price="419.00",
             consent_to_contact=True,
         )
 
@@ -1250,7 +1250,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertIn("| Access notes / restrictions | Not provided |", rendered)
         self.assertIn("| Travel supplement applies | No |", rendered)
         self.assertIn("| Travel details | Not applicable |", rendered)
-        self.assertIn("| VAT | Not provided |", rendered)
+        self.assertIn("| VAT | Not applicable |", rendered)
         self.assertIn("| Total fee payable | Not provided |", rendered)
         self.assertIn("| Deposit required | Not provided |", rendered)
         self.assertIn("| Remaining balance | Not provided |", rendered)
@@ -1338,27 +1338,27 @@ class BookingAgreementDocumentTests(TestCase):
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
             preferred_date="2026-06-20",
-            quoted_price="399.00",
+            quoted_price="419.00",
             consent_to_contact=True,
         )
 
         rendered = self._render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("| Quoted services total | €399.00 |", rendered)
-        self.assertIn("| VAT | €0.00 |", rendered)
-        self.assertIn("| Total fee payable | €399.00 |", rendered)
-        self.assertIn("| Deposit required | €119.70 |", rendered)
-        self.assertIn("| Remaining balance | €279.30 |", rendered)
+        self.assertIn("| Quoted services total | €419.00 |", rendered)
+        self.assertIn("| VAT | Not applicable |", rendered)
+        self.assertIn("| Total fee payable | €419.00 |", rendered)
+        self.assertIn("| Deposit required | €125.70 |", rendered)
+        self.assertIn("| Remaining balance | €293.30 |", rendered)
         self.assertIn("VAT not applicable", rendered)
-        self.assertIn("Signed electronically for and on behalf of OpenÉire Studios", rendered)
+        self.assertIn("Issued for and on behalf of OpenÉire Studios", rendered)
         self.assertIn("| Name | Gerry Deely |", rendered)
-        self.assertIn("| Title | OpenÉire Studios |", rendered)
+        self.assertIn("| Title | Proprietor |", rendered)
         self.assertIn("Signed by or on behalf of the Client:", rendered)
         self.assertIn("| Name | ______________________________ |", rendered)
         self.assertIn("| Title | ______________________________ |", rendered)
         self.assertIn("| Date | ______________________________ |", rendered)
         self.assertIn(
-            "By signing electronically and by paying the booking deposit after receipt of this Booking Agreement, the Client confirms",
+            "By signing or otherwise formally accepting this Booking Agreement",
             rendered,
         )
         self.assertIn(
@@ -1376,7 +1376,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
-            quoted_price="399.00",
+            quoted_price="419.00",
             consent_to_contact=True,
             payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_UPFRONT,
             expected_payment_method=RealEstateEnquiry.ExpectedPaymentMethod.STRIPE,
@@ -1384,8 +1384,9 @@ class BookingAgreementDocumentTests(TestCase):
         rendered = self._render_booking_agreement_markdown(enquiry)
 
         self.assertIn("| Payment arrangement | Full payment upfront |", rendered)
-        self.assertIn("| Full payment due | €399.00 |", rendered)
-        self.assertIn("No separate deposit or balance split applies", rendered)
+        self.assertIn("| Full payment due | €419.00 |", rendered)
+        self.assertNotIn("deposit", rendered.lower())
+        self.assertNotIn("balance", rendered.lower())
         self.assertIn("less any amount already paid", rendered)
         self.assertNotIn("| Deposit required |", rendered)
         self.assertNotIn("| Remaining balance |", rendered)
@@ -1400,7 +1401,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
-            quoted_price="399.00",
+            quoted_price="419.00",
             shoot_date="2026-07-21",
             consent_to_contact=True,
             payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
@@ -1409,10 +1410,10 @@ class BookingAgreementDocumentTests(TestCase):
         rendered = self._render_booking_agreement_markdown(enquiry)
 
         self.assertIn("| Payment arrangement | Full payment on shoot day |", rendered)
-        self.assertIn("| Full payment due | €399.00 |", rendered)
+        self.assertIn("| Full payment due | €419.00 |", rendered)
         self.assertIn("| Payment due date | 21 July 2026 |", rendered)
         self.assertIn("| Expected payment method | Cash |", rendered)
-        self.assertIn("booking may be confirmed after the signed Booking Agreement is received, before payment is made", rendered)
+        self.assertIn("booking may be confirmed once the Booking Agreement has been accepted or signed, before payment is made", rendered)
         self.assertIn("Final high-resolution media and usage rights remain withheld until full payment has been received", rendered)
         self.assertIn("a receipt will be issued", rendered)
         self.assertIn("not contingent on the property being sold, let, or otherwise completed", rendered)
@@ -1439,7 +1440,7 @@ class BookingAgreementDocumentTests(TestCase):
             shoot_time="10:30",
             access_contact="Property manager - +353 91 555 0101",
             access_notes="Use the courtyard entrance and call on arrival",
-            quoted_price="399.00",
+            quoted_price="419.00",
             add_ons=["floor_plan", "additional_social_cuts", "travel_supplement"],
             travel_supplement_amount="65.00",
             travel_details="Travel supplement agreed for 62 km beyond the included radius",
@@ -1470,12 +1471,12 @@ class BookingAgreementDocumentTests(TestCase):
             "| Access notes / restrictions | Use the courtyard entrance and call on arrival |",
             rendered,
         )
-        self.assertIn("Measured 2D floor plan - €75", rendered)
+        self.assertIn("Measured 2D floor plan", rendered)
         self.assertIn(
-            "Additional social-media cuts, alternative formats or additional edits - €50",
+            "Additional social-media cuts, alternative formats or additional edits",
             rendered,
         )
-        self.assertIn("Travel supplement beyond 40 km - €0.50 per km", rendered)
+        self.assertIn("Travel supplement beyond 40 km", rendered)
         self.assertIn("| Travel supplement applies | Yes - included in the quoted services total |", rendered)
         self.assertIn("| Travel supplement included | €65.00 |", rendered)
         self.assertIn(
@@ -1496,7 +1497,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
-            quoted_price="399.00",
+            quoted_price="419.00",
             shoot_date="2026-07-21",
             consent_to_contact=True,
             payment_arrangement=RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
@@ -1510,13 +1511,13 @@ class BookingAgreementDocumentTests(TestCase):
 
         self.assertEqual(first, second)
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
-        self.assertEqual(snapshot.template_version, "1.8")
+        self.assertEqual(snapshot.template_version, "2.0")
         self.assertIn(
             "30 professionally edited interior and exterior ground photographs",
             first,
         )
         self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
-        self.assertEqual(snapshot.total_required, Decimal("399.00"))
+        self.assertEqual(snapshot.total_required, Decimal("419.00"))
         self.assertEqual(snapshot.payment_due_date.isoformat(), "2026-07-21")
         self.assertEqual(snapshot.expected_payment_method, RealEstateEnquiry.ExpectedPaymentMethod.CASH)
 
@@ -1530,7 +1531,7 @@ class BookingAgreementDocumentTests(TestCase):
             county="Galway",
             property_type="Detached house",
             preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
-            quoted_price="399.00",
+            quoted_price="419.00",
             add_ons=["floor_plan"],
             consent_to_contact=True,
         )
@@ -1558,11 +1559,11 @@ class BookingAgreementDocumentTests(TestCase):
         new_snapshot = enquiry.booking_agreement_snapshots.latest("created_at")
         self.assertEqual(unchanged_issued_markdown, issued_markdown)
         self.assertEqual(issued_snapshot.rendered_markdown, issued_markdown)
-        self.assertEqual(issued_snapshot.template_version, "1.8")
-        self.assertEqual(new_snapshot.template_version, "1.8")
+        self.assertEqual(issued_snapshot.template_version, "2.0")
+        self.assertEqual(new_snapshot.template_version, "2.0")
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
-        self.assertIn("Measured 2D floor plan - €75", new_markdown)
-        self.assertIn("Travel supplement beyond 40 km - €0.50 per km", new_markdown)
+        self.assertIn("Measured 2D floor plan", new_markdown)
+        self.assertIn("Travel supplement beyond 40 km", new_markdown)
         self.assertIn("| Travel supplement included | €65.00 |", new_markdown)
         self.assertEqual(enquiry.booking_agreement_snapshots.count(), 2)
 
@@ -1692,7 +1693,7 @@ class BookingAgreementDocumentTests(TestCase):
         enquiry.save(update_fields=["travel_supplement_amount", "travel_details"])
         rendered = render_booking_agreement_markdown(enquiry)
 
-        self.assertIn("Starter - €259", rendered)
+        self.assertIn("| Package name | Starter |", rendered)
         self.assertIn("| Travel supplement included | €65.00 |", rendered)
         self.assertIn("| Quoted services total | €324.00 |", rendered)
         self.assertIn(enquiry.travel_details, rendered)
@@ -1742,7 +1743,7 @@ class RealEstateDepositCancelledViewTests(TestCase):
         self.assertEqual(response["Cache-Control"], "no-store")
         self.assertContains(response, "Deposit payment cancelled")
         self.assertContains(response, "No payment was taken")
-        self.assertContains(response, "Pay Secure Deposit")
+        self.assertContains(response, "Pay deposit")
         self.assertContains(response, 'href="mailto:studio@openeire.test"')
         self.assertContains(response, 'href="https://openeire.test"')
         self.assertContains(response, 'name="robots" content="noindex,nofollow"')
@@ -2349,6 +2350,7 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
 
 class RealEstateEnquiryAdminActionTests(TestCase):
+    # Admin/payment regressions use a deliberately negotiated EUR 399 quote.
     def setUp(self):
         self.factory = RequestFactory()
         self.user = get_user_model().objects.create_superuser(
@@ -2369,6 +2371,7 @@ class RealEstateEnquiryAdminActionTests(TestCase):
             preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
             preferred_date="2026-06-20",
             shoot_date="2026-06-22",
+            payment_due_date="2026-06-22",
             quoted_price="399.00",
             consent_to_contact=True,
         )
@@ -2750,7 +2753,8 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         request = self._request()
         self.enquiry.deposit_paid = True
         self.enquiry.deposit_paid_at = timezone.now()
-        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at"])
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at", "booking_agreement_received"])
 
         self.model_admin.send_confirmation_email(
             request,
@@ -2927,7 +2931,8 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         request = self._request()
         self.enquiry.deposit_paid = True
         self.enquiry.deposit_paid_at = timezone.now()
-        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at"])
+        self.enquiry.booking_agreement_received = True
+        self.enquiry.save(update_fields=["deposit_paid", "deposit_paid_at", "booking_agreement_received"])
 
         with self.assertLogs("realestate.admin", level="ERROR") as logs:
             self.model_admin.send_confirmation_email(

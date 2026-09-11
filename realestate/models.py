@@ -305,6 +305,14 @@ class RealEstateEnquiry(models.Model):
         blank=True,
         help_text="Agreed access instructions, restrictions or arrival notes.",
     )
+    agreed_scope = models.TextField(
+        blank=True,
+        help_text=(
+            "Approved deliverables, one per line. Required for Custom work; optional "
+            "replacement for standard package scope. Customer requests/internal notes "
+            "are not approved scope. Changes apply only to newly issued agreements."
+        ),
+    )
     internal_notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -389,6 +397,11 @@ class RealEstateEnquiry(models.Model):
     def get_preferred_package_summary(self):
         persisted_scope = self._get_persisted_package_scope()
         if persisted_scope:
+            if persisted_scope.get("agreed_deliverables"):
+                from html import unescape
+
+                scope = " + ".join(unescape(item) for item in persisted_scope["agreed_deliverables"])
+                return f"{persisted_scope.get('package_name', 'Agreed package')} - {scope}"
             return persisted_scope.get("package_name") or (
                 "Agreed package scope - refer to the issued Booking Agreement"
             )
@@ -401,6 +414,8 @@ class RealEstateEnquiry(models.Model):
 
     def get_included_photographs_label(self):
         persisted_scope = self._get_persisted_package_scope()
+        if str(self.agreed_scope or "").strip() or (persisted_scope or {}).get("scope_is_override"):
+            return ""  # Free-text approved scope may replace the catalogue allowance.
         if persisted_scope:
             label = persisted_scope.get("included_photographs_label")
             if label:
@@ -419,6 +434,8 @@ class RealEstateEnquiry(models.Model):
 
     def get_included_photograph_count(self):
         persisted_scope = self._get_persisted_package_scope()
+        if str(self.agreed_scope or "").strip() or (persisted_scope or {}).get("scope_is_override"):
+            return None
         if persisted_scope:
             count = persisted_scope.get("included_photograph_count")
             if isinstance(count, int):
@@ -604,7 +621,7 @@ class RealEstateDocumentSequence(models.Model):
 
 
 class RealEstateBookingAgreementSnapshot(models.Model):
-    TEMPLATE_VERSION = "1.8"
+    TEMPLATE_VERSION = "2.0"
 
     enquiry = models.ForeignKey(
         RealEstateEnquiry,
