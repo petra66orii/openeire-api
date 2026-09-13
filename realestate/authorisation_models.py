@@ -60,7 +60,13 @@ class PropertyAuthorisation(models.Model):
             protected = ["enquiry_id", "location", "template_version", "token", "issued_snapshot", "issued_pdf", "expires_at", "recipient_email", "supersedes_id", "created_by_id"]
             if old.accepted_at:
                 protected += ["accepted_snapshot", "accepted_pdf", "accepted_name", "accepted_capacity", "accepted_email", "acceptance_method", "accepted_at", "received_on", "recorded_by_id", "status"]
-            if any(getattr(old, key) != getattr(self, key) for key in protected):
+            def comparable(instance, key):
+                value = getattr(instance, key)
+                # PostgreSQL may return character-format memoryviews for bytea.
+                # Compare PDF contents independently of the database adapter type.
+                return bytes(value) if key in ("issued_pdf", "accepted_pdf") and value is not None else value
+
+            if any(comparable(old, key) != comparable(self, key) for key in protected):
                 raise ValidationError("Issued and accepted document content is immutable. Reissue instead.")
         super().save(*args, **kwargs)
 

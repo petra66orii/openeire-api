@@ -51,6 +51,23 @@ class PropertyAuthorisationTests(TestCase):
         doc.save(update_fields=["revoked_at"])
         self.assertEqual(self.client.get(landing).status_code, 410)
 
+    def test_pdf_immutability_compares_contents_across_binary_types(self):
+        doc = self.issue()
+        doc = accept_authorisation(doc, self.data())
+        doc.issued_pdf = memoryview(bytes(doc.issued_pdf)).cast("c")
+        doc.accepted_pdf = memoryview(bytes(doc.accepted_pdf)).cast("c")
+        doc.revoked_at = timezone.now()
+        doc.save(update_fields=["revoked_at"])
+        doc.refresh_from_db()
+        self.assertIsNotNone(doc.revoked_at)
+        for field in ("issued_pdf", "accepted_pdf"):
+            with self.subTest(field=field):
+                original = getattr(doc, field)
+                setattr(doc, field, memoryview(b"changed PDF").cast("c"))
+                with self.assertRaises(ValidationError):
+                    doc.save()
+                setattr(doc, field, original)
+
     def url(self, doc, pdf=False):
         return reverse("property-authorisation-pdf" if pdf else "property-authorisation", args=[doc.token])
 
