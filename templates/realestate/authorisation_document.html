@@ -1,0 +1,18 @@
+<article>
+  <h1>{{ snapshot.title }}</h1>
+  <p>Document version {{ snapshot.version }}</p>
+  <address style="font-style:normal">
+    {{ snapshot.identity.business_display_name }}<br>
+    {{ snapshot.identity.business_address|linebreaksbr }}<br>
+    {{ snapshot.identity.business_email }} · {{ snapshot.identity.business_phone }}
+    {% if snapshot.identity.business_registration_number %}<br>Registration: {{ snapshot.identity.business_registration_number }}{% endif %}
+    {% if snapshot.identity.business_signatory_name %}<br>Authorised OpenÉire signatory: {{ snapshot.identity.business_signatory_name }}{% endif %}
+  </address>
+  {% for heading, rows in sections %}
+    <section><h2>{{ heading }}</h2>
+      {% for label, value in rows %}{% if value %}
+        <p>{% if label %}<strong>{{ label }}:</strong> {% endif %}{{ value|linebreaksbr }}</p>
+      {% endif %}{% endfor %}
+    </section>
+  {% endfor %}
+</article>

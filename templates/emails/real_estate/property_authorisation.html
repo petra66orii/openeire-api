@@ -1,0 +1,16 @@
+{% extends "emails/base_email.html" %}
+{% block title %}Property Access &amp; Shoot Authorisation{% endblock %}
+{% block preheader %}A quick pre-shoot confirmation of access, safety and any particular requirements.{% endblock %}
+{% block heading %}Property Access &amp; Shoot Authorisation{% endblock %}
+{% block body %}
+  <p style="margin:0 0 16px;">Please confirm your authority to permit access to the property, any known restrictions or hazards, and any particular must-capture requirements before the shoot.</p>
+  <p style="margin:0;">If you do not have any particular shot preferences, simply select <strong>No specific requirements</strong> and {{ business_display_name|default:"OpenÉire Studios" }} will use its professional judgement within your agreed package/scope. You do not need to invent a shot list. Your agreed deliverables remain unchanged.</p>
+{% endblock %}
+{% block details_card %}
+  {% include "emails/includes/details_card.html" with card_heading="Property / locations covered" card_text=location %}
+{% endblock %}
+{% block service_note %}
+  <p style="margin:24px 0 12px; color:#5F6673; font-size:14px; line-height:1.65;">You may accept electronically, or alternatively print, complete and sign the attached PDF and return it by replying to this email. Both methods are equally acceptable; printing is optional.</p>
+  <p style="margin:0 0 12px; font-size:14px;"><a href="{{ pdf_url }}" target="_blank" rel="noopener noreferrer" style="color:#16A34A;">Download PDF</a></p>
+  <p style="margin:0; color:#5F6673; font-size:13px; line-height:1.65;">This supplements the Booking Agreement and is separate from payment confirmation. If the locations or scope shown are incorrect, contact us before accepting. Please keep this private review link secure.</p>
+{% endblock %}

@@ -1,0 +1,27 @@
+<section class="re-ops" aria-labelledby="property-authorisation-heading">
+<h2 id="property-authorisation-heading">Property Access &amp; Shoot Authorisation</h2>
+<p>Pre-shoot operational status: <strong>{% if property_authorisation_hub.awaiting %}Awaiting{% else %}Received for listed locations{% endif %}</strong>. Booking financial confirmation is independent.</p>
+{% if property_authorisation_hub.warning %}<p class="errornote">Shoot approaching within 7 days: property authorisation is still outstanding. Confirm authority and access before attending.</p>{% endif %}
+<p>Verify that every required property or parcel is covered. Authority for one location does not grant access to unrelated locations.</p>
+<div class="re-ops-actions">
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-issue' %}">Generate / Preview</a>
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-scope-check' %}">Record final on-site scope check</a>
+</div>
+{% for doc in property_authorisation_hub.documents %}<div class="re-ops-card" style="margin-top:12px">
+<h3>{{ doc.location|linebreaksbr }}</h3>
+<p><strong>{{ doc.display_status }}</strong> · v{{ doc.template_version }} · Sent: {{ doc.sent_at|default:'Not sent' }} · Method: {{ doc.acceptance_method|default:'Not accepted' }} · Accepted/recorded: {{ doc.accepted_at|default:'Awaiting' }}{% if doc.received_on %} · Received: {{ doc.received_on }}{% endif %} · Signer: {{ doc.accepted_name|default:'Awaiting' }} · Link expires: {{ doc.expires_at }}</p>
+<div class="re-ops-actions">
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-review' %}?document={{ doc.pk }}">View snapshot / Copy secure review link</a>
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-pdf' %}?document={{ doc.pk }}">Download PDF</a>
+{% if not doc.superseded_at %}
+{% if not doc.accepted_at and not doc.revoked_at %}
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-send' %}?document={{ doc.pk }}">Send authorisation</a>
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-handwritten' %}?document={{ doc.pk }}">Record handwritten copy received</a>
+{% endif %}
+<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-reissue' %}?document={{ doc.pk }}">Reissue</a>
+{% if not doc.revoked_at %}<a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' original.pk 'authorisation-revoke' %}?document={{ doc.pk }}">Revoke link</a>{% endif %}
+{% endif %}
+</div></div>{% empty %}<p>No authorisation has been generated yet.</p>{% endfor %}
+<h3>Final on-site scope checks</h3>
+{% for check in property_authorisation_hub.checks %}<p><strong>{{ check.get_outcome_display }}</strong> · {{ check.created_at }} · {{ check.person_confirming }} ({{ check.capacity }}) · {{ check.location }}<br>All agreed requirements completed: {{ check.all_agreed_completed|yesno:'Yes,No' }}{% if check.outstanding_capture %}<br>Outstanding: {{ check.outstanding_capture|linebreaksbr }}{% endif %}{% if check.notes %}<br>{{ check.notes|linebreaksbr }}{% endif %}<br>Recorded by {{ check.recorded_by }}</p>{% empty %}<p>No final scope check recorded.</p>{% endfor %}
+</section>

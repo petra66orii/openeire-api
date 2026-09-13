@@ -1,0 +1,13 @@
+Property Access & Shoot Authorisation - OpenÉire Studios
+
+Please confirm your authority to permit access to {{ location }}, any known restrictions or hazards, and any particular must-capture requirements before the shoot.
+
+If you do not have any particular shot preferences, simply select "No specific requirements" and OpenÉire will use its professional judgement within your agreed package/scope. You do not need to invent a shot list. Your agreed deliverables remain unchanged.
+
+Review & complete authorisation: {{ review_url }}
+
+You may accept electronically, or alternatively print, complete and sign the attached PDF and return it by replying to this email. Both methods are equally acceptable; printing is optional.
+
+PDF download: {{ pdf_url }}
+
+This supplements the Booking Agreement and is separate from payment confirmation. If the locations or scope shown are incorrect, contact us before accepting. Please keep this private review link secure.
