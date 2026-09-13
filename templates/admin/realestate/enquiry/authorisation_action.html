@@ -1,0 +1,21 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<style>textarea,input:not([type=checkbox]):not([type=radio]):not([type=hidden]),select{max-width:100%;box-sizing:border-box}textarea{width:100%}.helptext{display:block}form p{margin-bottom:1.25rem}label{display:block}input[type=radio]+label{display:inline}</style>
+<div style="max-width:900px">
+<p><a href="{% url 'admin:realestate_realestateenquiry_change' enquiry.pk %}">Back to enquiry RE-{{ enquiry.pk }}</a></p>
+{% if error %}<p class="errornote">{{ error }}</p>{% endif %}
+{% if action == 'authorisation-review' %}
+  <p>Status: <strong>{{ document.display_status }}</strong> · Version {{ document.template_version }}</p>
+  {% if review_url %}<label for="secure-link">Secure review link (select and copy; share only with the authorising person)</label><input id="secure-link" readonly value="{{ review_url }}" style="width:100%;box-sizing:border-box"><p><a href="{{ review_url }}">Open secure review page</a></p>{% endif %}
+  <p><a class="button" href="{% url 'admin:realestate_realestateenquiry_ops_action' enquiry.pk 'authorisation-pdf' %}?document={{ document.pk }}">Download PDF / accepted snapshot</a></p>
+{% else %}
+  {% if action == 'authorisation-scope-check' %}<p>Before leaving the Property, OpenÉire has asked whether any additional essential feature or area already identified as part of the agreed brief remains to be captured. This is an opportunity to flag something important, not an inspection of every image. No second signature is required.</p>{% endif %}
+  {% if action == 'authorisation-handwritten' %}<p>Transcribe the returned signed document faithfully, including restrictions, hazards and capture preferences. This records handwritten receipt, not electronic acceptance. Keep the original signed copy in your existing private records.</p>{% endif %}
+  {% if action == 'authorisation-send' %}<p>Send the review link and print-ready PDF to <strong>{{ document.recipient_email }}</strong>. Sending does not record acceptance.</p>{% endif %}
+  {% if action == 'authorisation-reissue' %}<p>Create a fresh document from the current enquiry. The previous content remains preserved, and its public link will become unavailable.</p>{% endif %}
+  {% if action == 'authorisation-revoke' %}<p>Revoke public access to this document. Its existing records will be retained.</p>{% endif %}
+  <form method="post">{% csrf_token %}{% if document %}<input type="hidden" name="document" value="{{ document.pk }}">{% endif %}{{ form.as_p }}<button type="submit" class="default">{% if action == 'authorisation-send' %}Send authorisation{% else %}Save{% endif %}</button></form>
+{% endif %}
+{% if snapshot %}<hr>{% include 'realestate/authorisation_document.html' %}{% endif %}
+</div>
+{% endblock %}

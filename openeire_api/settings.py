@@ -422,6 +422,7 @@ USE_TZ = True
 # R2 is too slow for tiny CSS/JS requests.
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [BASE_DIR / 'static']
 
 # 2. MEDIA FILES (Uploads)
 if RUNNING_TESTS:

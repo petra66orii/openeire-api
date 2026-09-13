@@ -1,4 +1,5 @@
 from django.urls import path
+from .authorisation_views import public_authorisation
 
 from .views import (
     RealEstateDepositCancelledView,
@@ -17,6 +18,8 @@ from .delivery_views import (
 
 
 urlpatterns = [
+    path("authorisation/<str:token>/", public_authorisation, name="property-authorisation"),
+    path("authorisation/<str:token>/pdf/", public_authorisation, {"pdf": True}, name="property-authorisation-pdf"),
     path("delivery/exchange/", DeliveryExchangeView.as_view(), name="delivery-exchange"),
     path("delivery/session/", DeliverySessionView.as_view(), name="delivery-session"),
     path("delivery/download/", DeliveryDownloadView.as_view(), name="delivery-download"),

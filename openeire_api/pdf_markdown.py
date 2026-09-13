@@ -20,8 +20,9 @@ def render_markdown_to_flowables(
     *,
     table_width=None,
     keep_headings_with_next=False,
+    theme=None,
 ):
-    styles = getSampleStyleSheet()
+    styles = theme.styles if theme else getSampleStyleSheet()
     title_style = styles["Title"]
     h2 = styles["Heading2"]
     h3 = styles["Heading3"]
@@ -47,7 +48,7 @@ def render_markdown_to_flowables(
             level = len(line) - len(line.lstrip("#"))
             content = apply_basic_markdown(line[level:].strip())
             style = title_style if level == 1 else h2 if level == 2 else h3
-            elements.append(Paragraph(content, style))
+            elements.append(theme.heading(content, level, markup=True) if theme else Paragraph(content, style))
             if not (keep_headings_with_next and level > 1):
                 elements.append(Spacer(1, 6))
             i += 1
@@ -84,9 +85,11 @@ def render_markdown_to_flowables(
                 rows.append([cell.strip() for cell in lines[i].strip().strip("|").split("|")])
                 i += 1
 
-            table_data = [[Paragraph(apply_basic_markdown(cell), normal) for cell in header]]
+            cell_style = styles["BrandCell"] if theme else normal
+            header_style = styles["BrandLabel"] if theme else normal
+            table_data = [[Paragraph(apply_basic_markdown(cell), header_style) for cell in header]]
             table_data.extend(
-                [[Paragraph(apply_basic_markdown(cell), normal) for cell in row] for row in rows]
+                [[Paragraph(apply_basic_markdown(cell), cell_style) for cell in row] for row in rows]
             )
             col_widths = None
             if table_width and header:
@@ -100,8 +103,9 @@ def render_markdown_to_flowables(
                 hAlign="LEFT",
                 repeatRows=1,
                 splitByRow=1,
+                splitInRow=1 if theme else 0,
             )
-            table.setStyle(TableStyle([
+            table.setStyle(theme.table_style(header=True) if theme else TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#262626")),

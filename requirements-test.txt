@@ -1,0 +1,3 @@
+-r requirements.txt
+# PDF extraction and visual regression previews; not a production dependency.
+PyMuPDF==1.28.0

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Property Access &amp; Shoot Authorisation</title>
+<style>
+body{font:17px/1.6 system-ui,sans-serif;color:#19332c;background:#f3f5f2;margin:0}main{max-width:860px;margin:auto;padding:24px}article,form,.notice{background:white;padding:24px;border-radius:8px;margin-bottom:24px}h1{font-size:1.8rem;line-height:1.2}h2{font-size:1.2rem;margin-top:28px}input:not([type=radio]):not([type=checkbox]),textarea,select{display:block;box-sizing:border-box;width:100%;padding:10px;font:inherit}input[type=checkbox],input[type=radio]{width:20px;height:20px;vertical-align:middle}label{font-weight:600}form p{margin-bottom:24px}.helptext{display:block;font-size:.9rem;color:#455c54}.errorlist{color:#a31515}button,.button{display:inline-block;background:#214f41;color:white;padding:12px 18px;border:0;border-radius:5px;font:inherit}a{color:#215849}article p{overflow-wrap:anywhere}@media(max-width:540px){main{padding:12px}article,form,.notice{padding:16px}}@media print{form,.notice{display:none}body{background:white}}
+</style></head><body><main>
+{% if unavailable %}
+<h1>This authorisation link is unavailable</h1><p>It may be invalid, expired, revoked or superseded. Please contact OpenÉire for a current document.</p>
+{% elif download_only %}
+<div class="notice"><h1>Your authorisation PDF</h1>
+<p>{{ document.location }}</p>
+<p>Download your {% if document.accepted_at %}accepted{% else %}print-ready{% endif %} copy below. You can also complete the authorisation online.</p>
+<p><a class="button" href="{% url 'property-authorisation-pdf' document.token %}" download>Download PDF</a></p>
+<a href="{% url 'property-authorisation' document.token %}">Review authorisation online</a></div>
+{% else %}
+<div class="notice">
+{% if document.accepted_at %}<strong>{{ document.get_status_display }}</strong><p>This record is complete and cannot be accepted again. Contact OpenÉire if a correction is needed.</p>
+{% else %}<h1>A quick pre-shoot confirmation</h1><p>Confirm authority and access, disclose known hazards, and tell us about any particular must-capture features. You do not need to invent a shot list: choose <strong>No specific requirements</strong> and rely on our professional judgement within your agreed scope.</p><p>Choose either method: complete and accept this page, or download, print, complete and sign the PDF and return it. Both are equally acceptable. Printing is optional.</p>{% endif %}
+<a href="{% url 'property-authorisation-pdf' document.token %}">Download {% if document.accepted_at %}accepted{% else %}print-ready{% endif %} PDF</a>
+</div>
+{% include 'realestate/authorisation_document.html' %}
+{% if form %}<form method="post">{% csrf_token %}<h2>Your confirmation</h2><p>This authorisation covers only the property / locations listed above. If these details or the agreed scope are wrong, contact OpenÉire before accepting.</p>{{ form.as_p }}<button type="submit">Accept authorisation electronically</button></form>{% endif %}
+{% endif %}
+</main></body></html>

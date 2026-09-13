@@ -11,6 +11,7 @@ from django.utils.text import slugify
 
 from openeire_api.business_identity import get_business_identity
 from openeire_api.pdf_markdown import render_markdown_to_flowables
+from openeire_api.pdf_branding import OpenEirePDFTheme, branded_document, page_decoration
 
 from .models import (
     RealEstateBookingAgreementSnapshot,
@@ -22,9 +23,7 @@ from .turnaround import TURNAROUND_CONTEXT
 from .payment_terms import booking_payment_copy
 from .package_catalogue import get_package
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, Table, TableStyle
 
 
 BOOKING_AGREEMENT_TEMPLATE_PATH = (
@@ -493,18 +492,13 @@ def generate_booking_agreement_pdf(
         for_customer=for_customer,
     )
     buffer = BytesIO()
-    document = SimpleDocTemplate(
+    document = branded_document(
         buffer,
-        pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=28 * mm,
-        bottomMargin=20 * mm,
         title=f"{get_business_identity().display_name} Real Estate Booking Agreement",
-        author=get_business_identity().display_name,
     )
+    theme = OpenEirePDFTheme()
     flowables = render_markdown_to_flowables(
-        rendered_markdown, table_width=document.width, keep_headings_with_next=True,
+        rendered_markdown, table_width=document.width, keep_headings_with_next=True, theme=theme,
     )
     # Keep compact tables, short clauses, and headings with their first content.
     # Oversized content still uses ReportLab's normal splitting fallback.
@@ -540,5 +534,6 @@ def generate_booking_agreement_pdf(
             continue
         arranged.append(KeepTogether([flowable]) if isinstance(flowable, Paragraph) else flowable)
         index += 1
-    document.build(arranged)
+    decoration = page_decoration(document_type="REAL ESTATE BOOKING AGREEMENT")
+    document.build(arranged, onFirstPage=decoration, onLaterPages=decoration)
     return buffer.getvalue()

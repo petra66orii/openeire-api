@@ -7,6 +7,8 @@ from decimal import Decimal
 import re
 import uuid
 
+from .authorisation_models import PropertyAuthorisation, PropertyScopeCheck
+
 from .package_catalogue import (
     ADDITIONAL_PHOTOGRAPH_COPY,
     PACKAGE_SUMMARIES,

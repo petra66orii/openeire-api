@@ -968,6 +968,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         if object_id:
             enquiry = self.get_object(request, object_id)
             if enquiry:
+                from .authorisation_views import hub_context
+                extra_context["property_authorisation_hub"] = hub_context(enquiry)
                 extra_context["operations_hub"] = self._build_operations_hub(request, enquiry)
         return super().changeform_view(request, object_id, form_url, extra_context)
 
@@ -1134,6 +1136,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         )
 
     def operations_action_view(self, request, object_id, action):
+        if action.startswith("authorisation-"):
+            from django.shortcuts import get_object_or_404
+            from .authorisation_views import staff_authorisation
+            enquiry = get_object_or_404(RealEstateEnquiry, pk=object_id)
+            return staff_authorisation(request, self, enquiry, action)
         enquiry = self.get_object(request, object_id)
         if not enquiry:
             raise RealEstateEnquiry.DoesNotExist()

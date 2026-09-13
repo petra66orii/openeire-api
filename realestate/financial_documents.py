@@ -1,10 +1,9 @@
 from io import BytesIO
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table
+from reportlab.platypus import Spacer
 
 from openeire_api.business_identity import get_business_identity
+from openeire_api.pdf_branding import OpenEirePDFTheme, branded_document, page_decoration
 
 
 VAT_NOTICE = "VAT not applicable — supplier not VAT registered."
@@ -17,18 +16,30 @@ RELEASE_NOTICE = (
 def _pdf(title, rows, notices):
     identity = get_business_identity()
     buffer = BytesIO()
-    document = SimpleDocTemplate(
-        buffer, pagesize=A4, title=title, author=identity.display_name, pageCompression=0
-    )
-    styles = getSampleStyleSheet()
-    story = [Paragraph(identity.display_name, styles["Title"])]
-    for value in (identity.address, identity.email, identity.phone):
-        if value:
-            story.append(Paragraph(value, styles["Normal"]))
-    story.extend((Spacer(1, 16), Paragraph(title, styles["Heading1"]), Table(rows, hAlign="LEFT")))
+    document = branded_document(buffer, title=title, identity=identity, page_compression=0)
+    theme = OpenEirePDFTheme()
+    story = [theme.heading(title, level=1)]
+    story.append(theme.paragraph(" | ".join(value for value in (identity.address, identity.email, identity.phone) if value), "BrandMeta"))
+    metadata_labels = {"Invoice number", "Receipt number", "Issue date", "Due date", "Status", "Date"}
+    job_labels = {"Customer", "Company", "Job/property", "Job reference", "Payer", "Invoice"}
+    description_labels = {"Description", "Package deliverables", "Payment references"}
+    metadata = [(label, value) for label, value in rows if label in metadata_labels]
+    job = [(label, value) for label, value in rows if label in job_labels]
+    descriptions = [(label, value) for label, value in rows if label in description_labels]
+    financial = [(label, value) for label, value in rows if label not in metadata_labels | job_labels | description_labels]
+    story.extend(theme.paired_information(metadata, job, emphasize=("Status",) if ("Status", "Paid") in metadata else ()))
+    for label, value in descriptions:
+        if label == "Payment references":
+            story.append(theme.paragraph(f"{label}: {value}", "BrandMeta"))
+        else:
+            story.append(theme.heading(label, level=3))
+            story.append(theme.paragraph(value))
+    story.append(theme.heading("Payment details"))
+    story.append(theme.information_table(financial, financial=True))
     for notice in notices:
-        story.extend((Spacer(1, 10), Paragraph(notice, styles["Normal"])))
-    document.build(story)
+        story.extend((Spacer(1, 5), theme.notice(notice)))
+    decoration = page_decoration(document_type="CASH RECEIPT" if title.startswith("Cash receipt") else "INVOICE", identity=identity)
+    document.build(story, onFirstPage=decoration, onLaterPages=decoration)
     return buffer.getvalue()
 
 
