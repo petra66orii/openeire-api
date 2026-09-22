@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 from decimal import Decimal
 import re
@@ -492,15 +492,22 @@ class RealEstateEnquiry(models.Model):
         labels = self.get_add_on_labels()
         return ", ".join(labels) if labels else "None"
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self.pk:
-            previous = RealEstateEnquiry.objects.filter(pk=self.pk).values_list(
-                "payment_arrangement", flat=True
+            # Serialize term edits with invoice creation on the same booking.
+            previous = RealEstateEnquiry.objects.select_for_update().filter(pk=self.pk).values(
+                "payment_arrangement", "custom_required_total", "custom_payment_terms"
             ).first()
-            if previous and previous != self.payment_arrangement and self.invoices.exists():
-                raise ValidationError(
-                    "Payment arrangement cannot change after invoices have been created."
-                )
+            if previous and self.invoices.exists():
+                if previous["payment_arrangement"] != self.payment_arrangement:
+                    raise ValidationError(
+                        "Payment arrangement cannot change after invoices have been created."
+                    )
+                changed = [field for field in ("custom_required_total", "custom_payment_terms")
+                           if previous[field] != getattr(self, field)]
+                if changed:
+                    raise ValidationError("Custom financial terms cannot change after invoices have been created.")
         if self.payment_arrangement == self.PaymentArrangement.CUSTOM:
             if not str(self.custom_payment_terms or "").strip() or not self.custom_required_total:
                 raise ValidationError(
@@ -659,6 +666,19 @@ class RealEstateBookingAgreementSnapshot(models.Model):
 
 
 class RealEstateInvoice(models.Model):
+    class StripeSyncState(models.TextChoices):
+        NEVER = "never", "Stripe never attempted"
+        CUSTOMER = "customer_pending", "Customer creation pending / outcome unknown"
+        CREATE = "create_pending", "Invoice creation pending / outcome unknown"
+        ITEM = "item_pending", "Stripe invoice created; line item pending"
+        FINALIZE = "finalize_pending", "Finalisation pending / failed"
+        FINALIZED = "finalized", "Finalised; send not confirmed"
+        SEND = "send_pending", "Send pending / outcome unknown"
+        SENT = "sent", "Sent"
+        RECOVERY = "recovery_required", "Recovery required — review Stripe before proceeding"
+        VOID = "void_confirmed", "Stripe void confirmed"
+        LEGACY = "legacy_remote", "Stripe invoice exists; historical send outcome unknown"
+
     class InvoiceType(models.TextChoices):
         DEPOSIT = "deposit", "Deposit"
         BALANCE = "balance", "Balance"
@@ -702,6 +722,13 @@ class RealEstateInvoice(models.Model):
     stripe_hosted_invoice_url = models.URLField(max_length=2048, blank=True)
     stripe_invoice_pdf_url = models.URLField(max_length=2048, blank=True)
     stripe_invoice_status = models.CharField(max_length=32, blank=True)
+    stripe_sync_state = models.CharField(
+        max_length=24, choices=StripeSyncState.choices,
+        default=StripeSyncState.NEVER, editable=False,
+    )
+    stripe_sync_data = models.JSONField(default=dict, editable=False)
+    stripe_sync_lock_token = models.UUIDField(null=True, editable=False)
+    stripe_sync_lock_until = models.DateTimeField(null=True, editable=False)
     stripe_invoice_created_at = models.DateTimeField(null=True, blank=True)
     stripe_invoice_finalized_at = models.DateTimeField(null=True, blank=True)
     stripe_marked_paid_out_of_band_at = models.DateTimeField(null=True, blank=True)

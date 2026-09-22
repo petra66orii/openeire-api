@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, time
 
 import stripe
@@ -171,6 +171,111 @@ def ensure_standard_realestate_invoices(enquiry):
     return deposit, balance
 
 
+def get_custom_instalment_capacity(enquiry):
+    """Reserve unpaid amounts, including drafts, without counting payments twice."""
+    booking_total = money(enquiry.adjusted_required_total)
+    paid = Decimal("0.00")
+    outstanding = Decimal("0.00")
+    for invoice in enquiry.invoices.all():
+        # Use the same effective payment value for both sides of the calculation.
+        invoice_paid = invoice.amount_paid
+        paid += invoice_paid
+        if invoice.status != RealEstateInvoice.Status.VOID:
+            outstanding += max(invoice.total - invoice_paid, Decimal("0.00"))
+    paid, outstanding = money(paid), money(outstanding)
+    balance = money(max(booking_total - paid, Decimal("0.00")))
+    return {
+        "booking_total": booking_total,
+        "paid": paid,
+        "balance": balance,
+        "active_unpaid": outstanding,
+        "uninvoiced": money(max(balance - outstanding, Decimal("0.00"))),
+        # Sequential instalments also prevent accidental repeat submissions.
+        "maximum": (
+            Decimal("0.00") if outstanding else balance
+        ),
+    }
+
+
+@transaction.atomic
+def create_custom_instalment_invoice(*, enquiry, amount, description, user=None):
+    """Issue one explicitly priced Custom instalment; no Stripe side effects."""
+    enquiry = RealEstateEnquiry.objects.select_for_update().get(pk=enquiry.pk)
+    if enquiry.payment_arrangement != RealEstateEnquiry.PaymentArrangement.CUSTOM:
+        raise ValidationError("Custom instalments require the Custom payment arrangement.")
+    if not enquiry.custom_required_total or enquiry.custom_required_total <= 0:
+        raise ValidationError("Set the Custom required total to the whole booking total first.")
+    if not str(enquiry.custom_payment_terms or "").strip():
+        raise ValidationError("Custom payment terms are required.")
+    try:
+        total = Decimal(str(amount))
+        if not total.is_finite() or total <= 0 or total > Decimal("99999999.99"):
+            raise ValueError
+        if total != money(total):
+            raise ValueError
+        total = money(total)
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValidationError("Enter a positive instalment amount with at most two decimal places.")
+    description = str(description or "").strip()
+    if not description or len(description) > 255:
+        raise ValidationError("Enter an invoice description of at most 255 characters.")
+
+    # Payment recording and invoice voiding lock the invoice rows. Wait for those
+    # operations before deciding how much new debt may be issued.
+    list(enquiry.invoices.select_for_update().order_by("pk"))
+    if enquiry.invoices.filter(
+        stripe_sync_state=RealEstateInvoice.StripeSyncState.RECOVERY
+    ).exists():
+        raise ValidationError("Resolve the existing Stripe recovery warning before creating another instalment.")
+    capacity = get_custom_instalment_capacity(enquiry)
+    if capacity["active_unpaid"]:
+        raise ValidationError("Pay or safely void the existing unpaid invoice before creating another instalment.")
+    if total > capacity["uninvoiced"]:
+        raise ValidationError(f"Instalment exceeds the remaining uninvoiced amount of EUR {capacity['uninvoiced']}.")
+
+    snapshot = calculate_realestate_deposit_amounts(enquiry)
+    vat_rate = Decimal(snapshot["vat_rate"])
+    subtotal = (
+        money(total / (Decimal("1") + vat_rate))
+        if snapshot["vat_registered"] and vat_rate else total
+    )
+    now = timezone.now()
+    due_at = (
+        timezone.make_aware(datetime.combine(enquiry.payment_due_date, time.min))
+        if enquiry.payment_due_date else now
+    )
+    # ADJUSTMENT permits multiple invoices; this is not a ledger reduction.
+    invoice = RealEstateInvoice.objects.create(
+        enquiry=enquiry,
+        invoice_type=RealEstateInvoice.InvoiceType.ADJUSTMENT,
+        invoice_number=allocate_document_number(RealEstateDocumentSequence.Kind.INVOICE, at=now),
+        status=RealEstateInvoice.Status.ISSUED,
+        currency="EUR", description=description,
+        line_items_snapshot=build_invoice_line_items(
+            enquiry,
+            RealEstateInvoice.InvoiceType.ADJUSTMENT,
+            total,
+            description,
+        ),
+        subtotal=subtotal, vat_rate=vat_rate, vat_amount=money(total - subtotal), total=total,
+        customer_name_snapshot=enquiry.name,
+        company_name_snapshot=enquiry.company_name,
+        customer_email_snapshot=enquiry.email,
+        customer_phone_snapshot=enquiry.phone,
+        property_reference_snapshot=enquiry.property_address,
+        job_reference_snapshot=f"RE-{enquiry.pk}",
+        issued_at=now, due_at=due_at,
+    )
+    record_timeline_event(
+        enquiry, RealEstateTimelineEvent.EventType.INVOICE_ISSUED,
+        actor_type=(RealEstateTimelineEvent.ActorType.ADMIN if user else RealEstateTimelineEvent.ActorType.SYSTEM),
+        title="Custom instalment invoice issued",
+        notes=f"Invoice {invoice.invoice_number} issued for EUR {invoice.total}.",
+        created_by=user,
+    )
+    return invoice
+
+
 def ensure_invoices_for_arrangement(enquiry):
     if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
         return list(ensure_standard_realestate_invoices(enquiry))
@@ -319,6 +424,12 @@ def void_local_realestate_invoice(invoice, *, user=None):
         )
         if invoice.status == RealEstateInvoice.Status.VOID:
             return invoice, False
+        if (invoice.stripe_sync_state != RealEstateInvoice.StripeSyncState.NEVER
+                or invoice.stripe_sync_data or invoice.stripe_sync_lock_token):
+            raise ValidationError(
+                "Stripe interaction has started or its history is uncertain. Local-only void is blocked; "
+                "review and reconcile the remote invoice first."
+            )
         if invoice.status in {
             RealEstateInvoice.Status.PARTIALLY_PAID,
             RealEstateInvoice.Status.PAID,
@@ -415,6 +526,9 @@ def _final_invoice_type(enquiry):
 def _assert_invoice_can_be_locally_superseded(invoice):
     if not invoice:
         return
+    if (invoice.stripe_sync_state != RealEstateInvoice.StripeSyncState.NEVER
+            or invoice.stripe_sync_data or invoice.stripe_sync_lock_token):
+        raise ValidationError("Stripe processing has started or requires recovery; local supersession is blocked.")
     if invoice.status in {
         RealEstateInvoice.Status.PARTIALLY_PAID,
         RealEstateInvoice.Status.PAID,

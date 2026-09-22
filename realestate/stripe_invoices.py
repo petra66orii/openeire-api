@@ -1,4 +1,3 @@
-from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
 
 import stripe
@@ -9,8 +8,8 @@ from django.utils import timezone
 
 from openeire_api.business_identity import get_business_identity
 
-from .models import RealEstateInvoice
 from .invoice_line_items import get_invoice_line_items
+from .models import RealEstateInvoice
 from .stripe_invoice_revisions import (
     StripeInvoiceRevisionError,
     reconcile_stored_invoice_revision,
@@ -36,43 +35,15 @@ def _configure_stripe():
     stripe.max_network_retries = getattr(settings, "STRIPE_MAX_NETWORK_RETRIES", 2)
 
 
-@transaction.atomic
-def create_stripe_invoice(local_invoice, *, send=False):
-    _configure_stripe()
-    local_invoice = RealEstateInvoice.objects.select_for_update().select_related("enquiry").get(
-        pk=local_invoice.pk
-    )
-    if local_invoice.status not in {
-        RealEstateInvoice.Status.ISSUED,
-        RealEstateInvoice.Status.PARTIALLY_PAID,
-    }:
-        raise ValidationError("Only issued unpaid invoices can be created in Stripe.")
-    if local_invoice.stripe_invoice_id:
-        return local_invoice, False
-
+def _frozen_stripe_payloads(local_invoice):
     enquiry = local_invoice.enquiry
-    customer_id = enquiry.stripe_customer_id
-    if not customer_id:
-        customer = stripe.Customer.create(
-            email=local_invoice.customer_email_snapshot,
-            name=local_invoice.company_name_snapshot or local_invoice.customer_name_snapshot,
-            metadata={
-                "realestate_enquiry_id": str(enquiry.pk),
-                "brand": get_business_identity().display_name,
-            },
-            idempotency_key=f"realestate-customer-{enquiry.pk}",
-        )
-        customer_id = str(_value(customer, "id"))
-        enquiry.stripe_customer_id = customer_id
-        enquiry.save(update_fields=("stripe_customer_id", "updated_at"))
-
     due_days = int(getattr(settings, "REALESTATE_STRIPE_INVOICE_DUE_DAYS", 7))
     if local_invoice.due_at:
         due_days = max(1, (local_invoice.due_at.date() - timezone.localdate()).days)
     metadata = _stripe_metadata(local_invoice)
     adjustment_descriptions = ", ".join(
         f"{item.customer_description}: -EUR {item.amount}"
-        for item in local_invoice.enquiry.financial_adjustments.filter(
+        for item in enquiry.financial_adjustments.filter(
             reversed_at__isnull=True
         ).order_by("created_at")
     )
@@ -81,74 +52,69 @@ def create_stripe_invoice(local_invoice, *, send=False):
         if adjustment_descriptions
         else ""
     )
-    stripe_invoice = stripe.Invoice.create(
-        customer=customer_id,
-        collection_method="send_invoice",
-        days_until_due=due_days,
-        auto_advance=False,
-        automatic_tax={"enabled": False},
-        metadata=metadata,
-        custom_fields=[{"name": "OpenÉire invoice", "value": local_invoice.invoice_number}],
-        description=(
-            f"{local_invoice.description}. Property/job: {local_invoice.job_reference_snapshot}. "
-            f"Original booking total: EUR {local_invoice.enquiry.original_required_total}."
-            f"{adjustment_text} Balance requested: EUR {local_invoice.total}. "
-            "VAT not applicable — supplier not VAT registered."
-        ),
-        idempotency_key=f"realestate-stripe-invoice-{local_invoice.invoice_number}",
-    )
-    stripe_invoice_id = str(_value(stripe_invoice, "id"))
-    for index, item in enumerate(get_invoice_line_items(local_invoice), start=1):
+    item_payloads = []
+    for item in get_invoice_line_items(local_invoice):
         unit_amount_cents = Decimal(item["unit_amount"]) * Decimal("100")
-        stripe.InvoiceItem.create(
-            customer=customer_id,
-            invoice=stripe_invoice_id,
-            unit_amount_decimal=format(unit_amount_cents, "f"),
-            quantity=int(item.get("quantity") or 1),
-            currency=local_invoice.currency.lower(),
-            description=item["description"],
-            metadata=metadata,
-            idempotency_key=(
-                f"realestate-stripe-item-{local_invoice.invoice_number}-{index}"
+        item_payloads.append({
+            "unit_amount_decimal": format(unit_amount_cents, "f"),
+            "quantity": int(item.get("quantity") or 1),
+            "currency": local_invoice.currency.lower(),
+            "description": item["description"],
+            "metadata": metadata,
+        })
+    return {
+        "customer_id": enquiry.stripe_customer_id,
+        "customer": {
+            "email": local_invoice.customer_email_snapshot,
+            "name": local_invoice.company_name_snapshot or local_invoice.customer_name_snapshot,
+            "metadata": {
+                "realestate_enquiry_id": str(enquiry.pk),
+                "brand": get_business_identity().display_name,
+            },
+        },
+        "create": {
+            "collection_method": "send_invoice",
+            "days_until_due": due_days,
+            "auto_advance": False,
+            "automatic_tax": {"enabled": False},
+            "metadata": metadata,
+            "custom_fields": [
+                {"name": "OpenÉire invoice", "value": local_invoice.invoice_number}
+            ],
+            "description": (
+                f"{local_invoice.description}. Property/job: {local_invoice.job_reference_snapshot}. "
+                f"Original booking total: EUR {enquiry.original_required_total}."
+                f"{adjustment_text} Balance requested: EUR {local_invoice.total}. "
+                "VAT not applicable — supplier not VAT registered."
             ),
-        )
-    finalized = stripe.Invoice.finalize_invoice(
-        stripe_invoice_id,
-        idempotency_key=f"realestate-stripe-finalize-{local_invoice.invoice_number}",
-    )
-    result = stripe.Invoice.send_invoice(stripe_invoice_id) if send else finalized
-    created_timestamp = int(_value(result, "created", 0) or 0)
-    local_invoice.stripe_invoice_id = stripe_invoice_id
-    local_invoice.stripe_invoice_number = str(_value(result, "number"))
-    local_invoice.stripe_hosted_invoice_url = str(_value(result, "hosted_invoice_url"))
-    local_invoice.stripe_invoice_pdf_url = str(_value(result, "invoice_pdf"))
-    local_invoice.stripe_invoice_status = str(_value(result, "status", "open"))
-    local_invoice.stripe_invoice_created_at = (
-        datetime.fromtimestamp(created_timestamp, tz=dt_timezone.utc)
-        if created_timestamp else timezone.now()
-    )
-    local_invoice.stripe_invoice_finalized_at = timezone.now()
-    local_invoice.save(update_fields=(
-        "stripe_invoice_id", "stripe_invoice_number", "stripe_hosted_invoice_url",
-        "stripe_invoice_pdf_url", "stripe_invoice_status", "stripe_invoice_created_at",
-        "stripe_invoice_finalized_at", "updated_at",
-    ))
-    return local_invoice, True
+        },
+        "items": item_payloads,
+    }
 
 
-@transaction.atomic
+def create_stripe_invoice(local_invoice, *, send=False):
+    from .stripe_sync import resume
+
+    _configure_stripe()
+    return resume(local_invoice, stripe, _frozen_stripe_payloads, send=send)
+
+
 def send_stripe_invoice(local_invoice):
+    from .stripe_sync import resume
+
+    _configure_stripe()
+    local_invoice.refresh_from_db()
     if not local_invoice.stripe_invoice_id:
         return create_stripe_invoice(local_invoice, send=True)[0]
-    local_invoice, _chain = reconcile_stored_invoice_revision(local_invoice)
-    if local_invoice.stripe_invoice_status in {"void", "paid", "uncollectible"}:
-        raise ValidationError(
-            "The current Stripe invoice cannot be sent in its present status."
-        )
-    result = stripe.Invoice.send_invoice(local_invoice.stripe_invoice_id)
-    local_invoice.stripe_invoice_status = str(_value(result, "status", "open"))
-    local_invoice.save(update_fields=("stripe_invoice_status", "updated_at"))
-    return local_invoice
+    # An ordinary retry resumes the same pending send. A deliberate reminder
+    # after confirmed success gets a new send operation/key.
+    return resume(
+        local_invoice,
+        stripe,
+        _frozen_stripe_payloads,
+        send=True,
+        reminder=True,
+    )[0]
 
 
 @transaction.atomic
@@ -172,7 +138,9 @@ def mark_stripe_invoice_paid_out_of_band(local_invoice, *, user):
     local_invoice.stripe_marked_paid_out_of_band_by = user
     local_invoice.stripe_invoice_status = "paid"
     local_invoice.save(update_fields=(
-        "stripe_marked_paid_out_of_band_at", "stripe_marked_paid_out_of_band_by",
-        "stripe_invoice_status", "updated_at",
+        "stripe_marked_paid_out_of_band_at",
+        "stripe_marked_paid_out_of_band_by",
+        "stripe_invoice_status",
+        "updated_at",
     ))
     return local_invoice
