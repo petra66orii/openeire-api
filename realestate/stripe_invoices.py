@@ -10,6 +10,7 @@ from django.utils import timezone
 from openeire_api.business_identity import get_business_identity
 
 from .models import RealEstateInvoice
+from .invoice_line_items import get_invoice_line_items
 from .stripe_invoice_revisions import (
     StripeInvoiceRevisionError,
     reconcile_stored_invoice_revision,
@@ -97,15 +98,20 @@ def create_stripe_invoice(local_invoice, *, send=False):
         idempotency_key=f"realestate-stripe-invoice-{local_invoice.invoice_number}",
     )
     stripe_invoice_id = str(_value(stripe_invoice, "id"))
-    stripe.InvoiceItem.create(
-        customer=customer_id,
-        invoice=stripe_invoice_id,
-        amount=int(local_invoice.total * Decimal("100")),
-        currency=local_invoice.currency.lower(),
-        description=local_invoice.description,
-        metadata=metadata,
-        idempotency_key=f"realestate-stripe-item-{local_invoice.invoice_number}",
-    )
+    for index, item in enumerate(get_invoice_line_items(local_invoice), start=1):
+        unit_amount_cents = Decimal(item["unit_amount"]) * Decimal("100")
+        stripe.InvoiceItem.create(
+            customer=customer_id,
+            invoice=stripe_invoice_id,
+            unit_amount_decimal=format(unit_amount_cents, "f"),
+            quantity=int(item.get("quantity") or 1),
+            currency=local_invoice.currency.lower(),
+            description=item["description"],
+            metadata=metadata,
+            idempotency_key=(
+                f"realestate-stripe-item-{local_invoice.invoice_number}-{index}"
+            ),
+        )
     finalized = stripe.Invoice.finalize_invoice(
         stripe_invoice_id,
         idempotency_key=f"realestate-stripe-finalize-{local_invoice.invoice_number}",
