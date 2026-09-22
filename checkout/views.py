@@ -859,6 +859,8 @@ class StripeWebhookView(APIView):
         if invoice.stripe_invoice_status != str(stripe_value(current, 'status', '') or ''):
             invoice.stripe_invoice_status = str(stripe_value(current, 'status', '') or '')
         invoice.save(update_fields=('stripe_invoice_status', 'updated_at'))
+        from realestate.stripe_sync import record_validated_event
+        record_validated_event(invoice, event_type)
         return True
 
     def _stale_processing_seconds(self):

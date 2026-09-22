@@ -1,0 +1,23 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p><strong>Enquiry:</strong> {{ enquiry }}</p>
+  <div class="module aligned">
+    <p><strong>Authoritative booking total:</strong> EUR {{ capacity.booking_total }}</p>
+    <p><strong>Effective cleared payments:</strong> EUR {{ capacity.paid }}</p>
+    <p><strong>Booking balance:</strong> EUR {{ capacity.balance }}</p>
+    <p><strong>Active unpaid invoices (including drafts):</strong> EUR {{ capacity.active_unpaid }}</p>
+    <p><strong>Remaining uninvoiced amount:</strong> EUR {{ capacity.uninvoiced }}</p>
+    <p><strong>Maximum new instalment now:</strong> EUR {{ capacity.maximum }}</p>
+  </div>
+  <p>Custom required total is the whole booking value. Each instalment is a separate invoice.
+    Pay or safely void the current unpaid invoice before creating the next instalment.</p>
+  <p>This creates a local invoice. Use the existing Stripe invoice action afterwards to send it.</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="default">Confirm and create invoice</button>
+    <a href="{{ return_url }}" class="button cancel-link">Cancel</a>
+  </form>
+{% endblock %}

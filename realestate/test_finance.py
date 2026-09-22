@@ -1089,7 +1089,11 @@ class StripeInvoiceRevisionTests(TestCase):
 
         result = send_stripe_invoice(self.invoice)
 
-        send.assert_called_once_with("in_revision")
+        self.invoice.refresh_from_db()
+        send.assert_called_once_with(
+            "in_revision",
+            idempotency_key=self.invoice.stripe_sync_data["operations"]["send"]["key"],
+        )
         self.assertEqual(result.stripe_invoice_id, "in_revision")
 
     @patch("realestate.stripe_invoices.stripe.Invoice.send_invoice")
@@ -1110,7 +1114,11 @@ class StripeInvoiceRevisionTests(TestCase):
             RealEstateInvoice.objects.filter(pk=self.invoice.pk),
         )
 
-        send.assert_called_once_with("in_revision")
+        self.invoice.refresh_from_db()
+        send.assert_called_once_with(
+            "in_revision",
+            idempotency_key=self.invoice.stripe_sync_data["operations"]["send"]["key"],
+        )
 
     @patch("realestate.stripe_invoice_revisions.stripe.Invoice.retrieve")
     def test_latest_revision_may_jump_to_most_recent_descendant(self, retrieve):

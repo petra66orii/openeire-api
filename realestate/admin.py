@@ -48,6 +48,8 @@ from .finance import (
     apply_realestate_financial_adjustment,
     can_release_realestate_delivery,
     create_realestate_balance_checkout_session,
+    create_custom_instalment_invoice,
+    get_custom_instalment_capacity,
     ensure_invoices_for_arrangement,
     get_realestate_financial_summary,
     record_realestate_payment,
@@ -68,6 +70,14 @@ from .financial_documents import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class CustomInstalmentInvoiceForm(forms.Form):
+    amount = forms.DecimalField(min_value=Decimal("0.01"), decimal_places=2, max_digits=10)
+    description = forms.CharField(max_length=255, label="Invoice description")
+    confirmation = forms.BooleanField(
+        label="I confirm this instalment amount and the whole booking total shown above."
+    )
 
 
 class FinancialAdjustmentForm(forms.Form):
@@ -187,6 +197,8 @@ class RealEstateInvoiceInline(admin.TabularInline):
 
     @admin.display(description="Stripe")
     def stripe_status_inline(self, obj):
+        if obj.stripe_sync_state != RealEstateInvoice.StripeSyncState.NEVER:
+            return obj.get_stripe_sync_state_display()
         return obj.stripe_invoice_status or ("Checkout" if obj.stripe_checkout_url else "Not created")
 
     @admin.display(description="Stripe links")
@@ -584,6 +596,12 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         ),
     )
 
+    def get_readonly_fields(self, request, obj=None):
+        fields = super().get_readonly_fields(request, obj)
+        if obj and obj.invoices.exists():
+            return (*fields, "payment_arrangement", "custom_required_total", "custom_payment_terms")
+        return fields
+
     def _isoformat_date(self, value):
         return value.isoformat() if value else ""
 
@@ -603,7 +621,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             rows.append(
                 f'<li><a href="{url}">{invoice.invoice_number}</a>: EUR {invoice.total}; '
                 f'paid EUR {invoice.amount_paid}; outstanding EUR {invoice.amount_outstanding}; '
-                f'Stripe {invoice.stripe_invoice_status or "not created"}{stripe_link}</li>'
+                f'Stripe {invoice.get_stripe_sync_state_display() if invoice.stripe_sync_state != RealEstateInvoice.StripeSyncState.NEVER else invoice.stripe_invoice_status or "not created"}{stripe_link}</li>'
             )
         guidance = {
             RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE: "Deposit and balance invoices; deposit is required before confirmation.",
@@ -690,6 +708,9 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         return "required final invoice missing"
 
     def _recommended_next_step(self, enquiry, invoices, payment_invoice, ready, active_override):
+        if (enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM
+                and not payment_invoice and enquiry.adjusted_balance_due > 0):
+            return "Create custom instalment invoice", "create-custom-instalment"
         if not invoices:
             if enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.DEPOSIT_THEN_BALANCE:
                 return "Send deposit invoice", "send-deposit-request"
@@ -776,7 +797,14 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "Issue invoice",
             "issue-invoices",
             style="primary" if recommended_action == "issue-invoices" else "secondary",
-            enabled=can_change and not invoices,
+            enabled=can_change and not invoices and enquiry.payment_arrangement != RealEstateEnquiry.PaymentArrangement.CUSTOM,
+        )
+        add_button(
+            "Create custom instalment invoice",
+            "create-custom-instalment",
+            style="primary" if recommended_action == "create-custom-instalment" else "secondary",
+            enabled=can_change and request.user.has_perm("realestate.add_realestateinvoice")
+            and enquiry.payment_arrangement == RealEstateEnquiry.PaymentArrangement.CUSTOM,
         )
         add_button(
             "Apply financial adjustment",
@@ -868,7 +896,11 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 "total": self._money(invoice.total),
                 "paid": self._money(invoice.amount_paid),
                 "outstanding": self._money(invoice.amount_outstanding),
-                "stripe_status": invoice.stripe_invoice_status or ("Checkout" if invoice.stripe_checkout_url else "Not created"),
+                "stripe_status": (
+                    invoice.get_stripe_sync_state_display()
+                    if invoice.stripe_sync_state != RealEstateInvoice.StripeSyncState.NEVER
+                    else invoice.stripe_invoice_status or ("Checkout" if invoice.stripe_checkout_url else "Not created")
+                ),
                 "hosted_url": invoice.stripe_hosted_invoice_url,
                 "pdf_url": invoice.stripe_invoice_pdf_url,
             })
@@ -1147,6 +1179,34 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
 
         try:
             self._require_change_permission(request, enquiry)
+
+            if action == "create-custom-instalment":
+                if not request.user.has_perm("realestate.add_realestateinvoice"):
+                    raise PermissionDenied("Invoice creation permission is required.")
+                if enquiry.payment_arrangement != RealEstateEnquiry.PaymentArrangement.CUSTOM:
+                    raise ValidationError("Custom instalments require the Custom payment arrangement.")
+                form = CustomInstalmentInvoiceForm(
+                    request.POST if request.method == "POST" else None,
+                    initial={"description": "Custom instalment - property media services"},
+                )
+                if request.method == "POST" and form.is_valid():
+                    try:
+                        invoice = create_custom_instalment_invoice(
+                            enquiry=enquiry, amount=form.cleaned_data["amount"],
+                            description=form.cleaned_data["description"], user=request.user,
+                        )
+                    except (ValidationError, ValueError) as exc:
+                        form.add_error(None, exc if isinstance(exc, ValidationError) else str(exc))
+                    else:
+                        self.message_user(request, f"Created invoice {invoice.invoice_number} for EUR {invoice.total}.", level=messages.SUCCESS)
+                        return self._redirect_to_enquiry(enquiry)
+                enquiry.refresh_from_db()
+                return TemplateResponse(request, "admin/realestate/custom_instalment.html", {
+                    **self.admin_site.each_context(request),
+                    "title": "Create custom instalment invoice", "enquiry": enquiry,
+                    "form": form, "capacity": get_custom_instalment_capacity(enquiry),
+                    "return_url": reverse("customadmin:realestate_realestateenquiry_change", args=(enquiry.pk,)),
+                })
 
             if action == "apply-financial-adjustment":
                 if not request.user.has_perm("realestate.apply_financial_adjustment"):
@@ -2095,8 +2155,13 @@ class RealEstateFinancialAdjustmentAdmin(admin.ModelAdmin):
 
 @admin.register(RealEstateInvoice, site=custom_admin_site)
 class RealEstateInvoiceAdmin(admin.ModelAdmin):
-    list_display = ("invoice_number", "enquiry", "invoice_type", "status", "total", "issued_at", "paid_at")
-    list_filter = ("invoice_type", "status", "currency", "enquiry")
+    exclude = ("stripe_sync_data", "stripe_sync_lock_token", "stripe_sync_lock_until")
+    def has_add_permission(self, request):
+        # Numbering and debt validation belong to the enquiry finance workflows.
+        return False
+
+    list_display = ("invoice_number", "enquiry", "invoice_type", "status", "total", "stripe_sync_state", "issued_at", "paid_at")
+    list_filter = ("invoice_type", "status", "currency", "enquiry", "stripe_sync_state")
     search_fields = ("invoice_number", "customer_name_snapshot", "property_reference_snapshot")
     actions = (
         "record_manual_payment_action", "download_invoice_pdf",
@@ -2123,13 +2188,26 @@ class RealEstateInvoiceAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         if obj and obj.status != RealEstateInvoice.Status.DRAFT:
-            return tuple(field.name for field in obj._meta.fields) + (
+            return tuple(field.name for field in obj._meta.fields if field.name not in self.exclude) + (
                 "amount_paid_display", "amount_outstanding_display", "stripe_hosted_link", "stripe_pdf_link",
+                "stripe_recovery_guidance",
             )
         return (
             "invoice_number", "created_at", "updated_at", "paid_at",
             "supersedes",
             "amount_paid_display", "amount_outstanding_display", "stripe_hosted_link", "stripe_pdf_link",
+            "stripe_sync_state", "stripe_recovery_guidance",
+        )
+
+    @admin.display(description="Stripe recovery / retry")
+    def stripe_recovery_guidance(self, obj):
+        if obj and obj.stripe_sync_state == RealEstateInvoice.StripeSyncState.RECOVERY:
+            from .stripe_sync import RECOVERY_INSTRUCTIONS
+            return RECOVERY_INSTRUCTIONS
+        return (
+            "Retry Create and send to resume the saved operation. Unconfirmed operations may be "
+            "retried only within 23 hours of their first attempt. For an older or historical "
+            "unknown outcome, review Stripe and request reconciliation; do not clear references or recreate."
         )
 
     def has_delete_permission(self, request, obj=None):
