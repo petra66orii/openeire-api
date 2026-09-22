@@ -61,7 +61,10 @@ class StatefulStripe:
                 self.invoices[result["id"]] = deepcopy(result)
             elif name == "item":
                 remote = self.invoices[params["invoice"]]
-                remote["total"] += params["amount"]
+                remote["total"] += int(
+                    Decimal(params["unit_amount_decimal"])
+                    * int(params.get("quantity") or 1)
+                )
                 remote["amount_due"] = remote["total"]
                 result = {"id": f"ii_recovery_{self.effects[name]}"}
             else:
@@ -285,7 +288,14 @@ class StripeRecoveryTests(TransactionTestCase):
         self.webhook(remote, "invoice.paid", "paid")
         self.assertEqual(self.enquiry.adjusted_balance_due, Decimal("0"))
         self.assertTrue(can_release_realestate_delivery(self.enquiry))
-        amounts = [params["amount"] for name, params, ident in remote.calls if name == "item"]
+        amounts = [
+            int(
+                Decimal(params["unit_amount_decimal"])
+                * int(params.get("quantity") or 1)
+            )
+            for name, params, ident in remote.calls
+            if name == "item"
+        ]
         self.assertEqual(amounts, [25000, 34900])
 
     def test_enclosing_transaction_rejected_before_any_remote_post(self):

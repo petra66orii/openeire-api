@@ -28,6 +28,12 @@ def value(obj, key, default=""):
     return obj.get(key, default) if hasattr(obj, "get") else getattr(obj, key, default)
 
 
+def operation_state(name):
+    if name == "item" or name.startswith("item_"):
+        return State.ITEM
+    return STATES[name]
+
+
 @contextmanager
 def claim(invoice):
     # durable=True rejects application callers inside an enclosing transaction.
@@ -113,7 +119,7 @@ def post(invoice, token, name, api_call, *, payload=None, remote_id=None):
                     "done": False,
                 }
                 operations[name] = operation
-            save_progress(current, data, STATES[name])
+            save_progress(current, data, operation_state(name))
     if expired:
         raise ValidationError(RECOVERY_INSTRUCTIONS)
 
@@ -142,7 +148,7 @@ def post(invoice, token, name, api_call, *, payload=None, remote_id=None):
         data = deepcopy(current.stripe_sync_data)
         data["operations"][name].update(done=True, result=snapshot)
         fields = {}
-        state = STATES[name]
+        state = operation_state(name)
         if name == "create":
             # Never overwrite a newer identity learned from a validated webhook.
             if not current.stripe_invoice_id:
@@ -234,8 +240,24 @@ def resume(invoice, api, payload_factory, *, send=False, reminder=False):
             if not current.stripe_invoice_finalized_at and current.stripe_invoice_status not in {"open", "paid", "void", "uncollectible"}:
                 if not customer_id:
                     customer_id = current.stripe_sync_data["operations"]["customer"]["result"]["id"]
-                post(current, token, "item", api.InvoiceItem.create,
-                     payload={**frozen["item"], "customer": customer_id, "invoice": current.stripe_invoice_id})
+                item_payloads = frozen.get("items")
+                if item_payloads is None:
+                    # Compatibility with in-flight records created before
+                    # itemised Stripe invoice lines were introduced.
+                    item_payloads = [frozen["item"]]
+                for index, item_payload in enumerate(item_payloads, start=1):
+                    operation_name = "item" if index == 1 else f"item_{index}"
+                    post(
+                        current,
+                        token,
+                        operation_name,
+                        api.InvoiceItem.create,
+                        payload={
+                            **item_payload,
+                            "customer": customer_id,
+                            "invoice": current.stripe_invoice_id,
+                        },
+                    )
                 post(current, token, "finalize", api.Invoice.finalize_invoice, remote_id=current.stripe_invoice_id)
                 current.refresh_from_db()
         if send:

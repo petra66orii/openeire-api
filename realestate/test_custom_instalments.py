@@ -58,7 +58,9 @@ class CustomInstalmentTests(TestCase):
             stripe.Invoice.create.return_value = {"id": f"in_fixture_{invoice.pk}"}
             stripe.Invoice.finalize_invoice.return_value = {"status": "open"}
             create_stripe_invoice(invoice)
-            self.assertEqual(stripe.InvoiceItem.create.call_args.kwargs["amount"], cents)
+            item = stripe.InvoiceItem.create.call_args.kwargs
+            self.assertEqual(Decimal(item["unit_amount_decimal"]), Decimal(cents))
+            self.assertEqual(item["quantity"], 1)
 
     def test_two_instalments_preserve_total_stripe_amounts_and_delivery(self):
         first = self.create()

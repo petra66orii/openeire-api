@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from openeire_api.business_identity import get_business_identity
 
+from .invoice_line_items import get_invoice_line_items
 from .models import RealEstateInvoice
 from .stripe_invoice_revisions import (
     StripeInvoiceRevisionError,
@@ -40,53 +41,80 @@ def _frozen_stripe_payloads(local_invoice):
     if local_invoice.due_at:
         due_days = max(1, (local_invoice.due_at.date() - timezone.localdate()).days)
     metadata = _stripe_metadata(local_invoice)
-    adjustments = ", ".join(
+    adjustment_descriptions = ", ".join(
         f"{item.customer_description}: -EUR {item.amount}"
-        for item in enquiry.financial_adjustments.filter(reversed_at__isnull=True).order_by("created_at")
+        for item in enquiry.financial_adjustments.filter(
+            reversed_at__isnull=True
+        ).order_by("created_at")
     )
-    adjustment_text = f" Adjustments: {adjustments}." if adjustments else ""
+    adjustment_text = (
+        f" Adjustments: {adjustment_descriptions}."
+        if adjustment_descriptions
+        else ""
+    )
+    item_payloads = []
+    for item in get_invoice_line_items(local_invoice):
+        unit_amount_cents = Decimal(item["unit_amount"]) * Decimal("100")
+        item_payloads.append({
+            "unit_amount_decimal": format(unit_amount_cents, "f"),
+            "quantity": int(item.get("quantity") or 1),
+            "currency": local_invoice.currency.lower(),
+            "description": item["description"],
+            "metadata": metadata,
+        })
     return {
         "customer_id": enquiry.stripe_customer_id,
         "customer": {
             "email": local_invoice.customer_email_snapshot,
             "name": local_invoice.company_name_snapshot or local_invoice.customer_name_snapshot,
-            "metadata": {"realestate_enquiry_id": str(enquiry.pk), "brand": get_business_identity().display_name},
+            "metadata": {
+                "realestate_enquiry_id": str(enquiry.pk),
+                "brand": get_business_identity().display_name,
+            },
         },
         "create": {
-            "collection_method": "send_invoice", "days_until_due": due_days,
-            "auto_advance": False, "automatic_tax": {"enabled": False},
+            "collection_method": "send_invoice",
+            "days_until_due": due_days,
+            "auto_advance": False,
+            "automatic_tax": {"enabled": False},
             "metadata": metadata,
-            "custom_fields": [{"name": "Open?ire invoice", "value": local_invoice.invoice_number}],
+            "custom_fields": [
+                {"name": "OpenÉire invoice", "value": local_invoice.invoice_number}
+            ],
             "description": (
                 f"{local_invoice.description}. Property/job: {local_invoice.job_reference_snapshot}. "
                 f"Original booking total: EUR {enquiry.original_required_total}."
                 f"{adjustment_text} Balance requested: EUR {local_invoice.total}. "
-                "VAT not applicable ? supplier not VAT registered."
+                "VAT not applicable — supplier not VAT registered."
             ),
         },
-        "item": {
-            "amount": int(local_invoice.total * Decimal("100")),
-            "currency": local_invoice.currency.lower(),
-            "description": local_invoice.description, "metadata": metadata,
-        },
+        "items": item_payloads,
     }
 
 
 def create_stripe_invoice(local_invoice, *, send=False):
     from .stripe_sync import resume
+
     _configure_stripe()
     return resume(local_invoice, stripe, _frozen_stripe_payloads, send=send)
 
 
 def send_stripe_invoice(local_invoice):
     from .stripe_sync import resume
+
     _configure_stripe()
     local_invoice.refresh_from_db()
     if not local_invoice.stripe_invoice_id:
         return create_stripe_invoice(local_invoice, send=True)[0]
     # An ordinary retry resumes the same pending send. A deliberate reminder
     # after confirmed success gets a new send operation/key.
-    return resume(local_invoice, stripe, _frozen_stripe_payloads, send=True, reminder=True)[0]
+    return resume(
+        local_invoice,
+        stripe,
+        _frozen_stripe_payloads,
+        send=True,
+        reminder=True,
+    )[0]
 
 
 @transaction.atomic
@@ -110,7 +138,9 @@ def mark_stripe_invoice_paid_out_of_band(local_invoice, *, user):
     local_invoice.stripe_marked_paid_out_of_band_by = user
     local_invoice.stripe_invoice_status = "paid"
     local_invoice.save(update_fields=(
-        "stripe_marked_paid_out_of_band_at", "stripe_marked_paid_out_of_band_by",
-        "stripe_invoice_status", "updated_at",
+        "stripe_marked_paid_out_of_band_at",
+        "stripe_marked_paid_out_of_band_by",
+        "stripe_invoice_status",
+        "updated_at",
     ))
     return local_invoice

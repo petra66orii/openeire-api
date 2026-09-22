@@ -24,6 +24,7 @@ from .models import (
 )
 from .payments import calculate_realestate_deposit_amounts
 from .timeline import record_timeline_event
+from .invoice_line_items import build_invoice_line_items
 
 
 MONEY = Decimal("0.01")
@@ -121,13 +122,23 @@ def ensure_realestate_invoice(enquiry, invoice_type, *, issue=True, supersedes=N
         timezone.make_aware(datetime.combine(due_date, time.min))
         if due_date else now
     )
+    description = descriptions.get(
+        invoice_type,
+        enquiry.custom_payment_terms or "Real estate adjustment",
+    )
     invoice = RealEstateInvoice.objects.create(
         enquiry=enquiry,
         invoice_type=invoice_type,
         invoice_number=allocate_document_number(RealEstateDocumentSequence.Kind.INVOICE, at=now),
         status=RealEstateInvoice.Status.ISSUED if issue else RealEstateInvoice.Status.DRAFT,
         currency="EUR",
-        description=descriptions.get(invoice_type, enquiry.custom_payment_terms or "Real estate adjustment"),
+        description=description,
+        line_items_snapshot=build_invoice_line_items(
+            enquiry,
+            invoice_type,
+            total,
+            description,
+        ),
         subtotal=subtotal,
         vat_rate=vat_rate,
         vat_amount=vat_amount,
@@ -240,6 +251,12 @@ def create_custom_instalment_invoice(*, enquiry, amount, description, user=None)
         invoice_number=allocate_document_number(RealEstateDocumentSequence.Kind.INVOICE, at=now),
         status=RealEstateInvoice.Status.ISSUED,
         currency="EUR", description=description,
+        line_items_snapshot=build_invoice_line_items(
+            enquiry,
+            RealEstateInvoice.InvoiceType.ADJUSTMENT,
+            total,
+            description,
+        ),
         subtotal=subtotal, vat_rate=vat_rate, vat_amount=money(total - subtotal), total=total,
         customer_name_snapshot=enquiry.name,
         company_name_snapshot=enquiry.company_name,
