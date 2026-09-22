@@ -5,6 +5,8 @@ from reportlab.platypus import Spacer
 from openeire_api.business_identity import get_business_identity
 from openeire_api.pdf_branding import OpenEirePDFTheme, branded_document, page_decoration
 
+from .invoice_line_items import get_invoice_line_items, line_item_label, money
+
 
 VAT_NOTICE = "VAT not applicable — supplier not VAT registered."
 RELEASE_NOTICE = (
@@ -86,6 +88,25 @@ def generate_invoice_pdf(invoice):
         ("Status", invoice.get_status_display()),
         ("Payment references", payment_refs),
     ]
+    adjustment_descriptions = {
+        adjustment.customer_description for adjustment in active_adjustments
+    }
+    service_rows = [
+        (
+            line_item_label(item),
+            (
+                f"- EUR {abs(money(item['amount'])):.2f}"
+                if money(item["amount"]) < 0
+                else f"EUR {money(item['amount']):.2f}"
+            ),
+        )
+        for item in get_invoice_line_items(invoice)
+        if item.get("description") not in adjustment_descriptions
+    ]
+    service_start = next(
+        index for index, row in enumerate(rows) if row[0] == "Subtotal"
+    )
+    rows[service_start:service_start] = service_rows
     adjustment_rows = [
         (adjustment.customer_description, f"- EUR {adjustment.amount:.2f}")
         for adjustment in active_adjustments

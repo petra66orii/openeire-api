@@ -776,6 +776,45 @@ class FullPaymentArrangementTests(TestCase):
         self.assertFalse(enquiry.invoices.filter(invoice_type="deposit").exists())
         self.assertFalse(enquiry.invoices.filter(invoice_type="balance").exists())
 
+    def test_full_invoice_snapshots_package_and_each_priced_add_on(self):
+        enquiry = self.make_enquiry(
+            RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
+            quoted_price=Decimal("275.00"),
+            add_ons=["additional_stills", "additional_social_cuts"],
+            additional_stills_quantity=5,
+        )
+
+        invoice = ensure_invoices_for_arrangement(enquiry)[0]
+
+        self.assertEqual(
+            invoice.line_items_snapshot,
+            [
+                {
+                    "description": "Essential Package — 10 edited ground photographs",
+                    "quantity": 1,
+                    "unit_amount": "175.00",
+                    "amount": "175.00",
+                },
+                {
+                    "description": "Additional edited photographs",
+                    "quantity": 5,
+                    "unit_amount": "10.00",
+                    "amount": "50.00",
+                },
+                {
+                    "description": "Vertical 9:16 social-media property video",
+                    "quantity": 1,
+                    "unit_amount": "50.00",
+                    "amount": "50.00",
+                },
+            ],
+        )
+        self.assertEqual(
+            sum(Decimal(item["amount"]) for item in invoice.line_items_snapshot),
+            invoice.total,
+        )
+
     def test_full_on_shoot_day_due_date_and_unpaid_booking_lock(self):
         enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
         enquiry.refresh_from_db()
@@ -815,7 +854,13 @@ class FullPaymentArrangementTests(TestCase):
     def test_stripe_full_invoice_customer_creation_content_and_no_duplicate(
         self, customer_create, invoice_create, finalize, send_invoice, item_create
     ):
-        enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
+        enquiry = self.make_enquiry(
+            RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
+            quoted_price=Decimal("275.00"),
+            add_ons=["additional_stills", "additional_social_cuts"],
+            additional_stills_quantity=5,
+        )
         invoice = ensure_invoices_for_arrangement(enquiry)[0]
         customer_create.return_value = {"id": "cus_kevin"}
         invoice_create.return_value = {"id": "in_full"}
@@ -827,7 +872,23 @@ class FullPaymentArrangementTests(TestCase):
         local, created = create_stripe_invoice(invoice)
         self.assertTrue(created)
         self.assertEqual(local.stripe_invoice_id, "in_full")
-        self.assertEqual(item_create.call_args.kwargs["amount"], 39900)
+        self.assertEqual(item_create.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["unit_amount_decimal"] for call in item_create.call_args_list],
+            ["17500.00", "1000.00", "5000.00"],
+        )
+        self.assertEqual(
+            [call.kwargs["quantity"] for call in item_create.call_args_list],
+            [1, 5, 1],
+        )
+        self.assertEqual(
+            [call.kwargs["description"] for call in item_create.call_args_list],
+            [
+                "Essential Package — 10 edited ground photographs",
+                "Additional edited photographs",
+                "Vertical 9:16 social-media property video",
+            ],
+        )
         create_kwargs = invoice_create.call_args.kwargs
         self.assertEqual(create_kwargs["collection_method"], "send_invoice")
         self.assertFalse(create_kwargs["automatic_tax"]["enabled"])
@@ -1672,7 +1733,11 @@ class RealEstateFinancialAdjustmentTests(TestCase):
 
         self.assertTrue(created)
         self.assertEqual(local_invoice.stripe_invoice_id, "in_adjusted")
-        self.assertEqual(item_create.call_args.kwargs["amount"], 15580)
+        self.assertEqual(
+            item_create.call_args.kwargs["unit_amount_decimal"],
+            "15580.00",
+        )
+        self.assertEqual(item_create.call_args.kwargs["quantity"], 1)
         self.assertEqual(
             item_create.call_args.kwargs["metadata"]["realestate_invoice_number"],
             replacement.invoice_number,

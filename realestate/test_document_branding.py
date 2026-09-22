@@ -96,6 +96,36 @@ class CustomerDocumentBrandingTests(TestCase):
         self.assertIn(payment.cash_receipt_number, receipt)
         self.assertIn("EUR 419.00", receipt)
 
+    def test_invoice_pdf_itemises_essential_photos_and_vertical_video(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jennifer Sample",
+            email="jennifer@example.invalid",
+            phone="123",
+            client_type="estate_agent",
+            company_name="Sample Agency",
+            property_address="Four Bedroom House",
+            county="Galway",
+            property_type="house",
+            preferred_package="essential",
+            quoted_price=Decimal("275.00"),
+            add_ons=["additional_stills", "additional_social_cuts"],
+            additional_stills_quantity=5,
+            shoot_date=date(2026, 10, 14),
+            payment_arrangement="full_on_shoot_day",
+        )
+        calculate_realestate_deposit_amounts(enquiry)
+        invoice = ensure_invoices_for_arrangement(enquiry)[0]
+
+        text = normalized(text_from_pdf(generate_invoice_pdf(invoice)))
+
+        for expected in (
+            "Essential Package — 10 edited ground photographs EUR 175.00",
+            "Additional edited photographs (5 × EUR 10.00) EUR 50.00",
+            "Vertical 9:16 social-media property video EUR 50.00",
+            "Total EUR 275.00",
+        ):
+            self.assertIn(normalized(expected), text)
+
     @override_settings(BUSINESS_SIGNATORY_NAME="PRIVATE LEGAL SIGNATORY", SHOW_SIGNATORY_ON_LEGAL_DOCUMENTS=True)
     def test_identity_privacy_and_logo_fallback(self):
         calculate_realestate_deposit_amounts(self.enquiry)

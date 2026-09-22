@@ -681,6 +681,7 @@ class RealEstateInvoice(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     currency = models.CharField(max_length=3, default="EUR")
     description = models.CharField(max_length=255, blank=True)
+    line_items_snapshot = models.JSONField(default=list, blank=True)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2)
     vat_rate = models.DecimalField(max_digits=6, decimal_places=5, default=0)
     vat_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -759,6 +760,7 @@ class RealEstateInvoice(models.Model):
         if self.pk:
             previous = RealEstateInvoice.objects.filter(pk=self.pk).values(
                 "status", "currency", "subtotal", "vat_rate", "vat_amount", "total",
+                "line_items_snapshot",
                 "customer_name_snapshot", "company_name_snapshot",
                 "customer_email_snapshot", "customer_phone_snapshot",
                 "property_reference_snapshot", "job_reference_snapshot",
@@ -1286,4 +1288,3 @@ class RealEstateDeliveryAccessEvent(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
-
