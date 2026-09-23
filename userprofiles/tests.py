@@ -616,6 +616,9 @@ class GoogleLoginMisconfigurationTests(TestCase):
         )
 
 
+@override_settings(SOCIALACCOUNT_PROVIDERS={
+    "google": {"APP": {"client_id": "test-google-client", "secret": "test-google-secret"}}
+})
 class GoogleSocialAccountAdapterTests(TestCase):
     def setUp(self):
         self.adapter = OpenEireSocialAccountAdapter()
