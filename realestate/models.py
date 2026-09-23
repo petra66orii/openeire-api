@@ -318,6 +318,7 @@ class RealEstateEnquiry(models.Model):
     internal_notes = models.TextField(blank=True)
     internal_notification_sent_at = models.DateTimeField(null=True, blank=True, editable=False)
     client_confirmation_sent_at = models.DateTimeField(null=True, blank=True, editable=False)
+    enquiry_email_last_attempt_at = models.DateTimeField(null=True, blank=True, editable=False)
     enquiry_email_last_error = models.TextField(blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -411,6 +411,10 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "quoted_deposit_amount",
         "quoted_balance_due",
         "financial_summary",
+        "internal_notification_sent_at",
+        "client_confirmation_sent_at",
+        "enquiry_email_last_attempt_at",
+        "enquiry_email_last_error",
     )
     actions = (
         "send_quote_email",
@@ -521,6 +525,17 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "shoot_date",
                     "shoot_time",
                 )
+            },
+        ),
+        (
+            "Enquiry email delivery",
+            {
+                "fields": (
+                    "internal_notification_sent_at",
+                    "client_confirmation_sent_at",
+                    "enquiry_email_last_attempt_at",
+                    "enquiry_email_last_error",
+                ),
             },
         ),
         (

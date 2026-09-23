@@ -34,12 +34,15 @@ def send_enquiry_notifications(enquiry_id, *, internal_sender=None, client_sende
                     raise RuntimeError("Email backend did not confirm one delivered message")
             except Exception as exc:
                 logger.exception("Enquiry %s %s email failed", enquiry_id, kind)
+                enquiry.enquiry_email_last_attempt_at = timezone.now()
                 enquiry.enquiry_email_last_error = f"{kind}: {type(exc).__name__}: {exc}"[:2000]
-                enquiry.save(update_fields=["enquiry_email_last_error", "updated_at"])
+                enquiry.save(update_fields=["enquiry_email_last_attempt_at", "enquiry_email_last_error", "updated_at"])
                 results[kind] = "failed"
             else:
-                setattr(enquiry, field, timezone.now())
-                fields = [field, "updated_at"]
+                attempted_at = timezone.now()
+                setattr(enquiry, field, attempted_at)
+                enquiry.enquiry_email_last_attempt_at = attempted_at
+                fields = [field, "enquiry_email_last_attempt_at", "updated_at"]
                 if enquiry.internal_notification_sent_at and enquiry.client_confirmation_sent_at:
                     enquiry.enquiry_email_last_error = ""
                     fields.append("enquiry_email_last_error")

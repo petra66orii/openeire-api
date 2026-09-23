@@ -191,7 +191,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'storages',
     'django_countries',
-    'django_summernote',
+    'openeire_api.summernote_apps.LegacySummernoteConfig',
     'userprofiles',
     'products',
     'checkout',
@@ -477,7 +477,7 @@ else:
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
 REALESTATE_API_URL = os.getenv("REALESTATE_API_URL") or os.getenv("SITE_URL")
