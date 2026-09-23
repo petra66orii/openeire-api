@@ -1,5 +1,6 @@
 import logging
 import random
+from datetime import timezone as dt_timezone
 from smtplib import SMTPException
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import PermissionDenied
@@ -68,7 +69,7 @@ logger = logging.getLogger(__name__)
 def _to_iso8601_utc(value):
     if not value:
         return None
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return value.astimezone(dt_timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _agreed_snapshot_for_queue(req, offer=None):

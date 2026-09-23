@@ -463,7 +463,7 @@ def send_realestate_internal_notification_email(enquiry, request=None):
         to=[get_realestate_notification_email()],
         reply_to=[get_realestate_reply_to_email()],
     )
-    email.send(fail_silently=False)
+    return email.send(fail_silently=False)
 
 
 def send_realestate_client_confirmation_email(enquiry):

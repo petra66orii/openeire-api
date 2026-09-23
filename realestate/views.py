@@ -14,6 +14,7 @@ from .emails import (
     send_realestate_internal_notification_email,
 )
 from .models import RealEstateEnquiry
+from .enquiry_notifications import send_enquiry_notifications
 from .serializers import RealEstateEnquirySerializer
 from .timeline import record_timeline_event
 
@@ -86,20 +87,12 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
             )
 
     def _send_emails(self, enquiry):
-        try:
-            send_realestate_internal_notification_email(enquiry, request=self.request)
-        except Exception:
-            logger.exception(
-                "Failed to send internal real estate enquiry notification. enquiry_id=%s",
-                enquiry.id,
-            )
-        try:
-            send_realestate_client_confirmation_email(enquiry)
-        except Exception:
-            logger.exception(
-                "Failed to send real estate enquiry confirmation email. enquiry_id=%s",
-                enquiry.id,
-            )
+        send_enquiry_notifications(
+            enquiry.id,
+            internal_sender=send_realestate_internal_notification_email,
+            client_sender=send_realestate_client_confirmation_email,
+            request=self.request,
+        )
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -127,4 +120,3 @@ class RealEstateEnquiryCreateView(generics.CreateAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
-

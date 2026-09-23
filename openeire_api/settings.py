@@ -191,7 +191,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'storages',
     'django_countries',
-    'django_summernote',
+    'openeire_api.summernote_apps.LegacySummernoteConfig',
     'userprofiles',
     'products',
     'checkout',
@@ -779,9 +779,8 @@ SOCIALACCOUNT_EMAIL_REQUIRED = False
 SOCIALACCOUNT_AUTO_SIGNUP = True
 SOCIALACCOUNT_ADAPTER = "userprofiles.adapters.OpenEireSocialAccountAdapter"
 
-ACCOUNT_AUTHENTICATION_METHOD = 'email'
-ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_USERNAME_REQUIRED = False
+ACCOUNT_LOGIN_METHODS = {'email'}
+ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*', 'password2*']
 
 # Send Django request/server errors to the platform logs without enabling DEBUG.
 LOGGING = {
