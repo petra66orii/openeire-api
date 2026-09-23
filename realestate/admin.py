@@ -374,6 +374,8 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "shoot_date",
         "booking_agreement_received",
         "deposit_paid",
+        "internal_notification_sent_at",
+        "client_confirmation_sent_at",
     )
     list_filter = (
         "status",

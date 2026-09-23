@@ -2337,6 +2337,29 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
         self.assertEqual(RealEstateTimelineEvent.objects.count(), 1)
+        enquiry = RealEstateEnquiry.objects.get()
+        self.assertIsNone(enquiry.internal_notification_sent_at)
+        self.assertIsNone(enquiry.client_confirmation_sent_at)
+        self.assertIn("smtp timeout", enquiry.enquiry_email_last_error)
+
+    @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email", return_value=1)
+    @patch("realestate.enquiry_notifications.send_realestate_internal_notification_email", return_value=1)
+    def test_failed_notifications_can_be_retried_once(self, internal, client):
+        from django.core.management import call_command
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+        )
+        call_command("retry_realestate_enquiry_emails")
+        enquiry.refresh_from_db()
+        self.assertIsNotNone(enquiry.internal_notification_sent_at)
+        self.assertIsNotNone(enquiry.client_confirmation_sent_at)
+        call_command("retry_realestate_enquiry_emails")
+        internal.assert_called_once()
+        client.assert_called_once()
 
     @patch(
         "realestate.views.record_timeline_event",
@@ -3173,6 +3196,5 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertEqual(len(events), 2)
         self.assertIn("Shoot date: 2026-07-01", events[0].notes)
         self.assertIn("Shoot date: 2026-07-02", events[1].notes)
-
 
 

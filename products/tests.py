@@ -1,6 +1,6 @@
 import shutil
 import uuid
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from decimal import Decimal
 from pathlib import Path
 from smtplib import SMTPAuthenticationError
@@ -793,7 +793,7 @@ class LicenseRequestTests(APITestCase):
         self.assertEqual(response.data[0]["offer_version"], offer.version)
         self.assertEqual(
             response.data[0]["offer_expires_at"],
-            expires_at.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            expires_at.astimezone(dt_timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         )
         self.assertIn("agreed_scope_summary", response.data[0])
         self.assertIn("territory: Ireland Only", response.data[0]["agreed_scope_summary"])
