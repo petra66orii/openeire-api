@@ -4,9 +4,8 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 
-from products.models import PrintTemplate
-
-from .models import ProductShipping
+from .alerts import send_shipping_quote_failure_alert
+from .prodigi import ProdigiQuoteError, create_prodigi_shipping_quote
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ DEFAULT_FREE_SHIPPING_THRESHOLD = Decimal("150.00")
 
 
 class ShippingConfigurationError(Exception):
-    """Raised when required physical shipping config is missing."""
+    """Raised when a trustworthy physical shipping quote cannot be obtained."""
 
 
 @dataclass(frozen=True)
@@ -72,54 +71,57 @@ def free_shipping_applies(*, physical_subtotal, shipping_country):
 
 def calculate_physical_shipping_quote(*, line_items, shipping_country, shipping_method):
     physical_subtotal = Decimal("0.00")
-    delivery_cost = Decimal("0.00")
-    missing_shipping_rules = []
+    normalized_items = []
 
     for product_instance, quantity in line_items:
         line_quantity = int(quantity or 0)
         if line_quantity <= 0:
             continue
+        physical_subtotal += Decimal(str(product_instance.price)) * line_quantity
+        normalized_items.append((product_instance, line_quantity))
 
-        physical_subtotal += product_instance.price * line_quantity
+    if not normalized_items:
+        return ShippingQuote(
+            delivery_cost=Decimal("0.00"),
+            physical_subtotal=physical_subtotal,
+            free_shipping_applied=False,
+        )
 
+    try:
+        prodigi_quote = create_prodigi_shipping_quote(
+            line_items=normalized_items,
+            destination_country_code=shipping_country,
+            shipping_method=shipping_method,
+        )
+        delivery_cost = Decimal(str(prodigi_quote["amount"])).quantize(Decimal("0.01"))
+        if delivery_cost < Decimal("0.00"):
+            raise ValueError("negative shipping amount")
+    except (ProdigiQuoteError, InvalidOperation, KeyError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Blocking checkout because a trustworthy Prodigi shipping quote could not be obtained "
+            "(country=%s, method=%s, cart_items=%s, error_type=%s)",
+            str(shipping_country or "").strip().upper(),
+            str(shipping_method or "").strip().lower(),
+            len(normalized_items),
+            exc.__class__.__name__,
+        )
         try:
-            template = PrintTemplate.objects.get(
-                material=product_instance.material,
-                size=product_instance.size,
+            send_shipping_quote_failure_alert(
+                line_items=normalized_items,
+                shipping_country=shipping_country,
+                shipping_method=shipping_method,
+                error=exc,
             )
-            shipping_rule = ProductShipping.objects.get(
-                product=template,
-                country=shipping_country,
-                method=shipping_method,
-            )
-            delivery_cost += shipping_rule.cost * line_quantity
-        except (PrintTemplate.DoesNotExist, ProductShipping.DoesNotExist):
-            logger.warning(
-                "No shipping rule found for checkout item "
-                "(material=%s, size=%s, country=%s, method=%s)",
-                product_instance.material,
-                product_instance.size,
-                shipping_country,
-                shipping_method,
-            )
-            missing_shipping_rules.append(
-                (
-                    product_instance.material,
-                    product_instance.size,
-                    shipping_country,
-                    shipping_method,
-                )
-            )
+        except Exception:
+            logger.exception("Could not send shipping quote failure alert.")
+        raise ShippingConfigurationError(
+            "We couldn't calculate shipping at the moment. Please try again shortly."
+        ) from None
 
     free_shipping = free_shipping_applies(
         physical_subtotal=physical_subtotal,
         shipping_country=shipping_country,
     )
-    if missing_shipping_rules and not free_shipping:
-        raise ShippingConfigurationError(
-            "Shipping is not available for one or more items in your cart. "
-            "Please contact support before completing checkout."
-        )
     if free_shipping:
         delivery_cost = Decimal("0.00")
 
