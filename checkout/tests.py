@@ -1249,6 +1249,13 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.url = reverse("webhook")
         self.factory = RequestFactory()
 
+        self._shipping_quote_patcher = patch(
+            "checkout.shipping.create_prodigi_shipping_quote",
+            return_value={"amount": "8.45", "currency": "EUR"},
+        )
+        self.prodigi_shipping_quote = self._shipping_quote_patcher.start()
+        self.addCleanup(self._shipping_quote_patcher.stop)
+
     def _payment_intent_event(self, license_value="hd", username=None, user_id=None):
         cart = [
             {
@@ -2886,7 +2893,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.validate_discount_url = reverse("validate_discount")
 
         def _quote_for_test_country(**kwargs):
-            costs = {"IE": "8.45", "AU": "17.25", "US": "19.76"}
+            costs = {"IE": "8.45", "AU": "17.25", "US": "19.76", "RO": "12.75"}
             country = str(kwargs.get("destination_country_code") or "").upper()
             return {"amount": costs.get(country, "8.45"), "currency": "EUR"}
 
@@ -3818,14 +3825,14 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
 
     @patch("checkout.views.stripe.PaymentIntent.create")
-    def test_physical_cart_cannot_create_payment_intent_when_shipping_rule_missing(self, mock_create):
+    def test_physical_cart_cannot_create_payment_intent_when_prodigi_quote_fails(self, mock_create):
         self.photo.is_printable = True
         self.photo.save(update_fields=["is_printable"])
-        ProductShipping.objects.filter(
-            product=self.template,
-            country="IE",
-            method="budget",
-        ).delete()
+        self.prodigi_shipping_quote.side_effect = ProdigiQuoteError(
+            "temporary quote failure",
+            status_code=503,
+            outcome="error",
+        )
         payload = {
             "cart": [
                 {
@@ -3854,7 +3861,7 @@ class CreatePaymentIntentSecurityTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "SHIPPING_UNAVAILABLE")
-        self.assertIn("Shipping is not available", response.data["error"])
+        self.assertIn("couldn't calculate shipping", response.data["error"])
         mock_create.assert_not_called()
 
     @override_settings(STRIPE_PAYMENT_METHOD_TYPES=["card"])
@@ -4267,6 +4274,12 @@ class FreeShippingOrderSerializerTests(TestCase):
             method="budget",
             cost=Decimal("8.45"),
         )
+        self._shipping_quote_patcher = patch(
+            "checkout.shipping.create_prodigi_shipping_quote",
+            return_value={"amount": "8.45", "currency": "EUR"},
+        )
+        self.prodigi_shipping_quote = self._shipping_quote_patcher.start()
+        self.addCleanup(self._shipping_quote_patcher.stop)
 
     def _serializer_payload(self, quantity):
         return {
@@ -4310,12 +4323,12 @@ class FreeShippingOrderSerializerTests(TestCase):
         self.assertEqual(order.delivery_cost, Decimal("8.45"))
         self.assertEqual(order.total_price, Decimal("107.45"))
 
-    def test_order_serializer_does_not_persist_partial_order_when_shipping_rule_is_missing(self):
-        ProductShipping.objects.filter(
-            product=self.template,
-            country="IE",
-            method="budget",
-        ).delete()
+    def test_order_serializer_does_not_persist_partial_order_when_prodigi_quote_fails(self):
+        self.prodigi_shipping_quote.side_effect = ProdigiQuoteError(
+            "temporary quote failure",
+            status_code=503,
+            outcome="error",
+        )
         serializer = OrderSerializer(data=self._serializer_payload(quantity=1))
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
