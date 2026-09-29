@@ -158,3 +158,73 @@ def send_fulfilment_failure_alert(order, error):
                 order.order_number,
             )
     return True
+
+
+
+def send_shipping_quote_failure_alert(*, line_items, shipping_country, shipping_method, error):
+    """Alert operators when checkout is blocked because shipping cannot be quoted."""
+    recipients = get_fulfilment_alert_recipients()
+    if not recipients:
+        logger.error("Shipping quote failed but no alert recipients are configured.")
+        return False
+
+    country = _safe_alert_value(shipping_country, fallback="Unknown", max_length=8).upper()
+    method = _safe_alert_value(shipping_method, fallback="Unknown", max_length=30).lower()
+    item_summary = []
+    for product, quantity in line_items:
+        sku = _safe_alert_value(
+            getattr(product, "prodigi_sku", None),
+            fallback="missing-sku",
+            max_length=80,
+        )
+        item_summary.append(f"{sku} x {int(quantity or 0)}")
+    item_text = ", ".join(item_summary)[:1000] or "No physical items"
+
+    status_code = getattr(error, "status_code", None)
+    outcome = _safe_alert_value(
+        getattr(error, "outcome", None),
+        fallback=error.__class__.__name__,
+    )
+    trace_parent = _safe_alert_value(
+        getattr(error, "trace_parent", None),
+        fallback="Not provided",
+    )
+
+    fingerprint = f"{country}:{method}:{outcome}:{status_code or 'none'}"
+    sent_cache_key = f"shipping-quote-alert-sent:{fingerprint}"
+    cooldown = max(
+        int(getattr(settings, "SHIPPING_QUOTE_ALERT_COOLDOWN_SECONDS", 3600)),
+        60,
+    )
+    try:
+        if cache.get(sent_cache_key):
+            return False
+    except Exception:
+        logger.exception("Shipping quote alert cache unavailable; sending without deduplication.")
+
+    subject = f"Checkout blocked: shipping quote failed - {country}"
+    body = (
+        "A customer checkout was blocked because OpenEire could not obtain a trustworthy "
+        "Prodigi shipping quote. No payment should have been created for this attempt.\n\n"
+        f"Detected: {timezone.localtime().strftime('%Y-%m-%d %H:%M %Z')}\n"
+        f"Destination country: {country}\n"
+        f"Shipping method: {method}\n"
+        f"Items: {item_text}\n"
+        f"Prodigi HTTP status: {status_code or 'Not provided'}\n"
+        f"Prodigi outcome: {outcome}\n"
+        f"Prodigi trace: {trace_parent}\n\n"
+        "ACTION: Check Prodigi availability/configuration and the affected SKUs. "
+        "Checkout will continue to fail safely until a valid live quote is available.\n"
+    )
+    EmailMessage(
+        subject=subject,
+        body=body,
+        from_email=get_default_from_email(),
+        to=recipients,
+    ).send(fail_silently=False)
+
+    try:
+        cache.set(sent_cache_key, "1", timeout=cooldown)
+    except Exception:
+        logger.exception("Could not persist shipping quote alert deduplication state.")
+    return True
