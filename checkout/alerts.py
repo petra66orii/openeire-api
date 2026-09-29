@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import Any
 
@@ -163,7 +164,9 @@ def send_fulfilment_failure_alert(order, error):
 
 def send_shipping_quote_failure_alert(*, line_items, shipping_country, shipping_method, error):
     """Alert operators when checkout is blocked because shipping cannot be quoted."""
-    recipients = get_fulfilment_alert_recipients()
+    recipients = list(getattr(settings, "SHIPPING_QUOTE_ALERT_RECIPIENTS", []) or [])
+    if not recipients:
+        recipients = get_fulfilment_alert_recipients()
     if not recipients:
         logger.error("Shipping quote failed but no alert recipients are configured.")
         return False
@@ -191,7 +194,8 @@ def send_shipping_quote_failure_alert(*, line_items, shipping_country, shipping_
     )
 
     fingerprint = f"{country}:{method}:{outcome}:{status_code or 'none'}"
-    sent_cache_key = f"shipping-quote-alert-sent:{fingerprint}"
+    fingerprint_hash = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
+    sent_cache_key = f"shipping-quote-alert-sent:{fingerprint_hash}"
     cooldown = max(
         int(getattr(settings, "SHIPPING_QUOTE_ALERT_COOLDOWN_SECONDS", 3600)),
         60,
