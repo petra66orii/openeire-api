@@ -51,6 +51,7 @@ from .prodigi import (
     _prodigi_base_url,
     _redact_callback_url,
     create_prodigi_order,
+    ProdigiQuoteError,
 )
 from .admin import OrderAdmin
 from . import views as checkout_views
