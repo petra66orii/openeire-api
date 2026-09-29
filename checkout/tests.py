@@ -2884,6 +2884,18 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.url = reverse("create_payment_intent")
         self.validate_discount_url = reverse("validate_discount")
 
+        def _quote_for_test_country(**kwargs):
+            costs = {"IE": "8.45", "AU": "17.25", "US": "19.76"}
+            country = str(kwargs.get("destination_country_code") or "").upper()
+            return {"amount": costs.get(country, "8.45"), "currency": "EUR"}
+
+        self._shipping_quote_patcher = patch(
+            "checkout.shipping.create_prodigi_shipping_quote",
+            side_effect=_quote_for_test_country,
+        )
+        self.prodigi_shipping_quote = self._shipping_quote_patcher.start()
+        self.addCleanup(self._shipping_quote_patcher.stop)
+
     def _physical_checkout_payload(
         self,
         *,
@@ -3747,19 +3759,20 @@ class CreatePaymentIntentSecurityTests(TestCase):
         self.assertEqual(shipping_quote.delivery_cost, Decimal("0.00"))
         self.assertTrue(shipping_quote.free_shipping_applied)
 
-    def test_calculate_physical_shipping_quote_blocks_missing_shipping_rule(self):
-        ProductShipping.objects.filter(
-            product=self.template,
-            country="IE",
-            method="budget",
-        ).delete()
+    def test_calculate_physical_shipping_quote_blocks_when_prodigi_quote_fails(self):
+        self.prodigi_shipping_quote.side_effect = ProdigiQuoteError(
+            "temporary quote failure",
+            status_code=503,
+            outcome="error",
+        )
 
-        with self.assertRaises(ShippingConfigurationError):
-            calculate_physical_shipping_quote(
-                line_items=[(self.variant, 1)],
-                shipping_country="IE",
-                shipping_method="budget",
-            )
+        with patch("checkout.shipping.send_shipping_quote_failure_alert"):
+            with self.assertRaises(ShippingConfigurationError):
+                calculate_physical_shipping_quote(
+                    line_items=[(self.variant, 1)],
+                    shipping_country="IE",
+                    shipping_method="budget",
+                )
 
     @patch("checkout.views.stripe.PaymentIntent.create")
     def test_physical_cart_accepts_new_supported_shipping_countries_when_quote_exists(self, mock_create):
