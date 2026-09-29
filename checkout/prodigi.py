@@ -284,6 +284,143 @@ def fetch_prodigi_order(prodigi_order_id: str) -> dict:
     )
 
 
+
+class ProdigiQuoteError(RuntimeError):
+    def __init__(self, message, *, status_code=None, outcome=None, trace_parent=None):
+        self.status_code = status_code
+        self.outcome = outcome or "unknown"
+        self.trace_parent = trace_parent
+        super().__init__(message)
+
+
+def create_prodigi_shipping_quote(*, line_items, destination_country_code, shipping_method):
+    """Return Prodigi's live shipping total for a physical basket."""
+    normalized_country = str(destination_country_code or "").strip().upper()
+    normalized_method = str(shipping_method or "budget").strip().lower()
+    if not normalized_country:
+        raise ProdigiQuoteError("A destination country is required for shipping.")
+
+    items_payload = []
+    for product, quantity in line_items:
+        copies = int(quantity or 0)
+        if copies <= 0:
+            continue
+        sku = str(getattr(product, "prodigi_sku", "") or "").strip()
+        if not sku:
+            raise ProdigiQuoteError("A physical product is missing its Prodigi SKU.")
+
+        item_payload = {
+            "sku": sku,
+            "copies": copies,
+            "assets": [{"printArea": "default"}],
+        }
+        if "canvas" in str(getattr(product, "material", "") or "").lower():
+            item_payload["attributes"] = {"wrap": "MirrorWrap"}
+        items_payload.append(item_payload)
+
+    if not items_payload:
+        return {"amount": "0.00", "currency": "EUR", "trace_parent": None}
+
+    payload = {
+        "shippingMethod": normalized_method,
+        "destinationCountryCode": normalized_country,
+        "currencyCode": "EUR",
+        "items": items_payload,
+    }
+    url = f"{_prodigi_base_url()}quotes"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=_prodigi_headers(),
+            timeout=_request_timeout(),
+        )
+    except requests.Timeout:
+        logger.error(
+            "Prodigi quote timed out (country=%s, method=%s, items=%s)",
+            normalized_country,
+            normalized_method,
+            len(items_payload),
+        )
+        raise ProdigiQuoteError("Prodigi shipping quote timed out.") from None
+    except requests.RequestException:
+        logger.exception(
+            "Prodigi quote request failed (country=%s, method=%s, items=%s)",
+            normalized_country,
+            normalized_method,
+            len(items_payload),
+        )
+        raise ProdigiQuoteError("Prodigi shipping quote request failed.") from None
+
+    if not 200 <= response.status_code < 300:
+        outcome, trace_parent, failure_codes = _parse_prodigi_error(response)
+        logger.warning(
+            "Prodigi quote rejected (country=%s, method=%s, status=%s, outcome=%s, trace_parent=%s, failure_codes=%s)",
+            normalized_country,
+            normalized_method,
+            response.status_code,
+            outcome or "unknown",
+            trace_parent or "n/a",
+            ",".join(failure_codes) if failure_codes else "none",
+        )
+        raise ProdigiQuoteError(
+            "Prodigi could not calculate shipping.",
+            status_code=response.status_code,
+            outcome=outcome,
+            trace_parent=trace_parent,
+        )
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise ProdigiQuoteError("Prodigi returned an invalid shipping quote.") from None
+
+    if not isinstance(data, dict):
+        raise ProdigiQuoteError("Prodigi returned an invalid shipping quote.")
+
+    quotes = data.get("quotes")
+    if not isinstance(quotes, list) or not quotes:
+        raise ProdigiQuoteError(
+            "Prodigi did not return a shipping quote.",
+            outcome=data.get("outcome"),
+            trace_parent=data.get("traceParent"),
+        )
+
+    selected_quote = None
+    for quote in quotes:
+        if not isinstance(quote, dict):
+            continue
+        returned_method = str(
+            quote.get("shipmentMethod") or quote.get("shippingMethod") or ""
+        ).strip().lower()
+        if returned_method == normalized_method:
+            selected_quote = quote
+            break
+    if selected_quote is None and len(quotes) == 1 and isinstance(quotes[0], dict):
+        selected_quote = quotes[0]
+    if selected_quote is None:
+        raise ProdigiQuoteError(
+            "Prodigi did not return the requested shipping method.",
+            outcome=data.get("outcome"),
+            trace_parent=data.get("traceParent"),
+        )
+
+    shipping = (selected_quote.get("costSummary") or {}).get("shipping")
+    if not isinstance(shipping, dict):
+        raise ProdigiQuoteError("Prodigi shipping quote did not include a shipping total.")
+
+    amount = shipping.get("amount")
+    currency = str(shipping.get("currency") or "").strip().upper()
+    if amount is None or currency != "EUR":
+        raise ProdigiQuoteError("Prodigi shipping quote returned an unexpected currency or amount.")
+
+    return {
+        "amount": str(amount),
+        "currency": currency,
+        "trace_parent": data.get("traceParent"),
+    }
+
 def create_prodigi_order(order):
     """
     Formats an OpenEire order and sends it to the Prodigi API.
