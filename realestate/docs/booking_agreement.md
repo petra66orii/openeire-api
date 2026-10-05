@@ -107,7 +107,7 @@ Only the Deliverables expressly listed above are included in this Booking Agreem
 
 4.4 No licence shall take effect until all sums due have been paid in full.
 
-4.5 Any additional work, amendments, extra travel, waiting time, extended attendance, additional outputs, or post-booking scope changes requested by the Client may be charged separately at {{ business_display_name }}'s then-current rates. A request made after {{ business_display_name }} has left the Property for photographs or footage of an element that was not identified as a required Deliverable before or during the Shoot shall be treated as additional work. Where fulfilling that request requires a return visit, additional attendance and travel charges may apply, together with additional production or editing charges where applicable. This does not apply where {{ business_display_name }} failed to capture an element expressly agreed in writing as part of the original scope.
+4.5 Any additional work, amendments, extra travel, waiting time, extended attendance, additional outputs, or post-booking scope changes requested by the Client may be charged separately at {{ business_display_name }}'s then-current rates, together with additional production or editing charges where applicable. Additional attendance may be chargeable where a return visit is required because of newly added requirements, unavailable access, property readiness issues or an expanded scope requested after the agreed shoot. No additional attendance charge applies where the return is required because {{ business_display_name }} failed to capture an item that was already clearly included in the agreed scope.
 
 ---
 
