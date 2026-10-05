@@ -11,6 +11,8 @@ from .authorisation_models import PropertyAuthorisation, PropertyScopeCheck
 
 from .package_catalogue import (
     ADDITIONAL_PHOTOGRAPH_COPY,
+    CATALOGUE_VERSION_CHOICES,
+    CURRENT_CATALOGUE_VERSION,
     PACKAGE_SUMMARIES,
     get_included_photograph_count,
     get_included_photographs_label,
@@ -148,15 +150,33 @@ class RealEstateEnquiry(models.Model):
         OTHER = "other", "Other"
 
     ADD_ON_LABELS = {
-        "additional_stills": "Additional edited photographs - EUR 10 per photograph",
+        "additional_stills": "Additional edited photographs — EUR 10 each",
         "floor_plan": "Measured 2D floor plan - EUR 75",
-        "virtual_tour_3d": "Hosted 3D virtual tour - EUR 150",
-        "rush_delivery": "Rush same-day delivery, still photography only - EUR 75",
-        "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
-        "additional_social_cuts": (
-            "Additional social-media cuts, alternative formats or additional edits - EUR 50"
+        "virtual_tour_3d": (
+            "Hosted 3D virtual tour — from EUR 150 for a suitable standard-sized property"
         ),
+        "rush_delivery": "Rush same-day delivery, still photography only - EUR 75",
+        # Historical key retained so old agreements and invoices remain intelligible.
+        "extended_drone_video": "Extended drone video, up to 3 minutes - EUR 150",
+        "extended_property_film": "Extended Property Film — quoted according to scope",
+        "extended_aerial_film": "Extended Aerial Film — quoted according to scope",
+        "additional_social_cuts": "Additional social cut / format — EUR 50",
+        "luxury_architectural": "Luxury / Architectural Photography — from EUR 295",
+        "twilight_dusk": "Twilight / dusk photography — scope reviewed",
         "travel_supplement": "Travel supplement beyond 40 km - EUR 0.50 per km",
+    }
+
+    CUSTOM_REVIEW_REASON_LABELS = {
+        "substantial_grounds": "Substantial grounds",
+        "multiple_buildings": "Multiple buildings",
+        "multiple_units": "Multiple accommodation units",
+        "land_heavy": "Land-heavy coverage",
+        "unusually_large": "Unusually large property",
+        "luxury_architectural": "Luxury / architectural scope",
+        "extensive_twilight": "Extensive twilight requirements",
+        "substantial_presenter": "Scripted, multi-take or substantial presenter-led production",
+        "bespoke_film": "Bespoke or complex film requirements",
+        "unsure": "Unsure / request review",
     }
 
     PACKAGE_SUMMARIES = PACKAGE_SUMMARIES
@@ -176,7 +196,17 @@ class RealEstateEnquiry(models.Model):
         blank=True,
         help_text=(
             "Public enquiry payload schema. Blank indicates the legacy form; "
-            "version 2 uses the structured shoot-scoping form."
+            "version 2 uses the original structured form and version 3 uses the "
+            "October 2026 public catalogue."
+        ),
+    )
+    catalogue_version = models.CharField(
+        max_length=32,
+        choices=CATALOGUE_VERSION_CHOICES,
+        default=CURRENT_CATALOGUE_VERSION,
+        help_text=(
+            "Package catalogue used for this selection. Issued quotation and agreement "
+            "snapshots retain their own immutable version and wording."
         ),
     )
 
@@ -250,6 +280,15 @@ class RealEstateEnquiry(models.Model):
     audio_requirements = models.TextField(blank=True)
     how_heard = models.CharField(max_length=32, choices=HowHeard.choices, blank=True)
     message = models.TextField(blank=True)
+    custom_review_reasons = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Explicit scope signals that require Custom / POA review.",
+    )
+    custom_review_notes = models.TextField(
+        blank=True,
+        help_text="Additional detail for Custom / POA scope review.",
+    )
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
     quoted_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
@@ -313,6 +352,15 @@ class RealEstateEnquiry(models.Model):
             "Approved deliverables, one per line. Required for Custom work; optional "
             "replacement for standard package scope. Customer requests/internal notes "
             "are not approved scope. Changes apply only to newly issued agreements."
+        ),
+    )
+    agreed_photograph_count = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(500)],
+        help_text=(
+            "Explicit fixed photograph quantity agreed for this booking. Leave blank to "
+            "use the catalogue's indicative range."
         ),
     )
     internal_notes = models.TextField(blank=True)
@@ -416,13 +464,14 @@ class RealEstateEnquiry(models.Model):
         return get_package_summary(
             self.preferred_package,
             self.get_preferred_package_display(),
+            self.catalogue_version,
         )
 
     def get_included_photographs_label(self):
         persisted_scope = self._get_persisted_package_scope()
-        if str(self.agreed_scope or "").strip() or (persisted_scope or {}).get("scope_is_override"):
-            return ""  # Free-text approved scope may replace the catalogue allowance.
         if persisted_scope:
+            if persisted_scope.get("scope_is_override"):
+                return ""
             label = persisted_scope.get("included_photographs_label")
             if label:
                 return label
@@ -436,13 +485,23 @@ class RealEstateEnquiry(models.Model):
             return "Included photographs - refer to the issued Booking Agreement"
         if self._requires_historical_scope_review():
             return "Included photographs - verify the issued quotation or agreement"
-        return get_included_photographs_label(self.preferred_package)
+        if str(self.agreed_scope or "").strip():
+            return ""  # Free-text approved scope may replace the catalogue allowance.
+        if self.agreed_photograph_count:
+            return (
+                f"{self.agreed_photograph_count} professionally edited interior and "
+                "exterior photographs as specifically agreed"
+            )
+        return get_included_photographs_label(
+            self.preferred_package,
+            catalogue_version=self.catalogue_version,
+        )
 
     def get_included_photograph_count(self):
         persisted_scope = self._get_persisted_package_scope()
-        if str(self.agreed_scope or "").strip() or (persisted_scope or {}).get("scope_is_override"):
-            return None
         if persisted_scope:
+            if persisted_scope.get("scope_is_override"):
+                return None
             count = persisted_scope.get("included_photograph_count")
             if isinstance(count, int):
                 return count
@@ -454,7 +513,14 @@ class RealEstateEnquiry(models.Model):
             return int(match.group(1)) if match else None
         if self._requires_historical_scope_review():
             return None
-        return get_included_photograph_count(self.preferred_package)
+        if str(self.agreed_scope or "").strip():
+            return None
+        if self.agreed_photograph_count:
+            return self.agreed_photograph_count
+        return get_included_photograph_count(
+            self.preferred_package,
+            self.catalogue_version,
+        )
 
     def _get_persisted_package_scope(self):
         if not self.pk:
@@ -481,7 +547,7 @@ class RealEstateEnquiry(models.Model):
         included_add_ons = (
             frozenset()
             if self._get_persisted_package_scope() or self._requires_historical_scope_review()
-            else get_included_add_ons(self.preferred_package)
+            else get_included_add_ons(self.preferred_package, self.catalogue_version)
         )
         for key in self.add_ons or []:
             if key in included_add_ons:
@@ -495,6 +561,16 @@ class RealEstateEnquiry(models.Model):
     def get_add_ons_summary(self):
         labels = self.get_add_on_labels()
         return ", ".join(labels) if labels else "None"
+
+    @property
+    def requires_custom_review(self):
+        return bool(self.custom_review_reasons)
+
+    def get_custom_review_reason_labels(self):
+        return [
+            self.CUSTOM_REVIEW_REASON_LABELS.get(reason, reason)
+            for reason in (self.custom_review_reasons or [])
+        ]
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -633,8 +709,43 @@ class RealEstateDocumentSequence(models.Model):
         ]
 
 
+class RealEstateQuotationSnapshot(models.Model):
+    enquiry = models.ForeignKey(
+        RealEstateEnquiry,
+        on_delete=models.PROTECT,
+        related_name="quotation_snapshots",
+    )
+    catalogue_version = models.CharField(max_length=32)
+    subject = models.CharField(max_length=255)
+    recipient_email = models.EmailField()
+    context = models.JSONField(default=dict)
+    rendered_text = models.TextField()
+    rendered_html = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="realestate_quotation_snapshots_created",
+    )
+    issued_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-issued_at",)
+        verbose_name = "Real estate quotation snapshot"
+        verbose_name_plural = "Real estate quotation snapshots"
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Issued quotation snapshots are immutable.")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.enquiry} quotation issued {self.issued_at or 'pending'}"
+
+
 class RealEstateBookingAgreementSnapshot(models.Model):
-    TEMPLATE_VERSION = "2.0"
+    TEMPLATE_VERSION = "2.1"
 
     enquiry = models.ForeignKey(
         RealEstateEnquiry,
