@@ -259,6 +259,8 @@ def send_templated_email(
     context,
     reply_to=None,
     attachments=None,
+    rendered_text=None,
+    rendered_html=None,
 ):
     template_name = str(template_base or "").strip().strip("/")
     if not template_name:
@@ -275,8 +277,8 @@ def send_templated_email(
     }
     email_context.update(context or {})
 
-    text_body = render_to_string(f"{template_name}.txt", email_context)
-    html_body = render_to_string(f"{template_name}.html", email_context)
+    text_body = rendered_text or render_to_string(f"{template_name}.txt", email_context)
+    html_body = rendered_html or render_to_string(f"{template_name}.html", email_context)
 
     email = EmailMultiAlternatives(
         subject=subject,
@@ -292,6 +294,18 @@ def send_templated_email(
         else:
             email.attach(attachment)
     return email.send(fail_silently=False)
+
+
+def render_templated_email_content(template_base, context):
+    template_name = str(template_base or "").strip().strip("/")
+    if not template_name:
+        raise ValueError("template_base is required.")
+    if "/" not in template_name:
+        template_name = f"emails/real_estate/{template_name}"
+    return (
+        render_to_string(f"{template_name}.txt", context),
+        render_to_string(f"{template_name}.html", context),
+    )
 
 
 def build_realestate_email_context(enquiry, **overrides):

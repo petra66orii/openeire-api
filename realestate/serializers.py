@@ -4,7 +4,11 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import RealEstateEnquiry
-from .package_catalogue import get_included_add_ons
+from .package_catalogue import (
+    CURRENT_CATALOGUE_VERSION,
+    LEGACY_CATALOGUE_VERSION,
+    get_included_add_ons,
+)
 
 
 IRISH_COUNTIES = (
@@ -35,12 +39,24 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         "outbuildings", "grounds_size", "occupancy_status", "access_provider",
         "scheduling_preference", "preferred_time_window", "on_camera",
     )
+    V3_PUBLIC_PACKAGES = {"starter", "pro", "premium", "custom", "not_sure"}
+    V3_PUBLIC_ADD_ONS = {
+        "additional_stills",
+        "floor_plan",
+        "virtual_tour_3d",
+        "rush_delivery",
+        "extended_property_film",
+        "additional_social_cuts",
+        "luxury_architectural",
+        "twilight_dusk",
+    }
     TRIMMED_FIELDS = (
         "name", "phone", "company_name", "property_address", "eircode",
         "location_details", "property_type", "property_type_details",
         "secondary_accommodation_details", "outbuildings_details",
         "property_features", "access_contact_name", "access_contact_phone",
         "access_notes", "on_camera_people", "audio_requirements", "message",
+        "custom_review_notes",
     )
     # These were unrestricted strings in the deployed legacy form. V2 choices
     # are enforced in validate() so old clients are not rejected mid-rollout.
@@ -50,7 +66,7 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         max_length=20, required=False, allow_blank=True, default=""
     )
     form_schema_version = serializers.IntegerField(
-        required=False, allow_null=True, min_value=1, max_value=2
+        required=False, allow_null=True, min_value=1, max_value=3
     )
     add_ons = serializers.ListField(
         child=serializers.CharField(),
@@ -58,6 +74,13 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         allow_empty=True,
         default=list,
     )
+    custom_review_reasons = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
+    requires_custom_review = serializers.BooleanField(read_only=True)
     package_summary = serializers.CharField(
         source="get_preferred_package_summary",
         read_only=True,
@@ -83,7 +106,7 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
     class Meta:
         model = RealEstateEnquiry
         fields = (
-            "id", "form_schema_version", "name", "email", "phone",
+            "id", "form_schema_version", "catalogue_version", "name", "email", "phone",
             "client_type", "company_name", "property_address", "county",
             "eircode", "no_eircode", "location_details", "property_type",
             "property_type_details", "bedroom_count", "floor_count",
@@ -96,11 +119,12 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             "additional_stills_quantity", "scheduling_preference",
             "preferred_date", "alternative_date", "preferred_time_window",
             "on_camera", "on_camera_people", "audio_requirements", "how_heard",
-            "message", "consent_to_contact", "status", "package_summary",
+            "message", "custom_review_reasons", "custom_review_notes",
+            "requires_custom_review", "consent_to_contact", "status", "package_summary",
             "included_photograph_count", "included_photographs_label",
             "turnaround_code", "turnaround_label",
         )
-        read_only_fields = ("id", "status")
+        read_only_fields = ("id", "status", "catalogue_version")
         extra_kwargs = {
             "consent_to_contact": {"required": True},
             "internal_floor_area": {"min_value": 1, "max_value": 1000000},
@@ -108,9 +132,14 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
 
     def _is_v2(self, attrs=None):
         if attrs is not None:
-            return attrs.get("form_schema_version") == 2
+            return (attrs.get("form_schema_version") or 0) >= 2
         raw_version = getattr(self, "initial_data", {}).get("form_schema_version")
-        return str(raw_version).strip() == "2"
+        return str(raw_version).strip() in {"2", "3"}
+
+    def _is_v3(self, attrs=None):
+        if attrs is not None:
+            return attrs.get("form_schema_version") == 3
+        return str(getattr(self, "initial_data", {}).get("form_schema_version")).strip() == "3"
 
     @staticmethod
     def _plausible_phone(value):
@@ -131,6 +160,10 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 f"Invalid add-ons: {', '.join(invalid_keys)}."
             )
+        if "extended_drone_video" in value:
+            raise serializers.ValidationError(
+                "Extended drone video is a historical service key and is not available for new public selection."
+            )
 
         # The deployed form may submit travel and does not attach a stills
         # quantity. Preserve that behavior until legacy acceptance is retired.
@@ -142,6 +175,12 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             if "travel_supplement" in value:
                 raise serializers.ValidationError(
                     "Travel is assessed internally after the property location is reviewed."
+                )
+        if self._is_v3():
+            unavailable = sorted(set(value) - self.V3_PUBLIC_ADD_ONS)
+            if unavailable:
+                raise serializers.ValidationError(
+                    f"These add-ons are not available for new public selection: {', '.join(unavailable)}."
                 )
         return value
 
@@ -157,17 +196,46 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
 
         add_ons = set(attrs.get("add_ons") or [])
         package = attrs.get("preferred_package")
-        conflicts = add_ons & get_included_add_ons(package)
+        catalogue_version = (
+            CURRENT_CATALOGUE_VERSION if self._is_v3(attrs) else LEGACY_CATALOGUE_VERSION
+        )
+        conflicts = add_ons & get_included_add_ons(package, catalogue_version)
         if conflicts:
             labels = ", ".join(
                 RealEstateEnquiry.ADD_ON_LABELS[key] for key in sorted(conflicts)
             )
             errors["add_ons"] = f"Already included with the selected package: {labels}."
 
+        if package == RealEstateEnquiry.PreferredPackage.ESSENTIAL:
+            errors["preferred_package"] = (
+                "Essential is not available for new public enquiries. Choose Starter, "
+                "Pro, Premium, Custom / POA or request a review."
+            )
+
         if not self._is_v2(attrs):
             if errors:
                 raise serializers.ValidationError(errors)
             return attrs
+
+        if self._is_v3(attrs) and package not in self.V3_PUBLIC_PACKAGES:
+            errors["preferred_package"] = (
+                "Choose Starter, Pro, Premium, Custom / POA or request a review."
+            )
+
+        review_reasons = attrs.get("custom_review_reasons") or []
+        invalid_review_reasons = sorted(
+            set(review_reasons) - set(RealEstateEnquiry.CUSTOM_REVIEW_REASON_LABELS)
+        )
+        if invalid_review_reasons:
+            errors["custom_review_reasons"] = (
+                f"Invalid review reasons: {', '.join(invalid_review_reasons)}."
+            )
+        elif len(review_reasons) != len(set(review_reasons)):
+            errors["custom_review_reasons"] = "Review reasons must not contain duplicates."
+        if self._is_v3(attrs) and review_reasons and package not in {"custom", "not_sure"}:
+            errors["preferred_package"] = (
+                "This scope requires Custom / POA review and cannot use an automatic package selection."
+            )
 
         for field_name in self.V2_REQUIRED_FIELDS:
             if not attrs.get(field_name):
@@ -279,3 +347,11 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
+
+    def create(self, validated_data):
+        validated_data["catalogue_version"] = (
+            CURRENT_CATALOGUE_VERSION
+            if validated_data.get("form_schema_version") == 3
+            else LEGACY_CATALOGUE_VERSION
+        )
+        return super().create(validated_data)
