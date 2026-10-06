@@ -1699,6 +1699,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         warnings = []
 
         for enquiry in queryset:
+            quotation_snapshot = None
             email = str(getattr(enquiry, "email", "") or "").strip()
             if not email:
                 skipped_count += 1
@@ -1753,6 +1754,19 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                         template_base,
                         email_context,
                     )
+                    email_context = json.loads(
+                        json.dumps(email_context, cls=DjangoJSONEncoder)
+                    )
+                    quotation_snapshot = RealEstateQuotationSnapshot.objects.create(
+                        enquiry=enquiry,
+                        catalogue_version=enquiry.catalogue_version,
+                        subject=subject,
+                        recipient_email=email,
+                        context=email_context,
+                        rendered_text=rendered_text,
+                        rendered_html=rendered_html,
+                        created_by=getattr(request, "user", None),
+                    )
                 send_templated_email(
                     subject=subject,
                     to=[email],
@@ -1763,29 +1777,6 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     rendered_text=rendered_text,
                     rendered_html=rendered_html,
                 )
-                if template_base == "quote":
-                    try:
-                        snapshot_context = json.loads(
-                            json.dumps(email_context, cls=DjangoJSONEncoder)
-                        )
-                        RealEstateQuotationSnapshot.objects.create(
-                            enquiry=enquiry,
-                            catalogue_version=enquiry.catalogue_version,
-                            subject=subject,
-                            recipient_email=email,
-                            context=snapshot_context,
-                            rendered_text=rendered_text,
-                            rendered_html=rendered_html,
-                            created_by=getattr(request, "user", None),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Quote email sent but immutable snapshot creation failed. enquiry_id=%s",
-                            enquiry.pk,
-                        )
-                        warnings.append(
-                            f"{enquiry}: quote sent, but its immutable snapshot could not be saved."
-                        )
                 self._record_email_timeline_event(
                     enquiry,
                     request,
@@ -1797,6 +1788,18 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 sent_count += 1
             except Exception as exc:
                 failed_count += 1
+                failure_notes = f"{exc.__class__.__name__}: {exc}"
+                if quotation_snapshot is not None:
+                    failure_notes = (
+                        f"{failure_notes}; immutable quotation snapshot "
+                        f"#{quotation_snapshot.pk} retained; delivery not confirmed"
+                    )
+                    logger.exception(
+                        "Quote email delivery failed after immutable snapshot creation. "
+                        "enquiry_id=%s snapshot_id=%s",
+                        enquiry.pk,
+                        quotation_snapshot.pk,
+                    )
                 self._record_email_timeline_event(
                     enquiry,
                     request,
@@ -1804,11 +1807,24 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     email=email,
                     context=context,
                     status=RealEstateTimelineEvent.EventStatus.FAILED,
-                    notes=f"{exc.__class__.__name__}: {exc}",
+                    notes=failure_notes,
                 )
-                warnings.append(
-                    f"{enquiry}: {description.lower()} failed ({exc.__class__.__name__}: {exc})."
-                )
+                if template_base == "quote" and quotation_snapshot is None:
+                    warnings.append(
+                        f"{enquiry}: quote was not sent because preparation or immutable "
+                        f"snapshot persistence failed ({exc.__class__.__name__}: {exc})."
+                    )
+                elif quotation_snapshot is not None:
+                    warnings.append(
+                        f"{enquiry}: quote delivery failed after immutable snapshot "
+                        f"#{quotation_snapshot.pk} was stored. No successful quote-sent "
+                        "event was recorded; review delivery before retrying."
+                    )
+                else:
+                    warnings.append(
+                        f"{enquiry}: {description.lower()} failed "
+                        f"({exc.__class__.__name__}: {exc})."
+                    )
 
         if sent_count:
             self.message_user(

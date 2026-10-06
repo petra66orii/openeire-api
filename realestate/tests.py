@@ -2690,8 +2690,13 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertEqual(event.recipient_email, "jane@example.com")
         self.assertEqual(event.created_by, self.user)
         snapshot = self.enquiry.quotation_snapshots.get()
+        self.assertEqual(self.enquiry.quotation_snapshots.count(), 1)
         self.assertEqual(snapshot.catalogue_version, CURRENT_CATALOGUE_VERSION)
+        self.assertEqual(snapshot.subject, kwargs["subject"])
         self.assertEqual(snapshot.recipient_email, "jane@example.com")
+        self.assertEqual(snapshot.context, kwargs["context"])
+        self.assertEqual(snapshot.rendered_text, kwargs["rendered_text"])
+        self.assertEqual(snapshot.rendered_html, kwargs["rendered_html"])
         self.assertIn("€399.00", snapshot.rendered_text)
         self.assertIn(
             "Typically 30–35 professionally edited interior and exterior photographs",
@@ -2708,6 +2713,105 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         snapshot.subject = "Changed"
         with self.assertRaises(ValidationError):
             snapshot.save()
+
+    @patch("realestate.admin.RealEstateQuotationSnapshot.objects.create")
+    @patch("realestate.admin.send_templated_email")
+    def test_quote_snapshot_failure_prevents_email_and_success_event(
+        self,
+        mock_send_templated_email,
+        mock_create_snapshot,
+    ):
+        request = self._request()
+        mock_create_snapshot.side_effect = DataError("snapshot storage unavailable")
+
+        self.model_admin.send_quote_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_create_snapshot.assert_called_once()
+        mock_send_templated_email.assert_not_called()
+        quote_events = self.enquiry.timeline_events.filter(
+            event_type=RealEstateTimelineEvent.EventType.QUOTE_SENT
+        )
+        self.assertFalse(
+            quote_events.filter(
+                status=RealEstateTimelineEvent.EventStatus.SENT
+            ).exists()
+        )
+        failed_event = quote_events.get()
+        self.assertEqual(
+            failed_event.status,
+            RealEstateTimelineEvent.EventStatus.FAILED,
+        )
+        self.assertIn("DataError: snapshot storage unavailable", failed_event.notes)
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Quote email failed for 1 enquiry(s).",
+            level=messages.ERROR,
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                "quote was not sent because preparation or immutable snapshot "
+                "persistence failed" in message
+                for message in warning_messages
+            )
+        )
+
+    @patch(
+        "realestate.admin.send_templated_email",
+        side_effect=RuntimeError("smtp delivery unconfirmed"),
+    )
+    def test_quote_email_failure_retains_snapshot_without_success_event(
+        self,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+
+        with self.assertLogs("realestate.admin", level="ERROR") as logs:
+            self.model_admin.send_quote_email(
+                request,
+                RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+            )
+
+        mock_send_templated_email.assert_called_once()
+        snapshot = self.enquiry.quotation_snapshots.get()
+        quote_events = self.enquiry.timeline_events.filter(
+            event_type=RealEstateTimelineEvent.EventType.QUOTE_SENT
+        )
+        self.assertFalse(
+            quote_events.filter(
+                status=RealEstateTimelineEvent.EventStatus.SENT
+            ).exists()
+        )
+        failed_event = quote_events.get()
+        self.assertEqual(
+            failed_event.status,
+            RealEstateTimelineEvent.EventStatus.FAILED,
+        )
+        self.assertIn(f"snapshot #{snapshot.pk} retained", failed_event.notes)
+        self.assertIn("delivery not confirmed", failed_event.notes)
+        self.assertIn(
+            "Quote email delivery failed after immutable snapshot creation",
+            logs.output[0],
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                f"snapshot #{snapshot.pk} was stored" in message
+                and "review delivery before retrying" in message
+                for message in warning_messages
+            )
+        )
 
     @patch("realestate.admin.send_templated_email")
     def test_send_delivery_email_is_blocked_when_unpaid(self, mock_send_templated_email):
