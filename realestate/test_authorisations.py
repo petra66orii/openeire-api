@@ -108,7 +108,8 @@ class PropertyAuthorisationTests(TestCase):
                 self.assertIn("No specific requirements", text)
                 self.assertIn("professional judgement", text)
                 self.assertIn("agreed deliverables remain intact", text)
-                self.assertIn("30 professionally edited", text)
+                self.assertIn("Typically 30", text)
+                self.assertIn("professionally edited interior and exterior photographs", text)
                 self.assertIn("does not waive or reduce", text)
                 self.assertEqual(doc.acceptance_method, "electronic")
 

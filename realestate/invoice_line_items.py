@@ -10,7 +10,11 @@ ADD_ON_PRICES = {
     "virtual_tour_3d": Decimal("150.00"),
     "rush_delivery": Decimal("75.00"),
     "extended_drone_video": Decimal("150.00"),
+    "extended_property_film": Decimal("150.00"),
+    "extended_aerial_film": Decimal("150.00"),
     "additional_social_cuts": Decimal("50.00"),
+    "luxury_architectural": Decimal("295.00"),
+    "twilight_dusk": Decimal("150.00"),
 }
 
 ADD_ON_DESCRIPTIONS = {
@@ -18,6 +22,10 @@ ADD_ON_DESCRIPTIONS = {
     "virtual_tour_3d": "Hosted 3D virtual tour",
     "rush_delivery": "Rush same-day still-photography delivery",
     "extended_drone_video": "Extended drone video, up to 3 minutes",
+    "extended_property_film": "Extended Property Film",
+    "extended_aerial_film": "Extended Aerial Film",
+    "luxury_architectural": "Luxury / Architectural Photography",
+    "twilight_dusk": "Twilight / dusk photography",
 }
 
 
@@ -44,16 +52,23 @@ def _social_video_description(package_code):
 
 
 def _full_invoice_components(enquiry):
-    package = get_package(enquiry.preferred_package)
+    package = get_package(enquiry.preferred_package, enquiry.catalogue_version)
     if not package or package.price_eur is None:
         return []
 
     package_description = f"{package.name} Package"
-    if package.included_photographs:
+    if package.included_photographs and not package.indicative_photographs:
         package_description += f" — {package.included_photographs} edited ground photographs"
+    else:
+        included_label = enquiry.get_included_photographs_label()
+        if included_label:
+            package_description += f" — {included_label}"
     lines = [_line(package_description, unit_amount=package.price_eur)]
 
-    included_add_ons = get_included_add_ons(enquiry.preferred_package)
+    included_add_ons = get_included_add_ons(
+        enquiry.preferred_package,
+        enquiry.catalogue_version,
+    )
     for key in enquiry.add_ons or []:
         if key in included_add_ons:
             continue

@@ -1,9 +1,11 @@
 import logging
+import json
 
 from django.contrib import admin
 from django.contrib import messages
 from django import forms
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.serializers.json import DjangoJSONEncoder
 from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.http import HttpResponse, HttpResponseRedirect
@@ -19,6 +21,7 @@ from openeire_api.business_identity import get_business_identity
 from .emails import build_realestate_email_context
 from .emails import get_realestate_reply_to_email
 from .emails import send_templated_email
+from .emails import render_templated_email_content
 from .documents import build_booking_agreement_filename
 from .documents import booking_agreement_missing_requirements
 from .documents import generate_booking_agreement_pdf
@@ -35,6 +38,7 @@ from .models import (
     RealEstateFinancialAdjustment,
     RealEstateInvoice,
     RealEstatePayment,
+    RealEstateQuotationSnapshot,
 )
 from .delivery import (
     activate_delivery,
@@ -111,7 +115,11 @@ class RealEstateEnquiryAdminForm(forms.ModelForm):
         cleaned_data = super().clean()
         package = cleaned_data.get("preferred_package")
         add_ons = set(cleaned_data.get("add_ons") or [])
-        conflicts = add_ons & get_included_add_ons(package)
+        catalogue_version = (
+            cleaned_data.get("catalogue_version")
+            or getattr(self.instance, "catalogue_version", None)
+        )
+        conflicts = add_ons & get_included_add_ons(package, catalogue_version)
         instance_is_historical = bool(
             self.instance.pk
             and (
@@ -161,6 +169,24 @@ class RealEstateTimelineEventInline(admin.TabularInline):
     fields = readonly_fields
     ordering = ("-created_at",)
     show_change_link = True
+
+
+class RealEstateQuotationSnapshotInline(admin.TabularInline):
+    model = RealEstateQuotationSnapshot
+    extra = 0
+    can_delete = False
+    fields = (
+        "issued_at",
+        "catalogue_version",
+        "subject",
+        "recipient_email",
+        "created_by",
+    )
+    readonly_fields = fields
+    ordering = ("-issued_at",)
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 class RealEstateInvoiceInline(admin.TabularInline):
@@ -380,6 +406,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
     list_filter = (
         "status",
         "preferred_package",
+        "catalogue_version",
         "county",
         "client_type",
         "how_heard",
@@ -429,6 +456,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "send_thank_you_email",
     )
     inlines = (
+        RealEstateQuotationSnapshotInline,
         RealEstateFinancialAdjustmentInline,
         RealEstateInvoiceInline,
         RealEstateDeliveryOverrideInline,
@@ -499,9 +527,13 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
             "Package & Add-ons",
             {
                 "fields": (
+                    "catalogue_version",
                     "preferred_package",
                     "agreed_scope",
+                    "agreed_photograph_count",
                     "add_ons",
+                    "custom_review_reasons",
+                    "custom_review_notes",
                     "additional_stills_quantity",
                     "travel_supplement_amount",
                     "travel_details",
@@ -1667,6 +1699,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         warnings = []
 
         for enquiry in queryset:
+            quotation_snapshot = None
             email = str(getattr(enquiry, "email", "") or "").strip()
             if not email:
                 skipped_count += 1
@@ -1713,13 +1746,36 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     for key in ("package_name", "total_required", "deposit_amount", "balance_due",
                                 "payment_due_date", "expected_payment_method", "vat_registered", "vat_notice"):
                         context[key] = issued_context[key]
+                email_context = build_realestate_email_context(enquiry, **context)
+                rendered_text = None
+                rendered_html = None
+                if template_base == "quote":
+                    rendered_text, rendered_html = render_templated_email_content(
+                        template_base,
+                        email_context,
+                    )
+                    email_context = json.loads(
+                        json.dumps(email_context, cls=DjangoJSONEncoder)
+                    )
+                    quotation_snapshot = RealEstateQuotationSnapshot.objects.create(
+                        enquiry=enquiry,
+                        catalogue_version=enquiry.catalogue_version,
+                        subject=subject,
+                        recipient_email=email,
+                        context=email_context,
+                        rendered_text=rendered_text,
+                        rendered_html=rendered_html,
+                        created_by=getattr(request, "user", None),
+                    )
                 send_templated_email(
                     subject=subject,
                     to=[email],
                     template_base=template_base,
-                    context=build_realestate_email_context(enquiry, **context),
+                    context=email_context,
                     reply_to=self._get_reply_to(),
                     attachments=attachments,
+                    rendered_text=rendered_text,
+                    rendered_html=rendered_html,
                 )
                 self._record_email_timeline_event(
                     enquiry,
@@ -1732,6 +1788,18 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                 sent_count += 1
             except Exception as exc:
                 failed_count += 1
+                failure_notes = f"{exc.__class__.__name__}: {exc}"
+                if quotation_snapshot is not None:
+                    failure_notes = (
+                        f"{failure_notes}; immutable quotation snapshot "
+                        f"#{quotation_snapshot.pk} retained; delivery not confirmed"
+                    )
+                    logger.exception(
+                        "Quote email delivery failed after immutable snapshot creation. "
+                        "enquiry_id=%s snapshot_id=%s",
+                        enquiry.pk,
+                        quotation_snapshot.pk,
+                    )
                 self._record_email_timeline_event(
                     enquiry,
                     request,
@@ -1739,11 +1807,24 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     email=email,
                     context=context,
                     status=RealEstateTimelineEvent.EventStatus.FAILED,
-                    notes=f"{exc.__class__.__name__}: {exc}",
+                    notes=failure_notes,
                 )
-                warnings.append(
-                    f"{enquiry}: {description.lower()} failed ({exc.__class__.__name__}: {exc})."
-                )
+                if template_base == "quote" and quotation_snapshot is None:
+                    warnings.append(
+                        f"{enquiry}: quote was not sent because preparation or immutable "
+                        f"snapshot persistence failed ({exc.__class__.__name__}: {exc})."
+                    )
+                elif quotation_snapshot is not None:
+                    warnings.append(
+                        f"{enquiry}: quote delivery failed after immutable snapshot "
+                        f"#{quotation_snapshot.pk} was stored. No successful quote-sent "
+                        "event was recorded; review delivery before retrying."
+                    )
+                else:
+                    warnings.append(
+                        f"{enquiry}: {description.lower()} failed "
+                        f"({exc.__class__.__name__}: {exc})."
+                    )
 
         if sent_count:
             self.message_user(

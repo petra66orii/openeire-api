@@ -35,13 +35,18 @@ from .models import RealEstateEnquiry
 from .models import RealEstateBookingAgreementSnapshot
 from .models import RealEstateInvoice
 from .models import RealEstatePayment
+from .models import RealEstateQuotationSnapshot
 from .models import RealEstateTimelineEvent
 from .payments import calculate_realestate_deposit_amounts
 from .payments import create_realestate_deposit_checkout_session
 from .payments import prepare_realestate_deposit_checkout_session
 from .package_catalogue import (
     ADDITIONAL_PHOTOGRAPH_PRICE_EUR,
+    CURRENT_CATALOGUE_VERSION,
+    LEGACY_CATALOGUE_VERSION,
+    LEGACY_REAL_ESTATE_PACKAGE_CATALOGUE,
     REAL_ESTATE_PACKAGE_CATALOGUE,
+    get_package,
 )
 from .turnaround import (
     NEXT_BUSINESS_DAY,
@@ -61,11 +66,10 @@ REAL_ESTATE_EMAIL_TEMPLATE_CONTEXT = {
     "property_address": "Example House, Salthill, Galway",
     "package_name": "Pro package",
     "included_photographs_label": (
-        "30 professionally edited interior and exterior ground photographs"
+        "Typically 30–35 professionally edited interior and exterior photographs, "
+        "selected according to the property and agreed brief"
     ),
-    "additional_photograph_copy": (
-        "Additional edited photographs may be agreed at EUR 10 per photograph."
-    ),
+    "additional_photograph_copy": "Additional edited photographs — EUR 10 each",
     "turnaround_label": "Delivery within 2 business days",
     "turnaround_detail": (
         "This package is normally delivered within two business days due to the "
@@ -646,17 +650,16 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
                 )
                 for rendered in (html, text):
                     self.assertIn(
-                        "30 professionally edited interior and exterior ground photographs",
+                        "Typically 30–35 professionally edited interior and exterior photographs",
                         rendered,
                     )
-                    self.assertIn("EUR 10 per photograph", rendered)
+                    self.assertIn("EUR 10 each", rendered)
 
     def test_quote_email_formats_render_every_fixed_package_allowance(self):
         for package_code, expected in {
-            "essential": 10,
-            "starter": 25,
-            "pro": 30,
-            "premium": 35,
+            "starter": "Typically 25–30",
+            "pro": "Typically 30–35",
+            "premium": "Typically 35–40",
         }.items():
             package = REAL_ESTATE_PACKAGE_CATALOGUE[package_code]
             context = {
@@ -667,17 +670,13 @@ class RealEstateEmailTemplateTests(SimpleTestCase):
             with self.subTest(package_code=package_code):
                 html = render_to_string("emails/real_estate/quote.html", context)
                 text = render_to_string("emails/real_estate/quote.txt", context)
-                expected_copy = (
-                    f"{expected} professionally edited interior and exterior "
-                    "ground photographs"
-                )
+                expected_copy = f"{expected} professionally edited interior and exterior photographs"
                 self.assertIn(expected_copy, html)
                 self.assertIn(expected_copy, text)
                 if package_code in {"pro", "premium"}:
                     for rendered in (html, text):
                         self.assertIn(
-                            "One combined 4K property film — 60–90 sec ground footage + "
-                            "60–90 sec aerial footage (approx. 2–3 min total)",
+                            "One combined cinematic 4K property film using ground and aerial footage",
                             rendered,
                         )
                         self.assertNotIn("separate 60–90", rendered)
@@ -1215,8 +1214,7 @@ class BookingAgreementDocumentTests(TestCase):
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
         self.assertGreater(len(pdf_bytes), 1000)
         self.assertIn(
-            "One combined 4K property film — 60–90 sec ground footage + "
-            "60–90 sec aerial footage (approx. 2–3 min total)",
+            "One combined cinematic 4K property film using ground and aerial footage",
             rendered,
         )
         self.assertNotIn("separate 60–90", rendered)
@@ -1224,6 +1222,47 @@ class BookingAgreementDocumentTests(TestCase):
             build_booking_agreement_filename(enquiry),
             f"openeire-booking-agreement-re-{enquiry.id}-jane-agent.pdf",
         )
+
+    def test_specifically_agreed_photograph_count_overrides_indicative_range(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Fixed Scope Client",
+            email="fixed-scope@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Fixed Scope House",
+            county="Galway",
+            property_type="house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.STARTER,
+            agreed_photograph_count=32,
+            quoted_price="259.00",
+            consent_to_contact=True,
+        )
+
+        rendered = self._render_booking_agreement_markdown(enquiry)
+
+        self.assertIn(
+            "32 professionally edited interior and exterior photographs as specifically agreed",
+            rendered,
+        )
+        self.assertNotIn("Typically 25–30", rendered)
+
+    def test_legacy_essential_record_keeps_legacy_catalogue_scope(self):
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Historical Essential",
+            email="historical-essential@example.com",
+            phone="+353 87 123 4567",
+            client_type=RealEstateEnquiry.ClientType.PRIVATE_SELLER,
+            property_address="Historical House",
+            county="Galway",
+            property_type="house",
+            preferred_package=RealEstateEnquiry.PreferredPackage.ESSENTIAL,
+            catalogue_version=LEGACY_CATALOGUE_VERSION,
+            quoted_price="175.00",
+            consent_to_contact=True,
+        )
+
+        self.assertIn("Essential - EUR 175", enquiry.get_preferred_package_summary())
+        self.assertEqual(enquiry.get_included_photograph_count(), 10)
 
     def test_booking_agreement_missing_optional_fields_render_as_not_provided(self):
         enquiry = RealEstateEnquiry.objects.create(
@@ -1473,7 +1512,7 @@ class BookingAgreementDocumentTests(TestCase):
         )
         self.assertIn("Measured 2D floor plan", rendered)
         self.assertIn(
-            "Additional social-media cuts, alternative formats or additional edits",
+            "Additional social cut / format",
             rendered,
         )
         self.assertIn("Travel supplement beyond 40 km", rendered)
@@ -1511,9 +1550,9 @@ class BookingAgreementDocumentTests(TestCase):
 
         self.assertEqual(first, second)
         snapshot = RealEstateBookingAgreementSnapshot.objects.get(enquiry=enquiry)
-        self.assertEqual(snapshot.template_version, "2.0")
+        self.assertEqual(snapshot.template_version, "2.1")
         self.assertIn(
-            "30 professionally edited interior and exterior ground photographs",
+            "Typically 30–35 professionally edited interior and exterior photographs",
             first,
         )
         self.assertEqual(snapshot.payment_arrangement, RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
@@ -1559,8 +1598,8 @@ class BookingAgreementDocumentTests(TestCase):
         new_snapshot = enquiry.booking_agreement_snapshots.latest("created_at")
         self.assertEqual(unchanged_issued_markdown, issued_markdown)
         self.assertEqual(issued_snapshot.rendered_markdown, issued_markdown)
-        self.assertEqual(issued_snapshot.template_version, "2.0")
-        self.assertEqual(new_snapshot.template_version, "2.0")
+        self.assertEqual(issued_snapshot.template_version, "2.1")
+        self.assertEqual(new_snapshot.template_version, "2.1")
         self.assertNotIn("Travel supplement beyond 40 km", issued_markdown)
         self.assertIn("Measured 2D floor plan", new_markdown)
         self.assertIn("Travel supplement beyond 40 km", new_markdown)
@@ -1777,7 +1816,7 @@ class RealEstateEnquiryTests(APITestCase):
         caches[getattr(settings, "THROTTLE_CACHE_ALIAS", "throttle")].clear()
         self.url = reverse("real-estate-enquiry-create")
         self.payload = {
-            "form_schema_version": 2,
+            "form_schema_version": 3,
             "name": "Jane Agent",
             "email": "jane@example.com",
             "phone": "+353 87 123 4567",
@@ -1813,19 +1852,17 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(RealEstateEnquiry.objects.count(), 1)
         enquiry = RealEstateEnquiry.objects.get()
-        self.assertEqual(enquiry.form_schema_version, 2)
+        self.assertEqual(enquiry.form_schema_version, 3)
+        self.assertEqual(enquiry.catalogue_version, CURRENT_CATALOGUE_VERSION)
         self.assertEqual(response.data["id"], enquiry.id)
         self.assertEqual(response.data["status"], "new")
         self.assertEqual(response.data["message"], "Enquiry received successfully.")
         self.assertEqual(
             response.data["package_summary"],
-            RealEstateEnquiry.PACKAGE_SUMMARIES[
-                RealEstateEnquiry.PreferredPackage.PRO
-            ],
+            REAL_ESTATE_PACKAGE_CATALOGUE[RealEstateEnquiry.PreferredPackage.PRO].summary,
         )
         self.assertIn(
-            "One combined 4K property film — 60–90 sec ground footage + "
-            "60–90 sec aerial footage (approx. 2–3 min total)",
+            "One combined cinematic 4K property film using ground and aerial footage",
             response.data["package_summary"],
         )
         self.assertEqual(response.data["turnaround_code"], TWO_BUSINESS_DAYS)
@@ -1836,7 +1873,8 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(response.data["included_photograph_count"], 30)
         self.assertEqual(
             response.data["included_photographs_label"],
-            "30 professionally edited interior and exterior ground photographs",
+            "Typically 30–35 professionally edited interior and exterior photographs, "
+            "selected according to the property and agreed brief",
         )
         self.assertNotIn("internal_notes", response.data)
         for private_pricing_field in (
@@ -1865,6 +1903,32 @@ class RealEstateEnquiryTests(APITestCase):
             event.notes,
         )
         self.assertIn("Property address: Example House, Salthill, Galway", event.notes)
+
+    def test_each_current_standard_package_books_against_the_new_catalogue(self):
+        for package_code, expected_price in (
+            ("starter", 259),
+            ("pro", 419),
+            ("premium", 549),
+        ):
+            with self.subTest(package=package_code):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "email": f"{package_code}@example.com",
+                        "preferred_package": package_code,
+                    },
+                    format="json",
+                )
+
+                self.assertEqual(response.status_code, 201)
+                enquiry = RealEstateEnquiry.objects.get(
+                    email=f"{package_code}@example.com"
+                )
+                package = get_package(package_code, CURRENT_CATALOGUE_VERSION)
+                self.assertEqual(enquiry.catalogue_version, CURRENT_CATALOGUE_VERSION)
+                self.assertEqual(package.price_eur, expected_price)
+                self.assertEqual(response.data["package_summary"], package.summary)
 
     def test_deployed_legacy_payload_remains_accepted_during_rollout(self):
         legacy_payload = {
@@ -1925,7 +1989,7 @@ class RealEstateEnquiryTests(APITestCase):
     def test_unsupported_future_schema_version_is_rejected(self):
         response = self.client.post(
             self.url,
-            data={**self.payload, "form_schema_version": 3},
+            data={**self.payload, "form_schema_version": 4},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -2209,8 +2273,8 @@ class RealEstateEnquiryTests(APITestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("add_ons", response.data)
 
-    def test_floor_plan_add_on_remains_available_for_essential_and_custom(self):
-        for package in ("essential", "custom"):
+    def test_floor_plan_add_on_remains_available_for_custom(self):
+        for package in ("custom",):
             with self.subTest(package=package):
                 response = self.client.post(
                     self.url,
@@ -2223,6 +2287,66 @@ class RealEstateEnquiryTests(APITestCase):
                     format="json",
                 )
                 self.assertEqual(response.status_code, 201)
+
+    def test_essential_is_rejected_for_all_new_public_enquiries(self):
+        for schema_version in (1, 2, 3):
+            with self.subTest(schema_version=schema_version):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "form_schema_version": schema_version,
+                        "email": f"essential-v{schema_version}@example.com",
+                        "preferred_package": "essential",
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("preferred_package", response.data)
+
+        self.assertFalse(RealEstateEnquiry.objects.exists())
+
+    def test_explicit_complex_scope_routes_to_custom_review(self):
+        reasons = ["multiple_buildings", "bespoke_film"]
+        rejected = self.client.post(
+            self.url,
+            data={**self.payload, "custom_review_reasons": reasons},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("preferred_package", rejected.data)
+
+        accepted = self.client.post(
+            self.url,
+            data={
+                **self.payload,
+                "email": "custom-review@example.com",
+                "preferred_package": "custom",
+                "custom_review_reasons": reasons,
+                "custom_review_notes": "Two accommodation units and a bespoke film brief.",
+            },
+            format="json",
+        )
+        self.assertEqual(accepted.status_code, 201)
+        enquiry = RealEstateEnquiry.objects.get(email="custom-review@example.com")
+        self.assertTrue(enquiry.requires_custom_review)
+        self.assertEqual(enquiry.custom_review_reasons, reasons)
+
+    def test_legacy_extended_drone_key_is_not_available_to_new_public_enquiries(self):
+        for schema_version in (1, 2, 3):
+            with self.subTest(schema_version=schema_version):
+                response = self.client.post(
+                    self.url,
+                    data={
+                        **self.payload,
+                        "form_schema_version": schema_version,
+                        "email": f"legacy-addon-v{schema_version}@example.com",
+                        "add_ons": ["extended_drone_video"],
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("add_ons", response.data)
 
     def test_additional_social_video_work_remains_available_for_pro_and_premium(self):
         for package in ("pro", "premium"):
@@ -2279,17 +2403,16 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(historical.add_ons, ["travel_supplement"])
 
     def test_current_package_summaries_describe_one_combined_property_video(self):
-        self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["starter"])
+        self.assertIn("Measured 2D floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["starter"])
         expected_video = (
-            "One combined 4K property film — 60–90 sec ground footage + "
-            "60–90 sec aerial footage (approx. 2–3 min total)"
+            "One combined cinematic 4K property film using ground and aerial footage"
         )
         for package_code in ("pro", "premium"):
             summary = RealEstateEnquiry.PACKAGE_SUMMARIES[package_code]
             self.assertIn(expected_video, summary)
-            self.assertIn("vertical 9:16 social-media video", summary)
+            self.assertIn("separate vertical 9:16 social-media edit", summary)
             self.assertNotIn("separate 60", summary)
-        self.assertIn("2D measured floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
+        self.assertIn("Measured 2D floor plan", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
         self.assertIn("hosted 3D virtual tour", RealEstateEnquiry.PACKAGE_SUMMARIES["premium"])
 
     def test_authoritative_package_catalogue_preserves_prices_and_new_allowances(self):
@@ -2309,15 +2432,16 @@ class RealEstateEnquiryTests(APITestCase):
         )
         self.assertEqual(ADDITIONAL_PHOTOGRAPH_PRICE_EUR, 10)
         for code, expected in {
-            "essential": 10,
-            "starter": 25,
-            "pro": 30,
-            "premium": 35,
+            "starter": "Typically 25–30",
+            "pro": "Typically 30–35",
+            "premium": "Typically 35–40",
         }.items():
             self.assertIn(
-                f"{expected} professionally edited interior and exterior ground photographs",
+                f"{expected} professionally edited interior and exterior photographs",
                 RealEstateEnquiry.PACKAGE_SUMMARIES[code],
             )
+        self.assertFalse(REAL_ESTATE_PACKAGE_CATALOGUE["essential"].public)
+        self.assertTrue(LEGACY_REAL_ESTATE_PACKAGE_CATALOGUE["essential"].public)
 
     @patch(
         "realestate.views.send_realestate_internal_notification_email",
@@ -2565,6 +2689,129 @@ class RealEstateEnquiryAdminActionTests(TestCase):
         self.assertEqual(event.email_template, "quote")
         self.assertEqual(event.recipient_email, "jane@example.com")
         self.assertEqual(event.created_by, self.user)
+        snapshot = self.enquiry.quotation_snapshots.get()
+        self.assertEqual(self.enquiry.quotation_snapshots.count(), 1)
+        self.assertEqual(snapshot.catalogue_version, CURRENT_CATALOGUE_VERSION)
+        self.assertEqual(snapshot.subject, kwargs["subject"])
+        self.assertEqual(snapshot.recipient_email, "jane@example.com")
+        self.assertEqual(snapshot.context, kwargs["context"])
+        self.assertEqual(snapshot.rendered_text, kwargs["rendered_text"])
+        self.assertEqual(snapshot.rendered_html, kwargs["rendered_html"])
+        self.assertIn("€399.00", snapshot.rendered_text)
+        self.assertIn(
+            "Typically 30–35 professionally edited interior and exterior photographs",
+            snapshot.rendered_text,
+        )
+
+        original_text = snapshot.rendered_text
+        self.enquiry.preferred_package = RealEstateEnquiry.PreferredPackage.PREMIUM
+        self.enquiry.quoted_price = Decimal("549.00")
+        self.enquiry.save()
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.rendered_text, original_text)
+
+        snapshot.subject = "Changed"
+        with self.assertRaises(ValidationError):
+            snapshot.save()
+
+    @patch("realestate.admin.RealEstateQuotationSnapshot.objects.create")
+    @patch("realestate.admin.send_templated_email")
+    def test_quote_snapshot_failure_prevents_email_and_success_event(
+        self,
+        mock_send_templated_email,
+        mock_create_snapshot,
+    ):
+        request = self._request()
+        mock_create_snapshot.side_effect = DataError("snapshot storage unavailable")
+
+        self.model_admin.send_quote_email(
+            request,
+            RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+        )
+
+        mock_create_snapshot.assert_called_once()
+        mock_send_templated_email.assert_not_called()
+        quote_events = self.enquiry.timeline_events.filter(
+            event_type=RealEstateTimelineEvent.EventType.QUOTE_SENT
+        )
+        self.assertFalse(
+            quote_events.filter(
+                status=RealEstateTimelineEvent.EventStatus.SENT
+            ).exists()
+        )
+        failed_event = quote_events.get()
+        self.assertEqual(
+            failed_event.status,
+            RealEstateTimelineEvent.EventStatus.FAILED,
+        )
+        self.assertIn("DataError: snapshot storage unavailable", failed_event.notes)
+        self.model_admin.message_user.assert_any_call(
+            request,
+            "Quote email failed for 1 enquiry(s).",
+            level=messages.ERROR,
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                "quote was not sent because preparation or immutable snapshot "
+                "persistence failed" in message
+                for message in warning_messages
+            )
+        )
+
+    @patch(
+        "realestate.admin.send_templated_email",
+        side_effect=RuntimeError("smtp delivery unconfirmed"),
+    )
+    def test_quote_email_failure_retains_snapshot_without_success_event(
+        self,
+        mock_send_templated_email,
+    ):
+        request = self._request()
+
+        with self.assertLogs("realestate.admin", level="ERROR") as logs:
+            self.model_admin.send_quote_email(
+                request,
+                RealEstateEnquiry.objects.filter(pk=self.enquiry.pk),
+            )
+
+        mock_send_templated_email.assert_called_once()
+        snapshot = self.enquiry.quotation_snapshots.get()
+        quote_events = self.enquiry.timeline_events.filter(
+            event_type=RealEstateTimelineEvent.EventType.QUOTE_SENT
+        )
+        self.assertFalse(
+            quote_events.filter(
+                status=RealEstateTimelineEvent.EventStatus.SENT
+            ).exists()
+        )
+        failed_event = quote_events.get()
+        self.assertEqual(
+            failed_event.status,
+            RealEstateTimelineEvent.EventStatus.FAILED,
+        )
+        self.assertIn(f"snapshot #{snapshot.pk} retained", failed_event.notes)
+        self.assertIn("delivery not confirmed", failed_event.notes)
+        self.assertIn(
+            "Quote email delivery failed after immutable snapshot creation",
+            logs.output[0],
+        )
+        warning_messages = [
+            call.args[1]
+            for call in self.model_admin.message_user.call_args_list
+            if call.kwargs.get("level") == messages.WARNING
+        ]
+        self.assertTrue(
+            any(
+                f"snapshot #{snapshot.pk} was stored" in message
+                and "review delivery before retrying" in message
+                for message in warning_messages
+            )
+        )
 
     @patch("realestate.admin.send_templated_email")
     def test_send_delivery_email_is_blocked_when_unpaid(self, mock_send_templated_email):

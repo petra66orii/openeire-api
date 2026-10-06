@@ -101,8 +101,8 @@ class AgreementCorrectiveAuditTests(TestCase):
         self.assertIn("| Total fee payable | €419.00 |", text)
         self.assertNotIn("399", text)
         self.assertNotIn("Pro -", text)
-        for scope in ("30 professionally edited", "5-8 aerial drone stills", "2D measured floor plan",
-                      "One combined 4K property film", "vertical 9:16 social-media video"):
+        for scope in ("Typically 30–35 professionally edited", "5–8 edited drone stills", "Measured 2D floor plan",
+                      "One combined cinematic 4K property film", "One separate vertical 9:16 social-media edit"):
             self.assertIn(scope, text)
         self.assertNotIn("DRAFT", text)
 
@@ -190,7 +190,7 @@ class AgreementCorrectiveAuditTests(TestCase):
         with patch.dict(REAL_ESTATE_PACKAGE_CATALOGUE, {"pro": replace(get_package("pro"), included_photographs=99)}):
             self.assertEqual(render_booking_agreement_markdown(enquiry), original)
             revised = render_booking_agreement_markdown(enquiry, create_new_version=True, for_customer=True)
-        self.assertIn("30 professionally edited", revised)
+        self.assertIn("Typically 30–35 professionally edited", revised)
         self.assertNotIn("99 professionally edited", revised)
         self.assertEqual(enquiry.booking_agreement_snapshots.earliest("created_at").rendered_markdown, original)
 

@@ -815,6 +815,40 @@ class FullPaymentArrangementTests(TestCase):
             invoice.total,
         )
 
+    def test_current_catalogue_invoice_uses_new_names_prices_and_omits_included_scope(self):
+        enquiry = self.make_enquiry(
+            RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY,
+            preferred_package=RealEstateEnquiry.PreferredPackage.PRO,
+            quoted_price=Decimal("1064.00"),
+            add_ons=[
+                "floor_plan",
+                "additional_social_cuts",
+                "extended_property_film",
+                "luxury_architectural",
+                "twilight_dusk",
+            ],
+        )
+
+        invoice = ensure_invoices_for_arrangement(enquiry)[0]
+        lines = invoice.line_items_snapshot
+
+        self.assertEqual(lines[0]["unit_amount"], "419.00")
+        self.assertIn("Typically 30–35", lines[0]["description"])
+        self.assertNotIn("Measured 2D floor plan", [line["description"] for line in lines[1:]])
+        self.assertEqual(
+            [(line["description"], line["unit_amount"]) for line in lines[1:]],
+            [
+                ("Additional social-media cut, alternative format or edit", "50.00"),
+                ("Extended Property Film", "150.00"),
+                ("Luxury / Architectural Photography", "295.00"),
+                ("Twilight / dusk photography", "150.00"),
+            ],
+        )
+        self.assertEqual(
+            sum(Decimal(item["amount"]) for item in lines),
+            invoice.total,
+        )
+
     def test_full_on_shoot_day_due_date_and_unpaid_booking_lock(self):
         enquiry = self.make_enquiry(RealEstateEnquiry.PaymentArrangement.FULL_ON_SHOOT_DAY)
         enquiry.refresh_from_db()
@@ -1968,7 +2002,7 @@ class BookingAgreementV2Tests(TestCase):
                 context = _build_booking_agreement_context(enquiry)
                 markdown = render_booking_agreement_markdown(enquiry)
                 self.assertTrue(generate_booking_agreement_pdf(enquiry).startswith(b"%PDF"))
-                self.assertEqual(enquiry.booking_agreement_snapshots.get().template_version, "2.0")
+                self.assertEqual(enquiry.booking_agreement_snapshots.get().template_version, "2.1")
                 self.assertIn("419.00", context["total_required"])
                 if arrangement == "deposit_then_balance":
                     self.assertIn("125.70", context["deposit_amount"])
@@ -2002,9 +2036,9 @@ class BookingAgreementV2Tests(TestCase):
                 for phrase in (
                     "Client is responsible for identifying before or during the Shoot",
                     "features, views, boundaries, fencing, access points, rooms, land parcels, structures",
-                    "shall be treated as additional work",
-                    "additional attendance and travel charges may apply",
-                    "This does not apply where OpenÉire Studios failed to capture",
+                    "Additional attendance may be chargeable where a return visit is required",
+                    "No additional attendance charge applies where the return is required",
+                    "OpenÉire Studios failed to capture an item that was already clearly included",
                     "OpenÉire Studios will correct an obvious technical defect or material failure",
                     "must be notified within 24 hours of delivery",
                 ):

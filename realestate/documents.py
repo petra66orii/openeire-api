@@ -104,7 +104,7 @@ def _scope_items(values):
 def _agreed_deliverables(enquiry):
     persisted = enquiry._get_persisted_package_scope() or {}
     explicit = str(getattr(enquiry, "agreed_scope", "") or "").strip()
-    package = get_package(enquiry.preferred_package)
+    package = get_package(enquiry.preferred_package, enquiry.catalogue_version)
     # Older snapshots stored the name (sometimes with price/scope), not the code.
     previous_package = persisted.get("package_code")
     package_matches = (
@@ -129,9 +129,7 @@ def _agreed_deliverables(enquiry):
         return []  # Staff must recover written scope, not substitute today's catalogue.
     if not package or package.included_photographs is None:
         return []
-    return [package.included_photographs_label] + (
-        re.split(r" \+ (?!60)", package.other_deliverables) if package.other_deliverables else []
-    )
+    return [enquiry.get_included_photographs_label()] + list(package.other_deliverables)
 
 
 def booking_agreement_missing_requirements(enquiry, *, for_customer=False):
@@ -150,7 +148,10 @@ def booking_agreement_missing_requirements(enquiry, *, for_customer=False):
                          ("property_address", "property address"), ("shoot_date", "agreed shoot date")):
         if not str(getattr(enquiry, field, "") or "").strip():
             missing.append(label)
-    if not get_package(enquiry.preferred_package) or enquiry.preferred_package == "not_sure":
+    if (
+        not get_package(enquiry.preferred_package, enquiry.catalogue_version)
+        or enquiry.preferred_package == "not_sure"
+    ):
         missing.append("selected package")
     if not _agreed_deliverables(enquiry):
         missing.append("approved deliverables / agreed scope")
@@ -361,9 +362,12 @@ def _build_booking_agreement_context(enquiry):
             else "Not applicable"
         ),
         "package_name": blank_if_missing(
-            get_package(enquiry.preferred_package).name if get_package(enquiry.preferred_package) else ""
+            get_package(enquiry.preferred_package, enquiry.catalogue_version).name
+            if get_package(enquiry.preferred_package, enquiry.catalogue_version)
+            else ""
         ),
         "package_code": enquiry.preferred_package,
+        "catalogue_version": enquiry.catalogue_version,
         "agreed_scope_source": str(enquiry.agreed_scope or "").strip(),
         "scope_is_override": bool(str(enquiry.agreed_scope or "").strip()) or bool(
             (enquiry._get_persisted_package_scope() or {}).get("scope_is_override")
