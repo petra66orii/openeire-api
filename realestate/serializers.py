@@ -119,7 +119,7 @@ class RealEstateEnquirySerializer(serializers.ModelSerializer):
             "additional_stills_quantity", "scheduling_preference",
             "preferred_date", "alternative_date", "preferred_time_window",
             "on_camera", "on_camera_people", "audio_requirements", "how_heard",
-            "message", "custom_review_reasons", "custom_review_notes",
+            "print_source", "message", "custom_review_reasons", "custom_review_notes",
             "requires_custom_review", "consent_to_contact", "status", "package_summary",
             "included_photograph_count", "included_photographs_label",
             "turnaround_code", "turnaround_label",
