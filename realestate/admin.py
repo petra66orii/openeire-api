@@ -397,6 +397,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "status",
         "form_schema_version",
         "quoted_price",
+        "print_source",
         "shoot_date",
         "booking_agreement_received",
         "deposit_paid",
@@ -410,6 +411,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "county",
         "client_type",
         "how_heard",
+        "print_source",
         "created_at",
         "form_schema_version",
     )
@@ -422,6 +424,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
         "eircode",
     )
     readonly_fields = (
+        "print_source",
         "created_at",
         "updated_at",
         "form_schema_version",
@@ -473,6 +476,7 @@ class RealEstateEnquiryAdmin(admin.ModelAdmin):
                     "company_name",
                     "client_type",
                     "how_heard",
+                    "print_source",
                     "consent_to_contact",
                     "form_schema_version",
                 )

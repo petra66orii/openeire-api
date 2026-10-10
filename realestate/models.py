@@ -279,6 +279,17 @@ class RealEstateEnquiry(models.Model):
     on_camera_people = models.CharField(max_length=500, blank=True)
     audio_requirements = models.TextField(blank=True)
     how_heard = models.CharField(max_length=32, choices=HowHeard.choices, blank=True)
+    print_source = models.CharField(
+        max_length=20,
+        blank=True,
+        choices=(
+            ("flyer", "Flyer"),
+            ("portfolio-card", "Portfolio card"),
+            ("office-drop", "Office drop"),
+            ("qr-sticker", "QR sticker"),
+        ),
+        help_text="Submitted print campaign source; separate from the customer's how-heard answer.",
+    )
     message = models.TextField(blank=True)
     custom_review_reasons = models.JSONField(
         default=list,
