@@ -77,6 +77,13 @@ R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 R2_CUSTOM_DOMAIN = os.getenv('R2_CUSTOM_DOMAIN')
 
+# Blog HTML retains images only from configured hosts. Wire the documented
+# environment setting and default to the existing public portfolio origin.
+# An explicitly empty value continues to disable external blog images.
+BLOG_ALLOWED_IMAGE_HOSTS = os.getenv(
+    'BLOG_ALLOWED_IMAGE_HOSTS', 'media.openeire.ie'
+)
+
 R2_PRIVATE_BUCKET_NAME = os.getenv('R2_PRIVATE_BUCKET_NAME')
 R2_PRIVATE_ACCESS_KEY_ID = os.getenv('R2_PRIVATE_ACCESS_KEY_ID', R2_ACCESS_KEY_ID)
 R2_PRIVATE_SECRET_ACCESS_KEY = os.getenv('R2_PRIVATE_SECRET_ACCESS_KEY', R2_SECRET_ACCESS_KEY)
