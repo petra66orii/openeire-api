@@ -56,6 +56,25 @@ class BlogSanitizationTests(APITestCase):
 
         self.assertIn('src="https://images.example.com/photo.jpg"', post.content)
 
+    def test_linked_video_poster_survives_without_allowing_raw_iframes(self):
+        with self.settings(BLOG_ALLOWED_IMAGE_HOSTS=['media.openeire.ie']):
+            post = self._create_post(
+                title='Linked Video Poster',
+                content=(
+                    '<p><a href="https://www.youtube.com/watch?v=JAQxl0l3Spo" '
+                    'title="OpenÉire video: landscape">'
+                    '<img src="https://media.openeire.ie/poster.webp" '
+                    'alt="Property film" width="1600" height="900">Watch film</a></p>'
+                    '<iframe src="https://www.youtube.com/embed/JAQxl0l3Spo"></iframe>'
+                    '<img src="https://unapproved.example/poster.jpg">'
+                ),
+            )
+        self.assertIn('title="OpenÉire video: landscape"', post.content)
+        self.assertIn('src="https://media.openeire.ie/poster.webp"', post.content)
+        self.assertIn('href="https://www.youtube.com/watch?v=JAQxl0l3Spo"', post.content)
+        self.assertNotIn('<iframe', post.content)
+        self.assertNotIn('src="https://unapproved.example', post.content)
+
     def test_blog_post_parses_comma_separated_image_allowlist_string(self):
         with self.settings(BLOG_ALLOWED_IMAGE_HOSTS='images.example.com, cdn.example.org'):
             post = self._create_post(
