@@ -4,7 +4,9 @@ from decimal import Decimal
 from pathlib import Path
 import sys
 from urllib.parse import urlsplit
+import certifi
 import dj_database_url
+import stripe
 from dotenv import load_dotenv
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
@@ -658,6 +660,10 @@ if (
     )
 
 # Stripe Configuration
+
+# Stripe bundles its own CA file; keep all payment clients on the patched
+# Certifi trust store used by the application's other HTTPS clients.
+stripe.ca_bundle_path = certifi.where()
 
 AI_WORKER_SECRET = os.getenv('AI_WORKER_SECRET')
 AI_WORKER_IP_ALLOWLIST = [
