@@ -115,3 +115,37 @@ class SiteMetadataTests(TestCase):
         physical_response = self.client.get(reverse("sitemap_section", args=["physical"]))
 
         self.assertIn(f"https://openeire.ie/gallery/physical/{photo.id}", physical_response.content.decode())
+
+
+class StripeCertificateTrustTests(TestCase):
+    def test_stripe_requests_use_patched_bundle_and_preserve_responses(self):
+        from unittest.mock import Mock
+        import certifi
+        import stripe
+
+        session = Mock()
+        session.request.return_value.content = b'{"ok": true}'
+        session.request.return_value.status_code = 200
+        session.request.return_value.headers = {"Content-Type": "application/json"}
+        client = stripe.RequestsClient(session=session)
+        content, status, headers = client.request("get", "https://api.stripe.com/v1/balance", {})
+
+        self.assertGreaterEqual(tuple(map(int, certifi.__version__.split("."))), (2026, 10, 19))
+        self.assertEqual(session.request.call_args.kwargs["verify"], certifi.where())
+        self.assertEqual((content, status), (b'{"ok": true}', 200))
+        self.assertEqual(headers["Content-Type"], "application/json")
+
+    def test_stripe_certificate_failures_are_rejected(self):
+        from unittest.mock import Mock
+        import certifi
+        import requests
+        import stripe
+
+        session = Mock()
+        session.request.side_effect = requests.exceptions.SSLError("certificate verify failed")
+        client = stripe.RequestsClient(session=session)
+
+        with self.assertRaises(stripe.APIConnectionError) as error:
+            client.request("get", "https://api.stripe.com/v1/balance", {})
+        self.assertIsInstance(error.exception.__cause__, requests.exceptions.SSLError)
+        self.assertEqual(session.request.call_args.kwargs["verify"], certifi.where())
