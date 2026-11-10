@@ -5,13 +5,14 @@ from django.conf import settings
 from django.conf.urls.static import static
 from .admin import custom_admin_site
 from .site_paths import get_admin_path
-from .site_views import robots_txt
+from .site_views import healthz, robots_txt
 from .sitemaps import sitemaps
 from userprofiles.views import GoogleLogin
 
 ADMIN_URL = get_admin_path()
 
 urlpatterns = [
+    path('healthz', healthz, name='healthz'),
     path('robots.txt', robots_txt, name='robots_txt'),
     path('sitemap.xml', index, {'sitemaps': sitemaps, 'sitemap_url_name': 'sitemap_section'}, name='sitemap_index'),
     path('sitemap-<section>.xml', sitemap, {'sitemaps': sitemaps}, name='sitemap_section'),
