@@ -127,6 +127,7 @@ class Order(models.Model):
         choices=CONFIRMATION_EMAIL_STATUS_CHOICES,
         default="PENDING",
     )
+    confirmation_email_started_at = models.DateTimeField(null=True, blank=True)
     confirmation_email_sent_at = models.DateTimeField(null=True, blank=True)
     confirmation_email_failed_at = models.DateTimeField(null=True, blank=True)
     confirmation_email_error = models.TextField(blank=True, default="")
