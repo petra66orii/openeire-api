@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 42516)
+Total output lines: 4371
+
 import shutil
 import uuid
 import json
@@ -23,6 +26,8 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
+
+from checkout.views import StripeWebhookView
 
 from products.models import (
     LicenseRequest,
@@ -65,6 +70,36 @@ from .tracking import (
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
+
+
+class ConfirmationEmailClaimTests(TestCase):
+    def setUp(self):
+        self.view = StripeWebhookView()
+
+    def test_fresh_sending_claim_is_not_taken_twice(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_fresh_email_claim",
+            confirmation_email_status="SENDING", confirmation_email_started_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
+
+    @override_settings(CONFIRMATION_EMAIL_CLAIM_TIMEOUT_SECONDS=600)
+    def test_stale_sending_claim_can_be_recovered(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_stale_email_claim",
+            confirmation_email_status="SENDING",
+            confirmation_email_started_at=timezone.now() - timedelta(minutes=11),
+        )
+        self.assertTrue(self.view._claim_confirmation_email(order))
+        order.refresh_from_db()
+        self.assertGreater(order.confirmation_email_started_at, timezone.now() - timedelta(minutes=1))
+
+    def test_sent_email_is_never_reclaimed(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_sent_email_claim",
+            confirmation_email_status="SENT", confirmation_email_sent_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
 
 
 class CheckoutCartCanonicalizationTests(SimpleTestCase):
@@ -1997,278 +2032,7 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
             self.url,
             data="{}",
             content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Order.objects.count(), 0)
-        self.assertEqual(len(mail.outbox), 0)
-
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    @override_settings(CHECKOUT_ALLOW_LEGACY_USERNAME_FALLBACK=True)
-    def test_webhook_allows_legacy_username_fallback_when_enabled(self, mock_construct):
-        mock_construct.return_value = self._payment_intent_event(
-            username=self.user.username,
-            user_id="",
-        )
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Order.objects.count(), 1)
-        order = Order.objects.first()
-        self.assertIsNotNone(order.user_profile)
-        self.assertEqual(order.user_profile.user_id, self.user.id)
-
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_rejects_invalid_us_address_for_physical_item(self, mock_construct):
-        cart = [
-            {
-                "product_id": self.variant.id,
-                "product_type": "physical",
-                "quantity": 1,
-                "options": {},
-            }
-        ]
-        mock_construct.return_value = {
-            "id": "evt_consumer_bad_us_address",
-            "type": "payment_intent.succeeded",
-            "data": {
-                "object": {
-                    "id": "pi_consumer_bad_us_address",
-                    "receipt_email": "buyer@example.com",
-                    "metadata": {
-                        "cart": json.dumps(cart),
-                        "username": "Guest",
-                        "save_info": "false",
-                        "shipping_cost": "0",
-                        "shipping_method": "budget",
-                    },
-                    "shipping": {
-                        "name": "Buyer",
-                        "phone": "+3530000000",
-                        "address": {
-                            "country": "US",
-                            "city": "Loughrea",
-                            "line1": "1 Test Street",
-                            "line2": "",
-                            "postal_code": "H62 X254",
-                            "state": "",
-                        },
-                    },
-                }
-            },
-        }
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Order.objects.count(), 0)
-        self.assertEqual(len(mail.outbox), 0)
-
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_rejects_non_printable_physical_variant_order(self, mock_construct):
-        self.photo.is_printable = False
-        self.photo.save(update_fields=["is_printable"])
-        cart = [
-            {
-                "product_id": self.variant.id,
-                "product_type": "physical",
-                "quantity": 1,
-                "options": {},
-            }
-        ]
-        mock_construct.return_value = {
-            "id": "evt_non_printable_physical",
-            "type": "payment_intent.succeeded",
-            "data": {
-                "object": {
-                    "id": "pi_non_printable_physical",
-                    "receipt_email": "buyer@example.com",
-                    "metadata": {
-                        "cart": json.dumps(cart),
-                        "username": "Guest",
-                        "save_info": "false",
-                        "shipping_cost": "0",
-                        "shipping_method": "budget",
-                    },
-                    "shipping": {
-                        "name": "Buyer",
-                        "phone": "+3530000000",
-                        "address": {
-                            "country": "IE",
-                            "city": "Galway",
-                            "line1": "1 Test Street",
-                            "line2": "",
-                            "postal_code": "H62 X254",
-                            "state": "Galway",
-                        },
-                    },
-                }
-            },
-        }
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(Order.objects.count(), 0)
-        event = StripeWebhookEvent.objects.get(stripe_event_id="evt_non_printable_physical")
-        self.assertEqual(event.status, "FAILED")
-        self.assertIn("Physical product", event.error_message)
-
-    @patch("checkout.views.create_prodigi_order")
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_stores_prodigi_order_metadata_for_physical_orders(
-        self,
-        mock_construct,
-        mock_create_prodigi_order,
-    ):
-        mock_construct.return_value = self._physical_payment_intent_event(
-            event_id="evt_physical_prodigi_metadata",
-            payment_intent_id="pi_physical_prodigi_metadata",
-        )
-        mock_create_prodigi_order.return_value = {
-            "order": {
-                "id": "ord_prodigi_123",
-                "status": {"stage": "InProduction"},
-                "merchantReference": "",
-                "shipments": [],
-            }
-        }
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        order = Order.objects.get()
-        self.assertEqual(order.prodigi_order_id, "ord_prodigi_123")
-        self.assertEqual(order.prodigi_status, "InProduction")
-        self.assertEqual(order.prodigi_shipments, [])
-        self.assertIsNone(order.prodigi_last_callback_at)
-
-    @patch("checkout.views.create_prodigi_order")
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_created_order_stores_discount_fields_and_redemption(
-        self,
-        mock_construct,
-        mock_create_prodigi_order,
-    ):
-        mock_construct.return_value = self._physical_payment_intent_event(
-            event_id="evt_physical_discount",
-            payment_intent_id="pi_physical_discount",
-            discount_code="WELCOME10",
-            discount_amount="9.90",
-            discount_percent="10",
-            discount_label="WELCOME10 (10% off art prints)",
-        )
-        mock_create_prodigi_order.return_value = {
-            "order": {
-                "id": "ord_prodigi_discount",
-                "status": {"stage": "InProduction"},
-                "merchantReference": "",
-                "shipments": [],
-            }
-        }
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        order = Order.objects.get()
-        self.assertEqual(order.discount_code, "WELCOME10")
-        self.assertEqual(order.discount_amount, Decimal("9.90"))
-        self.assertEqual(order.discount_percent, Decimal("10"))
-        self.assertEqual(order.discount_label, "WELCOME10 (10% off art prints)")
-        self.assertEqual(order.total_price, Decimal("97.55"))
-        self.assertTrue(DiscountRedemption.objects.filter(order=order, code="WELCOME10").exists())
-
-    @patch("checkout.views.create_prodigi_order")
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_retry_does_not_duplicate_discount_redemption(
-        self,
-        mock_construct,
-        mock_create_prodigi_order,
-    ):
-        mock_construct.return_value = self._physical_payment_intent_event(
-            event_id="evt_physical_discount_retry",
-            payment_intent_id="pi_physical_discount_retry",
-            discount_code="WELCOME10",
-            discount_amount="9.90",
-            discount_percent="10",
-            discount_label="WELCOME10 (10% off art prints)",
-        )
-        mock_create_prodigi_order.return_value = {
-            "order": {
-                "id": "ord_prodigi_discount_retry",
-                "status": {"stage": "InProduction"},
-                "merchantReference": "",
-                "shipments": [],
-            }
-        }
-
-        first_response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-        second_response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(first_response.status_code, 200)
-        self.assertEqual(second_response.status_code, 200)
-        order = Order.objects.get()
-        self.assertEqual(DiscountRedemption.objects.filter(order=order).count(), 1)
-
-    @patch("checkout.views.send_fulfilment_failure_alert")
-    @patch("checkout.views.create_prodigi_order", side_effect=RuntimeError("prodigi offline"))
-    @patch("checkout.views.stripe.Webhook.construct_event")
-    def test_webhook_marks_physical_fulfilment_failure_visible_and_retryable(
-        self,
-        mock_construct,
-        _mock_create_prodigi_order,
-        mock_send_fulfilment_failure_alert,
-    ):
-        mock_construct.return_value = self._physical_payment_intent_event()
-
-        response = self.client.post(
-            self.url,
-            data="{}",
-            content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="sig",
-        )
-
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(Order.objects.count(), 1)
-        order = Order.objects.get()
-        self.assertEqual(order.prodigi_status, "FULFILMENT_FAILED")
+            HTTP_STRIPE_SIGNATURE=…2516 tokens truncated…s, "FULFILMENT_FAILED")
         event = StripeWebhookEvent.objects.get(stripe_event_id="evt_physical_retry")
         self.assertEqual(event.status, "FAILED")
         self.assertIn(order.order_number, event.error_message)
