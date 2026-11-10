@@ -19,7 +19,7 @@ django-js-asset==3.1.2
 django-storages==1.14.6
 django-summernote==0.8.20.0
 django-taggit==6.1.0
-djangorestframework==3.17.2
+djangorestframework==3.18.2
 djangorestframework_simplejwt==5.5.1
 gunicorn==23.0.0
 idna==3.15
