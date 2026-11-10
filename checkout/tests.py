@@ -24,6 +24,8 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
+from checkout.views import StripeWebhookView
+
 from products.models import (
     LicenseRequest,
     Photo,
@@ -65,6 +67,36 @@ from .tracking import (
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
+
+
+class ConfirmationEmailClaimTests(TestCase):
+    def setUp(self):
+        self.view = StripeWebhookView()
+
+    def test_fresh_sending_claim_is_not_taken_twice(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_fresh_email_claim",
+            confirmation_email_status="SENDING", confirmation_email_started_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
+
+    @override_settings(CONFIRMATION_EMAIL_CLAIM_TIMEOUT_SECONDS=600)
+    def test_stale_sending_claim_can_be_recovered(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_stale_email_claim",
+            confirmation_email_status="SENDING",
+            confirmation_email_started_at=timezone.now() - timedelta(minutes=11),
+        )
+        self.assertTrue(self.view._claim_confirmation_email(order))
+        order.refresh_from_db()
+        self.assertGreater(order.confirmation_email_started_at, timezone.now() - timedelta(minutes=1))
+
+    def test_sent_email_is_never_reclaimed(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_sent_email_claim",
+            confirmation_email_status="SENT", confirmation_email_sent_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
 
 
 class CheckoutCartCanonicalizationTests(SimpleTestCase):

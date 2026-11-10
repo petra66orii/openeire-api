@@ -1,6 +1,18 @@
-from django.http import HttpResponse
+from django.db import connections
+from django.http import HttpResponse, JsonResponse
 
 from .site_paths import get_admin_path
+
+
+def healthz(request):
+    """Report whether the web process and its primary database are ready."""
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except Exception:
+        return JsonResponse({"status": "unavailable"}, status=503)
+    return JsonResponse({"status": "ok"})
 
 
 def robots_txt(request):
