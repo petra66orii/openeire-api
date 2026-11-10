@@ -904,12 +904,14 @@ class StripeWebhookView(APIView):
 
     def _mark_confirmation_email_sent(self, order):
         order.confirmation_email_status = 'SENT'
+        order.confirmation_email_started_at = None
         order.confirmation_email_sent_at = timezone.now()
         order.confirmation_email_failed_at = None
         order.confirmation_email_error = ""
         order.save(
             update_fields=[
                 'confirmation_email_status',
+                'confirmation_email_started_at',
                 'confirmation_email_sent_at',
                 'confirmation_email_failed_at',
                 'confirmation_email_error',
@@ -918,15 +920,37 @@ class StripeWebhookView(APIView):
 
     def _mark_confirmation_email_failed(self, order, exc):
         order.confirmation_email_status = 'FAILED'
+        order.confirmation_email_started_at = None
         order.confirmation_email_failed_at = timezone.now()
         order.confirmation_email_error = f"{exc.__class__.__name__}: {exc}"
         order.save(
             update_fields=[
                 'confirmation_email_status',
+                'confirmation_email_started_at',
                 'confirmation_email_failed_at',
                 'confirmation_email_error',
             ]
         )
+
+    def _claim_confirmation_email(self, order):
+        started_at = timezone.now()
+        stale_before = started_at - timedelta(
+            seconds=getattr(settings, 'CONFIRMATION_EMAIL_CLAIM_TIMEOUT_SECONDS', 600)
+        )
+        claimed = Order.objects.filter(pk=order.pk).exclude(
+            confirmation_email_status='SENT'
+        ).filter(
+            ~Q(confirmation_email_status='SENDING')
+            | Q(confirmation_email_started_at__isnull=True)
+            | Q(confirmation_email_started_at__lt=stale_before)
+        ).update(
+            confirmation_email_status='SENDING',
+            confirmation_email_started_at=started_at,
+        )
+        if claimed:
+            order.confirmation_email_status = 'SENDING'
+            order.confirmation_email_started_at = started_at
+        return bool(claimed)
 
     def _handle_license_payment(self, request, session):
         payment_link_id = self._extract_payment_link_id(session)
@@ -1514,11 +1538,8 @@ class StripeWebhookView(APIView):
                             ]
                         )
 
-                    email_claimed = Order.objects.filter(pk=order.pk).exclude(
-                        confirmation_email_status__in=['SENDING', 'SENT']
-                    ).update(confirmation_email_status='SENDING')
+                    email_claimed = self._claim_confirmation_email(order)
                     if email_claimed:
-                        order.confirmation_email_status = 'SENDING'
                         try:
                             send_order_confirmation_email(order, request=request)
                             self._mark_confirmation_email_sent(order)
