@@ -1,6 +1,7 @@
 from decimal import Decimal
 from datetime import time as datetime_time, timedelta
 from html.parser import HTMLParser
+from io import StringIO
 from unittest.mock import Mock, call, patch
 
 import stripe
@@ -8,6 +9,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.management.base import CommandError
 from django.core import mail
 from django.core.cache import caches
 from django.db import DataError
@@ -2515,6 +2517,104 @@ class RealEstateEnquiryTests(APITestCase):
         self.assertEqual(enquiry.enquiry_email_last_error, "")
         internal.assert_called_once()
         self.assertEqual(client.call_count, 2)
+
+    @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email")
+    @patch("realestate.enquiry_notifications.send_realestate_internal_notification_email")
+    def test_fresh_notification_claim_is_not_sent_concurrently(self, internal, client):
+        from realestate.enquiry_notifications import send_enquiry_notifications
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+            internal_notification_started_at=timezone.now(),
+            client_confirmation_sent_at=timezone.now(),
+        )
+
+        self.assertEqual(
+            send_enquiry_notifications(enquiry.pk),
+            {"internal": "already_sending", "client": "already_sent"},
+        )
+        internal.assert_not_called()
+        client.assert_not_called()
+
+    @override_settings(ENQUIRY_EMAIL_CLAIM_TIMEOUT_SECONDS=600)
+    @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email")
+    @patch(
+        "realestate.enquiry_notifications.send_realestate_internal_notification_email",
+        return_value=1,
+    )
+    def test_stale_notification_claim_is_recovered(self, internal, client):
+        from realestate.enquiry_notifications import send_enquiry_notifications
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+            internal_notification_started_at=timezone.now() - timedelta(minutes=11),
+            client_confirmation_sent_at=timezone.now(),
+        )
+
+        self.assertEqual(
+            send_enquiry_notifications(enquiry.pk),
+            {"internal": "sent", "client": "already_sent"},
+        )
+        enquiry.refresh_from_db()
+        self.assertIsNotNone(enquiry.internal_notification_sent_at)
+        self.assertIsNone(enquiry.internal_notification_started_at)
+        internal.assert_called_once()
+        client.assert_not_called()
+
+    @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email")
+    @patch(
+        "realestate.enquiry_notifications.send_realestate_internal_notification_email",
+        side_effect=RuntimeError("smtp timeout"),
+    )
+    def test_failed_notification_releases_claim_for_retry(self, internal, client):
+        from realestate.enquiry_notifications import send_enquiry_notifications
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+            client_confirmation_sent_at=timezone.now(),
+        )
+
+        self.assertEqual(
+            send_enquiry_notifications(enquiry.pk),
+            {"internal": "failed", "client": "already_sent"},
+        )
+        enquiry.refresh_from_db()
+        self.assertIsNone(enquiry.internal_notification_started_at)
+        self.assertIn("smtp timeout", enquiry.enquiry_email_last_error)
+        client.assert_not_called()
+
+    @patch("realestate.management.commands.retry_realestate_enquiry_emails.send_enquiry_notifications")
+    def test_retry_command_can_fail_scheduled_run_on_delivery_error(self, send_notifications):
+        from django.core.management import call_command
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+        )
+        send_notifications.return_value = {"internal": "failed", "client": "sent"}
+        output = StringIO()
+
+        with self.assertRaises(CommandError):
+            call_command(
+                "retry_realestate_enquiry_emails",
+                limit=1,
+                fail_on_error=True,
+                stdout=output,
+            )
+
+        self.assertIn("processed=1 sent=1 failed=1 skipped=0", output.getvalue())
+        send_notifications.assert_called_once_with(enquiry.pk)
 
     @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email", return_value=1)
     @patch("realestate.enquiry_notifications.send_realestate_internal_notification_email")

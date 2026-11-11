@@ -24,6 +24,8 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
+from checkout.views import StripeWebhookView
+
 from products.models import (
     LicenseRequest,
     Photo,
@@ -65,6 +67,61 @@ from .tracking import (
 from openeire_api.admin import custom_admin_site
 from openeire_api.settings import require_env_in_production
 from openeire_api.test_utils import decode_sender_header
+
+
+class ConfirmationEmailClaimTests(TestCase):
+    def setUp(self):
+        self.view = StripeWebhookView()
+
+    def test_fresh_sending_claim_is_not_taken_twice(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_fresh_email_claim",
+            confirmation_email_status="SENDING", confirmation_email_started_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
+
+    @override_settings(CONFIRMATION_EMAIL_CLAIM_TIMEOUT_SECONDS=600)
+    def test_stale_sending_claim_can_be_recovered(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_stale_email_claim",
+            confirmation_email_status="SENDING",
+            confirmation_email_started_at=timezone.now() - timedelta(minutes=11),
+        )
+        self.assertTrue(self.view._claim_confirmation_email(order))
+        order.refresh_from_db()
+        self.assertGreater(order.confirmation_email_started_at, timezone.now() - timedelta(minutes=1))
+
+    def test_sent_email_is_never_reclaimed(self):
+        order = Order.objects.create(
+            email="buyer@example.com", stripe_pid="pi_sent_email_claim",
+            confirmation_email_status="SENT", confirmation_email_sent_at=timezone.now(),
+        )
+        self.assertFalse(self.view._claim_confirmation_email(order))
+
+    @override_settings(CONFIRMATION_EMAIL_CLAIM_TIMEOUT_SECONDS=600)
+    def test_expired_worker_cannot_overwrite_newer_sent_claim(self):
+        stale_claim = timezone.now() - timedelta(minutes=11)
+        stale_worker = Order.objects.create(
+            email="buyer@example.com",
+            stripe_pid="pi_superseded_email_claim",
+            confirmation_email_status="SENDING",
+            confirmation_email_started_at=stale_claim,
+        )
+        current_worker = Order.objects.get(pk=stale_worker.pk)
+        current_claim = self.view._claim_confirmation_email(current_worker)
+
+        self.assertTrue(
+            self.view._mark_confirmation_email_sent(current_worker, current_claim)
+        )
+        self.assertFalse(
+            self.view._mark_confirmation_email_failed(
+                stale_worker, stale_claim, RuntimeError("late failure")
+            )
+        )
+
+        stale_worker.refresh_from_db()
+        self.assertEqual(stale_worker.confirmation_email_status, "SENT")
+        self.assertIsNotNone(stale_worker.confirmation_email_sent_at)
 
 
 class CheckoutCartCanonicalizationTests(SimpleTestCase):
@@ -1815,6 +1872,32 @@ class ConsumerDigitalOrderLicenceTests(TestCase):
         self.assertIsNone(order.confirmation_email_failed_at)
         self.assertEqual(order.confirmation_email_error, "")
         mock_send_confirmation_email.assert_called_once_with(order, request=request)
+
+    @patch("checkout.admin.send_order_confirmation_email")
+    def test_admin_retry_does_not_duplicate_fresh_sending_email(self, mock_send_confirmation_email):
+        order = Order.objects.create(
+            user_profile=self.user.userprofile,
+            email=self.user.email,
+            stripe_pid="pi_confirmation_sending",
+            confirmation_email_status="SENDING",
+            confirmation_email_started_at=timezone.now(),
+        )
+        order_admin = OrderAdmin(Order, custom_admin_site)
+        order_admin.message_user = Mock()
+        request = self.factory.post("/admin/checkout/order/")
+        request.user = get_user_model().objects.create_superuser(
+            username="adminsending",
+            email="adminsending@example.com",
+            password="StrongPass123!",
+        )
+
+        order_admin.retry_confirmation_emails(
+            request, Order.objects.filter(pk=order.pk)
+        )
+
+        order.refresh_from_db()
+        self.assertEqual(order.confirmation_email_status, "SENDING")
+        mock_send_confirmation_email.assert_not_called()
 
     @patch("checkout.admin.send_order_confirmation_email", side_effect=RuntimeError("smtp offline"))
     def test_admin_retry_confirmation_email_skips_orders_already_sent(self, mock_send_confirmation_email):
