@@ -1,8 +1,8 @@
 from django.contrib import admin
 from django.contrib import messages
-from django.utils import timezone
 from .models import CheckoutAttempt, Order, OrderItem, ProductShipping
 from .emails import send_order_confirmation_email
+from .confirmation_delivery import deliver_confirmation_email
 from .tracking import refresh_order_from_prodigi
 from openeire_api.admin import custom_admin_site
 
@@ -32,6 +32,7 @@ class OrderAdmin(admin.ModelAdmin):
                        'email', 'phone_number', 'country', 'postcode', 'town',
                        'street_address1', 'street_address2', 'county',
                        'personal_terms_version', 'confirmation_email_status',
+                       'confirmation_email_started_at',
                        'confirmation_email_sent_at', 'confirmation_email_failed_at',
                        'confirmation_email_error', 'prodigi_order_id',
                        'prodigi_status', 'prodigi_last_callback_at',
@@ -70,6 +71,7 @@ class OrderAdmin(admin.ModelAdmin):
         failed_count = 0
         skipped_sent_count = 0
         skipped_held_count = 0
+        skipped_sending_count = 0
 
         for order in queryset:
             if order.fulfilment_hold_reason:
@@ -78,26 +80,17 @@ class OrderAdmin(admin.ModelAdmin):
             if order.confirmation_email_status == 'SENT':
                 skipped_sent_count += 1
                 continue
-            try:
-                send_order_confirmation_email(order, request=request)
-                order.confirmation_email_status = 'SENT'
-                order.confirmation_email_sent_at = timezone.now()
-                order.confirmation_email_failed_at = None
-                order.confirmation_email_error = ""
-                sent_count += 1
-            except Exception as exc:
-                order.confirmation_email_status = 'FAILED'
-                order.confirmation_email_failed_at = timezone.now()
-                order.confirmation_email_error = f"{exc.__class__.__name__}: {exc}"
-                failed_count += 1
-            order.save(
-                update_fields=[
-                    'confirmation_email_status',
-                    'confirmation_email_sent_at',
-                    'confirmation_email_failed_at',
-                    'confirmation_email_error',
-                ]
+            outcome = deliver_confirmation_email(
+                order,
+                sender=send_order_confirmation_email,
+                request=request,
             )
+            if outcome == "sent":
+                sent_count += 1
+            elif outcome == "failed":
+                failed_count += 1
+            else:
+                skipped_sending_count += 1
 
         if sent_count:
             self.message_user(
@@ -121,6 +114,12 @@ class OrderAdmin(admin.ModelAdmin):
             self.message_user(
                 request,
                 f"Skipped {skipped_held_count} held order(s) requiring manual review.",
+                level=messages.WARNING,
+            )
+        if skipped_sending_count:
+            self.message_user(
+                request,
+                f"Skipped {skipped_sending_count} order(s) already being processed.",
                 level=messages.WARNING,
             )
 

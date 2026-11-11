@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.db import DatabaseError
 
 from blog.models import BlogPost
 from products.models import Photo, PrintTemplate
@@ -14,6 +15,21 @@ from .site_paths import get_admin_path
 
 @override_settings(FRONTEND_URL="https://openeire.ie", SECURE_SSL_REDIRECT=False)
 class SiteMetadataTests(TestCase):
+    def test_health_check_verifies_database_readiness(self):
+        response = self.client.get(reverse("healthz"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    @patch("openeire_api.site_views.connections")
+    def test_health_check_reports_database_failure(self, mock_connections):
+        mock_connections.__getitem__.side_effect = DatabaseError("database unavailable")
+
+        response = self.client.get(reverse("healthz"))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"status": "unavailable"})
+
     def test_robots_txt_disallows_public_utility_routes(self):
         response = self.client.get(reverse("robots_txt"))
         admin_path = get_admin_path()

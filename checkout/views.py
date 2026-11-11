@@ -59,6 +59,11 @@ from .prodigi import create_prodigi_order, fetch_prodigi_order
 from .alerts import send_fulfilment_failure_alert
 from .order_claiming import claim_guest_orders_for_user
 from .emails import send_order_confirmation_email
+from .confirmation_delivery import (
+    claim_confirmation_email,
+    mark_confirmation_email_failed,
+    mark_confirmation_email_sent,
+)
 from .shipping import (
     ShippingConfigurationError,
     calculate_physical_shipping_quote,
@@ -902,31 +907,14 @@ class StripeWebhookView(APIView):
         logger.warning("FRONTEND_URL is not configured; omitting profile link from confirmation email")
         return None
 
-    def _mark_confirmation_email_sent(self, order):
-        order.confirmation_email_status = 'SENT'
-        order.confirmation_email_sent_at = timezone.now()
-        order.confirmation_email_failed_at = None
-        order.confirmation_email_error = ""
-        order.save(
-            update_fields=[
-                'confirmation_email_status',
-                'confirmation_email_sent_at',
-                'confirmation_email_failed_at',
-                'confirmation_email_error',
-            ]
-        )
+    def _mark_confirmation_email_sent(self, order, claimed_at):
+        return mark_confirmation_email_sent(order, claimed_at)
 
-    def _mark_confirmation_email_failed(self, order, exc):
-        order.confirmation_email_status = 'FAILED'
-        order.confirmation_email_failed_at = timezone.now()
-        order.confirmation_email_error = f"{exc.__class__.__name__}: {exc}"
-        order.save(
-            update_fields=[
-                'confirmation_email_status',
-                'confirmation_email_failed_at',
-                'confirmation_email_error',
-            ]
-        )
+    def _mark_confirmation_email_failed(self, order, claimed_at, exc):
+        return mark_confirmation_email_failed(order, claimed_at, exc)
+
+    def _claim_confirmation_email(self, order):
+        return claim_confirmation_email(order)
 
     def _handle_license_payment(self, request, session):
         payment_link_id = self._extract_payment_link_id(session)
@@ -1514,17 +1502,14 @@ class StripeWebhookView(APIView):
                             ]
                         )
 
-                    email_claimed = Order.objects.filter(pk=order.pk).exclude(
-                        confirmation_email_status__in=['SENDING', 'SENT']
-                    ).update(confirmation_email_status='SENDING')
-                    if email_claimed:
-                        order.confirmation_email_status = 'SENDING'
+                    email_claimed_at = self._claim_confirmation_email(order)
+                    if email_claimed_at:
                         try:
                             send_order_confirmation_email(order, request=request)
-                            self._mark_confirmation_email_sent(order)
+                            self._mark_confirmation_email_sent(order, email_claimed_at)
                             logger.info("Confirmation email sent. order_number=%s", order.order_number)
                         except Exception as exc:
-                            self._mark_confirmation_email_failed(order, exc)
+                            self._mark_confirmation_email_failed(order, email_claimed_at, exc)
                             logger.exception(
                                 "Could not send confirmation email. order_number=%s",
                                 order.order_number,
