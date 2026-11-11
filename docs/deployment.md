@@ -106,8 +106,10 @@ Observed from `build.sh`:
 ```bash
 pip install -r requirements.txt
 python manage.py collectstatic --no-input
-python manage.py migrate
 ```
+
+Database migrations run in Render's pre-deploy command with
+`python manage.py migrate --noinput`, never during the image build.
 
 Recommended release sequence:
 1. Deploy code + environment variables.

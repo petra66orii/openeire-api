@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from decimal import Decimal
 from decimal import InvalidOperation
 from decimal import ROUND_HALF_UP
@@ -16,6 +17,10 @@ from django.templatetags.static import static
 from django.urls import reverse
 
 from openeire_api.mail_utils import get_default_from_email
+from openeire_api.transactional_email import (
+    brevo_transactional_configured,
+    send_brevo_transactional_email,
+)
 from .models import RealEstateEnquiry, RealEstateInvoice, RealEstatePayment
 from .turnaround import TURNAROUND_CONTEXT
 from .payment_terms import booking_payment_copy, invoice_payment_label
@@ -261,6 +266,7 @@ def send_templated_email(
     attachments=None,
     rendered_text=None,
     rendered_html=None,
+    idempotency_key=None,
 ):
     template_name = str(template_base or "").strip().strip("/")
     if not template_name:
@@ -279,6 +285,18 @@ def send_templated_email(
 
     text_body = rendered_text or render_to_string(f"{template_name}.txt", email_context)
     html_body = rendered_html or render_to_string(f"{template_name}.html", email_context)
+
+    if idempotency_key and brevo_transactional_configured():
+        return send_brevo_transactional_email(
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+            from_email=get_default_from_email(),
+            to=_as_recipient_list(to),
+            reply_to=_as_recipient_list(reply_to),
+            attachments=attachments,
+            idempotency_key=idempotency_key,
+        )
 
     email = EmailMultiAlternatives(
         subject=subject,
@@ -471,6 +489,18 @@ def send_realestate_internal_notification_email(enquiry, request=None):
         "View in admin:\n"
         f"{build_realestate_admin_url(enquiry, request=request)}\n"
     )
+    idempotency_key = uuid.uuid5(
+        uuid.NAMESPACE_URL, f"openeire:realestate-enquiry:{enquiry.pk}:internal"
+    )
+    if brevo_transactional_configured():
+        return send_brevo_transactional_email(
+            subject=subject,
+            text_body=body,
+            from_email=get_default_from_email(),
+            to=[get_realestate_notification_email()],
+            reply_to=[get_realestate_reply_to_email()],
+            idempotency_key=idempotency_key,
+        )
     email = EmailMessage(
         subject=subject,
         body=body,
@@ -492,4 +522,7 @@ def send_realestate_client_confirmation_email(enquiry):
             shoot_date=_format_date(enquiry.preferred_date),
         ),
         reply_to=[get_realestate_reply_to_email()],
+        idempotency_key=uuid.uuid5(
+            uuid.NAMESPACE_URL, f"openeire:realestate-enquiry:{enquiry.pk}:client"
+        ),
     )
