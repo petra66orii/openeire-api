@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def _claim_notification(enquiry_id, *, sent_field, started_field):
     started_at = timezone.now()
     stale_before = started_at - timedelta(
-        seconds=getattr(settings, "ENQUIRY_EMAIL_CLAIM_TIMEOUT_SECONDS", 600)
+        seconds=getattr(settings, "ENQUIRY_EMAIL_CLAIM_TIMEOUT_SECONDS", 300)
     )
     claimed = (
         RealEstateEnquiry.objects.filter(

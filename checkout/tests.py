@@ -123,6 +123,28 @@ class ConfirmationEmailClaimTests(TestCase):
         self.assertEqual(stale_worker.confirmation_email_status, "SENT")
         self.assertIsNotNone(stale_worker.confirmation_email_sent_at)
 
+    @override_settings(
+        BREVO_TRANSACTIONAL_ENABLED=True,
+        BREVO_API_KEY="test-key",
+        DEFAULT_FROM_EMAIL="OpenÉire Studios <hello@openeire.ie>",
+    )
+    @patch("checkout.emails.send_brevo_transactional_email", return_value=1)
+    def test_order_confirmation_reuses_stable_provider_key(self, send_brevo):
+        from checkout.emails import send_order_confirmation_email
+
+        order = Order.objects.create(
+            email="buyer@example.com",
+            stripe_pid="pi_stable_provider_key",
+        )
+        request = RequestFactory().get("/checkout/")
+        send_order_confirmation_email(order, request=request)
+        first_key = send_brevo.call_args.kwargs["idempotency_key"]
+        send_order_confirmation_email(order, request=request)
+        second_key = send_brevo.call_args.kwargs["idempotency_key"]
+
+        self.assertEqual(first_key, second_key)
+        self.assertIsInstance(first_key, uuid.UUID)
+
 
 class CheckoutCartCanonicalizationTests(SimpleTestCase):
     def test_duplicate_physical_lines_are_merged(self):

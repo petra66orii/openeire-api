@@ -1,4 +1,5 @@
 from urllib.parse import urljoin
+import uuid
 
 from django.conf import settings
 from django.core.mail import EmailMessage
@@ -9,6 +10,10 @@ from openeire_api.mail_utils import (
     get_contact_email_address,
     get_default_from_email,
     resolve_order_display_name,
+)
+from openeire_api.transactional_email import (
+    brevo_transactional_configured,
+    send_brevo_transactional_email,
 )
 from products.personal_downloads import ensure_personal_download_token
 from products.personal_licence import (
@@ -68,10 +73,21 @@ def send_order_confirmation_email(order, request=None):
         context,
     )
 
+    if brevo_transactional_configured():
+        return send_brevo_transactional_email(
+            subject=subject.strip(),
+            text_body=body,
+            from_email=get_default_from_email(),
+            to=[cust_email],
+            idempotency_key=uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"openeire:checkout-order:{order.pk}:confirmation",
+            ),
+        )
     email = EmailMessage(
         subject=subject.strip(),
         body=body,
         from_email=get_default_from_email(),
         to=[cust_email],
     )
-    email.send(fail_silently=False)
+    return email.send(fail_silently=False)

@@ -2,6 +2,7 @@ from decimal import Decimal
 from datetime import time as datetime_time, timedelta
 from html.parser import HTMLParser
 from io import StringIO
+import uuid
 from unittest.mock import Mock, call, patch
 
 import stripe
@@ -2486,6 +2487,35 @@ class RealEstateEnquiryTests(APITestCase):
         call_command("retry_realestate_enquiry_emails")
         internal.assert_called_once()
         client.assert_called_once()
+
+    @override_settings(
+        BREVO_TRANSACTIONAL_ENABLED=True,
+        BREVO_API_KEY="test-key",
+    )
+    @patch("realestate.emails.send_brevo_transactional_email", return_value=1)
+    def test_enquiry_senders_reuse_stable_provider_keys(self, send_brevo):
+        from realestate.emails import (
+            send_realestate_client_confirmation_email,
+            send_realestate_internal_notification_email,
+        )
+
+        enquiry = RealEstateEnquiry.objects.create(
+            name="Jane", email="jane@example.com", phone="0871234567",
+            property_address="Main Street", county="Galway",
+            property_type="house", preferred_package="starter",
+            consent_to_contact=True,
+        )
+        send_realestate_internal_notification_email(enquiry)
+        send_realestate_client_confirmation_email(enquiry)
+        first_keys = [call.kwargs["idempotency_key"] for call in send_brevo.call_args_list]
+        send_brevo.reset_mock()
+        send_realestate_internal_notification_email(enquiry)
+        send_realestate_client_confirmation_email(enquiry)
+        second_keys = [call.kwargs["idempotency_key"] for call in send_brevo.call_args_list]
+
+        self.assertEqual(first_keys, second_keys)
+        self.assertNotEqual(first_keys[0], first_keys[1])
+        self.assertTrue(all(isinstance(key, uuid.UUID) for key in first_keys))
 
     @patch("realestate.enquiry_notifications.send_realestate_client_confirmation_email")
     @patch("realestate.enquiry_notifications.send_realestate_internal_notification_email", return_value=1)
